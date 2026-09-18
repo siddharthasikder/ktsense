@@ -89,13 +89,24 @@ enum DaemonAction {
     Status,
 }
 
-/// Process exit codes are a contract for callers and future subcommands, so they are named once
-/// here rather than materialised as scattered `std::process::exit` calls. `symbols` and `trace`
-/// will end with [`Exit::Ambiguous`] when a name resolves to several candidates.
+/// Process exit codes are a contract the calling agent branches on, so the whole set is named once
+/// here rather than left as scattered `std::process::exit` calls or clap's implicit defaults. This
+/// enum is the single source the README, the agent skill file and the MCP tool descriptions quote.
+///
+/// - `0` success
+/// - `1` the operation failed on its input: an unreadable path, a directory, or a broken Kotlin file
+/// - `2` the invocation itself was malformed; clap reports these, so `2` stays reserved for usage
+/// - `3` a symbol name resolved to several candidates; the caller should pick one and retry
+/// - `70` the subcommand exists in the surface but has not shipped yet
+///
+/// `Ambiguous` is `3`, not `2`, because clap already exits `2` for its own usage errors. An agent
+/// must be able to tell "I called the tool wrong" (fix the invocation) from "the name was
+/// ambiguous" (choose a candidate), and those demand opposite responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Exit {
     Success,
     Failure,
+    Usage,
     #[allow(dead_code)]
     Ambiguous,
     Unimplemented,
@@ -106,7 +117,8 @@ impl Exit {
         match self {
             Exit::Success => 0,
             Exit::Failure => 1,
-            Exit::Ambiguous => 2,
+            Exit::Usage => 2,
+            Exit::Ambiguous => 3,
             Exit::Unimplemented => 70,
         }
     }
@@ -140,12 +152,20 @@ impl CommandError {
     }
 
     fn unparseable(file: &Path) -> Self {
-        Self {
-            exit: Exit::Failure,
-            message: format!(
+        let message = if has_kotlin_extension(file) {
+            format!(
                 "ktsense: {} has Kotlin syntax errors and cannot be outlined",
                 file.display()
-            ),
+            )
+        } else {
+            format!(
+                "ktsense: {} is not a Kotlin file (expected .kt or .kts) and could not be parsed",
+                file.display()
+            )
+        };
+        Self {
+            exit: Exit::Failure,
+            message,
         }
     }
 
@@ -173,7 +193,11 @@ impl CommandError {
 
 fn main() -> ExitCode {
     init_tracing();
-    match run(Cli::parse()) {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(usage) => return report_usage(usage),
+    };
+    match run(cli) {
         Ok(output) => {
             print!("{output}");
             Exit::Success.into()
@@ -182,6 +206,19 @@ fn main() -> ExitCode {
             eprintln!("{}", failure.message);
             failure.exit.into()
         }
+    }
+}
+
+// clap renders `--help` and `--version` as errors that belong on stdout with a success status, and
+// genuine mistakes on stderr. Routing both through `Exit` keeps every process status defined by the
+// one enum instead of letting clap call `process::exit(2)` on its own.
+fn report_usage(usage: clap::Error) -> ExitCode {
+    if usage.use_stderr() {
+        eprint!("{usage}");
+        Exit::Usage.into()
+    } else {
+        print!("{usage}");
+        Exit::Success.into()
     }
 }
 
@@ -197,6 +234,7 @@ fn init_tracing() {
 
 fn run(cli: Cli) -> Result<String, CommandError> {
     let format = cli.format;
+    let root = cli.root;
     match cli.command {
         Command::Outline {
             file,
@@ -210,10 +248,24 @@ fn run(cli: Cli) -> Result<String, CommandError> {
             if kdoc {
                 options = options.with_doc();
             }
-            outline(&file, format, &options)
+            outline(&resolve_root(root.as_deref(), &file), format, &options)
         }
         ref pending => Err(CommandError::unimplemented(not_implemented_label(pending))),
     }
+}
+
+fn resolve_root(root: Option<&Path>, file: &Path) -> PathBuf {
+    match root {
+        Some(root) if file.is_relative() => root.join(file),
+        _ => file.to_path_buf(),
+    }
+}
+
+fn has_kotlin_extension(file: &Path) -> bool {
+    matches!(
+        file.extension().and_then(|ext| ext.to_str()),
+        Some("kt") | Some("kts")
+    )
 }
 
 fn outline(file: &Path, format: Format, options: &RenderOptions) -> Result<String, CommandError> {
@@ -261,5 +313,23 @@ fn not_implemented_label(command: &Command) -> &'static str {
         Command::Status => "status (KT-36)",
         Command::Mcp => "mcp (KT-31)",
         Command::Daemon { .. } => "daemon (KT-27)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Exit;
+
+    #[test]
+    fn exit_codes_are_the_documented_contract() {
+        let observed = (
+            Exit::Success.code(),
+            Exit::Failure.code(),
+            Exit::Usage.code(),
+            Exit::Ambiguous.code(),
+            Exit::Unimplemented.code(),
+        );
+
+        assert_eq!(observed, (0, 1, 2, 3, 70));
     }
 }
