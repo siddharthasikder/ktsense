@@ -7,6 +7,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod render;
+pub mod skeleton;
+
+pub use render::{render_markdown, render_skeleton, RenderOptions};
+pub use skeleton::{
+    DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
+};
+
 /// Version reported by every front-end, sourced from the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
