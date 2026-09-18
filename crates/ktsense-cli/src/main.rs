@@ -292,6 +292,13 @@ impl CommandError {
         }
     }
 
+    fn mcp(error: anyhow::Error) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: mcp server failed: {error}"),
+        }
+    }
+
     fn engine(error: LspError) -> Self {
         Self {
             exit: Exit::Failure,
@@ -433,6 +440,10 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 DaemonAction::Serve => daemon::serve(&base),
             }
         }
+        Command::Mcp => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            mcp_server(&base)
+        }
         Command::Check { path } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             check(&base, &resolve_root(Some(&base), &path), format)
@@ -454,6 +465,20 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
         .build()
         .expect("build current-thread runtime")
         .block_on(future)
+}
+
+/// Serves the MCP tools over stdio until the client disconnects. The tools delegate to this same
+/// executable, so the server needs to know where it is; the root is canonicalized once so every
+/// delegated command answers about the same workspace whatever the client's working directory.
+fn mcp_server(root: &Path) -> Result<CommandOutcome, CommandError> {
+    let binary = std::env::current_exe().map_err(|error| CommandError::read(root, &error))?;
+    let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    block_on(ktsense_mcp::serve(ktsense_mcp::ServerConfig {
+        binary,
+        root,
+    }))
+    .map_err(CommandError::mcp)?;
+    Ok(CommandOutcome::success(String::new()))
 }
 
 fn symbols(

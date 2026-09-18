@@ -1,10 +1,23 @@
-//! MCP stdio server.
+//! MCP stdio server exposing the ktsense commands as agent tools.
 //!
-//! The transport and the `rmcp` wiring land in KT-31. The tool catalogue lives here as data from the
-//! start, because the CLI, the docs and the agent skill file all have to agree with it, and a table
-//! is easier to keep honest than three prose lists.
+//! The eight tools are the [`TOOLS`] catalogue below, kept as data because the CLI, the docs and
+//! the agent skill file all have to agree with it. Each tool delegates to the `ktsense` binary
+//! itself, run as a child process with `--format md`: the commands, their exit codes and their
+//! neutralised output already carry the product's honesty rules, and this crate must not depend on
+//! the binary crate, so the process boundary is the seam. The [`Runner`] port makes that seam
+//! explicit, and lets the tool layer be tested with a recorded runner and no subprocess.
+//!
+//! Exit codes map onto MCP results like this: `0` and `3` are answers (an ambiguous name is a real
+//! answer, the candidate list, and the text says to pick one); every other status is a tool error
+//! carrying whatever the command wrote to stderr.
 
 #![forbid(unsafe_code)]
+
+mod server;
+
+pub use server::{
+    serve, ExecutableRunner, Invocation, KtsenseServer, Request, Runner, RunnerError, ServerConfig,
+};
 
 /// Whether a tool needs the engine index, which tells an agent what it will cost to call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +26,15 @@ pub enum Cost {
     Fast,
     /// Requires the engine index, so the first call on a cold repo may wait.
     NeedsIndex,
+}
+
+impl Cost {
+    pub fn label(self) -> &'static str {
+        match self {
+            Cost::Fast => "fast",
+            Cost::NeedsIndex => "needs_index",
+        }
+    }
 }
 
 /// One agent-facing tool.
