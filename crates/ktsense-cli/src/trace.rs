@@ -24,8 +24,8 @@ use ktsense_lsp::{
 use crate::symbols::{self, Selection};
 use crate::{block_on, normalized_path, CommandError, CommandOutcome, Format};
 
-/// How long a cold session may spend waiting for the index before answering with what it has.
-/// KT-24 owns turning this into a policy knob; `KTSENSE_INDEX_CAP_MS` exists so tests can shorten it.
+/// How long a capped cold session may spend waiting for the index before answering with what it
+/// has; `KTSENSE_INDEX_CAP_MS` overrides it, which the tests use to shorten it.
 const DEFAULT_INDEX_CAP: Duration = Duration::from_secs(3);
 const INDEX_CAP_ENV: &str = "KTSENSE_INDEX_CAP_MS";
 const IGNORED_BUILD_OUTPUT: &str = "**/build/**";
@@ -36,8 +36,38 @@ pub(crate) struct TraceRequest<'a> {
     pub pick: Option<&'a str>,
     pub depth: usize,
     pub limit: Option<usize>,
+    pub wait: IndexWaitPolicy,
     pub format: Format,
 }
+
+/// How long a cold session waits for the index before answering. The cap is the default because
+/// KT-53 measured genuinely cold indexing at 1.04 s on the largest pinned corpus, a third of it;
+/// `--wait-index` trades that bound for a guaranteed `index: complete`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexWaitPolicy {
+    Capped,
+    UntilReady,
+}
+
+impl IndexWaitPolicy {
+    pub(crate) fn from_flag(wait_index: bool) -> Self {
+        if wait_index {
+            IndexWaitPolicy::UntilReady
+        } else {
+            IndexWaitPolicy::Capped
+        }
+    }
+
+    fn cap(self) -> Duration {
+        match self {
+            IndexWaitPolicy::Capped => configured_cap(),
+            IndexWaitPolicy::UntilReady => UNBOUNDED_WAIT,
+        }
+    }
+}
+
+/// Long enough that no index finishes after it; the waiter still returns when the stream closes.
+const UNBOUNDED_WAIT: Duration = Duration::from_secs(60 * 60 * 24);
 
 pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, CommandError> {
     let candidates = block_on(ktsense_lsp::run_symbols(request.root, request.symbol))
@@ -71,7 +101,7 @@ async fn collect(
     definition: Definition,
 ) -> Result<TraceReport, LspError> {
     let mut client = ktsense_lsp::launch().await?;
-    let outcome = Session::new(request.root, request.limit)
+    let outcome = Session::new(request.root, request.limit, request.wait)
         .run(&mut client, candidate, definition, request.depth)
         .await;
     let _ = client.shutdown().await;
@@ -86,15 +116,17 @@ struct Session<'a> {
     /// a relative `--root` would otherwise produce a relative `file://` URI the engine cannot open.
     canonical_root: PathBuf,
     limit: Option<usize>,
+    wait: IndexWaitPolicy,
     skeletons: Skeletons,
 }
 
 impl<'a> Session<'a> {
-    fn new(root: &'a Path, limit: Option<usize>) -> Self {
+    fn new(root: &'a Path, limit: Option<usize>, wait: IndexWaitPolicy) -> Self {
         Self {
             root,
             canonical_root: canonical(root),
             limit,
+            wait,
             skeletons: Skeletons::default(),
         }
     }
@@ -111,9 +143,9 @@ impl<'a> Session<'a> {
             ignore_patterns: vec![IGNORED_BUILD_OUTPUT.to_string()],
         };
         client.initialize(&config).await?;
-        let wait = wait_for_index(client, index_cap()).await;
+        let wait = wait_for_index(client, self.wait.cap()).await;
 
-        let at = candidate.to_file_position();
+        let at = self.declaration_position(candidate);
         let implementation_sites = self.sites(&client.implementation_sites(&at).await?);
         let reference_sites = self.sites(
             &client
@@ -175,14 +207,18 @@ impl<'a> Session<'a> {
     fn position_of(&self, caller: &RelatedDeclaration) -> Option<FilePosition> {
         let name = caller.qualified_name.as_deref()?.rsplit('.').next()?;
         let absolute = self.absolute(&caller.path);
-        let source = fs::read_to_string(&absolute).ok()?;
-        let text = source.lines().nth(caller.line.checked_sub(1)? as usize)?;
-        let column = text.find(name)?;
-        Some(FilePosition {
-            uri: format!("file://{}", absolute.display()),
-            line: caller.line - 1,
-            character: u32::try_from(text[..column].chars().count()).ok()?,
-        })
+        name_position(&absolute, caller.line, name)
+    }
+
+    /// Where to ask the engine about the resolved declaration. The engine's own column is not
+    /// trusted: on a cold cache its command-mode `find` takes a text-search path and has been
+    /// observed to report the column of the keyword before the name (`val CallLogging` at the
+    /// `v`), and a references request there answers with every use of the keyword, 14,702 sites on
+    /// ktor instead of 31. The name is located on the reported line instead, and the engine's
+    /// column is used only when the name cannot be found there.
+    fn declaration_position(&self, candidate: &SymbolCandidate) -> FilePosition {
+        name_position(Path::new(&candidate.file), candidate.line, &candidate.name)
+            .unwrap_or_else(|| candidate.to_file_position())
     }
 
     fn sites(&mut self, locations: &[SiteLocation]) -> Vec<Location> {
@@ -212,6 +248,32 @@ impl<'a> Session<'a> {
     }
 }
 
+/// The zero-based LSP position of the first whole-word occurrence of `name` on 1-based `line` of
+/// the file at `path`, or `None` when the file cannot be read or the name is not on that line.
+fn name_position(path: &Path, line: u32, name: &str) -> Option<FilePosition> {
+    let source = fs::read_to_string(path).ok()?;
+    let text = source.lines().nth(line.checked_sub(1)? as usize)?;
+    let column = whole_word_offset(text, name)?;
+    Some(FilePosition {
+        uri: format!("file://{}", path.display()),
+        line: line - 1,
+        character: u32::try_from(text[..column].chars().count()).ok()?,
+    })
+}
+
+/// Byte offset of `name` in `text` where it is not part of a longer identifier, so `save` is not
+/// found inside `saveAll`.
+fn whole_word_offset(text: &str, name: &str) -> Option<usize> {
+    let is_identifier = |character: char| character.is_alphanumeric() || character == '_';
+    text.match_indices(name)
+        .map(|(offset, _)| offset)
+        .find(|&offset| {
+            let before = text[..offset].chars().next_back();
+            let after = text[offset + name.len()..].chars().next();
+            !before.is_some_and(is_identifier) && !after.is_some_and(is_identifier)
+        })
+}
+
 fn completeness(phase: IndexPhase) -> IndexCompleteness {
     if phase.is_ready() {
         IndexCompleteness::Complete
@@ -220,7 +282,7 @@ fn completeness(phase: IndexPhase) -> IndexCompleteness {
     }
 }
 
-fn index_cap() -> Duration {
+fn configured_cap() -> Duration {
     std::env::var(INDEX_CAP_ENV)
         .ok()
         .and_then(|value| value.parse().ok())
@@ -276,5 +338,27 @@ fn present(report: &TraceReport, format: Format) -> Result<String, CommandError>
         Format::Md => Ok(render_trace_markdown(report)),
         Format::Json => serde_json::to_string_pretty(report).map_err(CommandError::serialization),
         Format::Dot => Err(CommandError::unsupported_format("trace")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_is_located_as_a_whole_word_not_inside_a_longer_identifier() {
+        let observed = (
+            whole_word_offset("    fun save(order: Order): OrderId", "save"),
+            whole_word_offset(
+                "    fun saveAll(all: List<Order>): Int = all.map(::save).size",
+                "save",
+            ),
+            whole_word_offset(
+                "public val CallLogging: ApplicationPlugin<CallLoggingConfig>",
+                "CallLogging",
+            ),
+            whole_word_offset("    fun saveAll(): Int", "save"),
+        );
+        assert_eq!(observed, (Some(8), Some(51), Some(11), None));
     }
 }

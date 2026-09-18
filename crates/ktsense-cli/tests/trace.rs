@@ -245,6 +245,80 @@ fn a_pick_narrows_an_ambiguous_name_to_one_declaration() {
     );
 }
 
+/// The index finishes only after the 150 ms cap: by default the answer is taken at the cap and
+/// marked partial; `--wait-index` removes the cap and the same session ends complete.
+#[test]
+fn wait_index_removes_the_cap_so_a_slow_index_ends_complete_instead_of_partial() {
+    let slow_index = || {
+        vec![
+            progress(json!({ "kind": "begin", "title": "Indexing" })),
+            json!({ "kind": "delay", "ms": 400 }),
+            progress(json!({ "kind": "end" })),
+        ]
+    };
+    let capped = trace(
+        &["save"],
+        &only_the_interface_method(),
+        &session(slow_index(), Vec::new()),
+    );
+    let uncapped = trace(
+        &["save", "--wait-index"],
+        &only_the_interface_method(),
+        &session(slow_index(), Vec::new()),
+    );
+
+    let marker = |run: &Run| {
+        run.stdout
+            .lines()
+            .find(|line| line.starts_with("index: "))
+            .map(str::to_string)
+    };
+    let observed = (
+        capped.code,
+        marker(&capped),
+        uncapped.code,
+        marker(&uncapped),
+    );
+    assert_eq!(
+        observed,
+        (
+            Some(0),
+            Some("index: partial".to_string()),
+            Some(0),
+            Some("index: complete".to_string()),
+        ),
+        "capped stderr: {} / uncapped stderr: {}",
+        capped.stderr,
+        uncapped.stderr
+    );
+}
+
+/// On a cold cache the engine's command-mode `find` takes a text-search path and can report a
+/// column inside the keyword before the name (observed on ktor: `val CallLogging` reported at the
+/// `v`). Asking for references there returns every use of the keyword, so trace must locate the
+/// name on the declaration line itself; the script pins the corrected position.
+#[test]
+fn a_find_column_inside_the_keyword_is_corrected_to_the_name_before_asking_the_engine() {
+    let keyword_column = json!([candidate(REPOSITORY, 4, 5)]);
+    let run = trace(
+        &["save"],
+        &keyword_column,
+        &session(completed_index(), Vec::new()),
+    );
+
+    let observed = (
+        run.code,
+        run.stdout.contains("## Callers (3)"),
+        run.stderr.is_empty(),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, true),
+        "stderr was: {}",
+        run.stderr
+    );
+}
+
 /// Depth 2 asks for the references of each direct caller, in path order, at the position of the
 /// caller's own name; only the first is scripted to have a caller of its own.
 #[test]

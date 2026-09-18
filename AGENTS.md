@@ -39,6 +39,12 @@ and compression testable from hand-built values.
   `fixtures/multi-module` silently searches the whole ktsense repository: `refs save` returns 6 sites
   with the root and 9 without, the extra 3 coming from the unrelated `tiny-app` fixture. A widened
   root does not fail, it just answers about the wrong code.
+- **Do not trust the column `find --json` reports.** On a cold cache the command takes its
+  text-search path and has been observed to report the column of the keyword before the name
+  (`public val CallLogging` at the `v`, column 8, where the indexed path says 12). A references
+  request at that position answers with every use of the keyword: 14,702 sites on ktor instead of
+  31, under an honest `index: complete`. `trace` locates the name on the reported line itself and
+  falls back to the engine's column only when the name is not there (KT-24, 2026-09-18).
 - A `find` that matches nothing **exits 0 with empty output**. Absence cannot be read from the exit
   status; ktsense supplies its own non-zero for "no such symbol".
 

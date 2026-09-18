@@ -134,6 +134,10 @@ enum Command {
         /// Show at most this many reference sites per file; the rest are counted.
         #[arg(long)]
         limit: Option<usize>,
+        /// Wait for the index to finish instead of answering after the 3 second cap, so the answer
+        /// is always marked complete.
+        #[arg(long)]
+        wait_index: bool,
     },
     /// Import graph of the workspace
     Deps {
@@ -420,6 +424,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             pick,
             depth,
             limit,
+            wait_index,
         } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             trace::trace(trace::TraceRequest {
@@ -428,6 +433,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 pick: pick.as_deref(),
                 depth: usize::from(depth),
                 limit,
+                wait: trace::IndexWaitPolicy::from_flag(wait_index),
                 format,
             })
         }
