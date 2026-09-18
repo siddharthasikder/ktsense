@@ -6,6 +6,19 @@
 
 #![forbid(unsafe_code)]
 
+mod client;
+mod engine;
+mod server;
+mod wire;
+
+pub use client::{verify_protocol, Client, ClientError, ProtocolMismatch};
+pub use engine::{Engine, EngineRequest, HandlerOutcome, WarmEngine};
+pub use server::{
+    probe, run, status, stop, DaemonConfig, DaemonError, Liveness, StopOutcome, StopReason,
+    DEFAULT_IDLE_TIMEOUT,
+};
+pub use wire::{read_frame, write_frame, ClientFrame, ServerFrame, WireError, MAX_FRAME};
+
 use std::path::{Path, PathBuf};
 
 /// Protocol version carried in the hello frame, so a stale daemon is detected rather than trusted.

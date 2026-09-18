@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
 ignore = "0.4"
 lsp-types = "0.97"
+rustix = { version = "0.38", features = ["process"] }
 tree-sitter = "0.26"
 tree-sitter-kotlin = { package = "brokk-tree-sitter-kotlin", version = "0.4" }
 insta = { version = "1", features = ["json"] }
