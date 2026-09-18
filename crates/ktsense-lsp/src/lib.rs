@@ -2,16 +2,20 @@
 //!
 //! ktsense wraps upstream by process rather than by linking: `kmp-lsp` publishes only a binary
 //! target, so there is no library to depend on. This crate owns the version pin, the binary lookup
-//! order, the stdio framing codec, and the async [`LspClient`] that drives the child process. The
-//! typed request wrappers layer on top in KT-14.
+//! order, the stdio framing codec, and the async [`LspClient`] that drives the child process. Typed
+//! request wrappers and `$/progress` index tracking layer on top.
 
 #![forbid(unsafe_code)]
 
 mod client;
 mod framing;
+mod progress;
+mod requests;
 
 pub use client::{InitializeConfig, LspClient, LspError, Notification, Teardown};
 pub use framing::FramingError;
+pub use progress::IndexPhase;
+pub use requests::{DeclarationScope, FilePosition};
 
 use std::path::PathBuf;
 

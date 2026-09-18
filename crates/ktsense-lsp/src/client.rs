@@ -51,6 +51,8 @@ pub enum LspError {
     ChildExited { method: String },
     #[error("engine produced a malformed frame and the client is faulted: {0}")]
     Framing(FramingError),
+    #[error("`{uri}` is not a valid document URI")]
+    InvalidUri { uri: String },
 }
 
 /// Options for the LSP `initialize` handshake.
