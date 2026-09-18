@@ -28,6 +28,13 @@ and compression testable from hand-built values.
   `shutdown` and `exit` do not terminate the child and it has to be killed.
 - `kmp-lsp` 0.26.0 has **no** `callHierarchyProvider`. Callers come from `references` plus the
   enclosing declaration of each reference site, never from call hierarchy.
+- **Always pass `--root` to a command-mode invocation.** Upstream defaults the workspace root to the
+  nearest `.git` directory, not the working directory, so an unrooted `find` or `refs` run inside
+  `fixtures/multi-module` silently searches the whole ktsense repository: `refs save` returns 6 sites
+  with the root and 9 without, the extra 3 coming from the unrelated `tiny-app` fixture. A widened
+  root does not fail, it just answers about the wrong code.
+- A `find` that matches nothing **exits 0 with empty output**. Absence cannot be read from the exit
+  status; ktsense supplies its own non-zero for "no such symbol".
 
 ## Accuracy honesty
 
