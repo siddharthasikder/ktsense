@@ -1,0 +1,10 @@
+---
+source: crates/ktsense-cli/src/symbols.rs
+expression: "format!(\"exit {code}\\n{text}\")"
+---
+exit 0
+## Symbols: save
+
+```text
+shop.order.OrderRepository  interface  core/src/main/kotlin/shop/order/OrderRepository.kt:3  interface OrderRepository
+```

@@ -229,7 +229,7 @@ fn the_root_flag_resolves_a_relative_outline_path_instead_of_being_ignored() {
 
 #[test]
 fn an_unimplemented_command_keeps_the_not_implemented_contract() {
-    let run = ktsense(&["symbols", "User"]);
+    let run = ktsense(&["trace", "User"]);
 
     let observed = (
         run.code,

@@ -6,10 +6,12 @@
 
 #![forbid(unsafe_code)]
 
+mod symbols;
+
 use std::borrow::Cow;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -63,6 +65,35 @@ impl From<Level> for DepLevel {
     }
 }
 
+/// The declaration kinds `symbols --kind` filters on. Each maps to the label the enriched row
+/// carries, so the filter compares against exactly what is printed.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum KindFilter {
+    Class,
+    Interface,
+    Object,
+    Fun,
+    Val,
+    Var,
+    Typealias,
+    Constructor,
+}
+
+impl KindFilter {
+    fn label(self) -> &'static str {
+        match self {
+            KindFilter::Class => "class",
+            KindFilter::Interface => "interface",
+            KindFilter::Object => "object",
+            KindFilter::Fun => "fun",
+            KindFilter::Val => "val",
+            KindFilter::Var => "var",
+            KindFilter::Typealias => "typealias",
+            KindFilter::Constructor => "constructor",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Compressed declaration skeleton of one file
@@ -76,7 +107,18 @@ enum Command {
         kdoc: bool,
     },
     /// Find declarations by name across the workspace
-    Symbols { query: String },
+    Symbols {
+        query: String,
+        /// Keep only declarations of this kind.
+        #[arg(long, value_enum)]
+        kind: Option<KindFilter>,
+        /// Show at most this many rows when the name is ambiguous; the rest are summarized.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Select the single candidate with this fully-qualified name and exit successfully.
+        #[arg(long, value_name = "FQN")]
+        pick: Option<String>,
+    },
     /// Definition, usages, implementors and callers of one symbol
     Trace { symbol: String },
     /// Import graph of the workspace
@@ -136,7 +178,6 @@ enum Exit {
     Success,
     Failure,
     Usage,
-    #[allow(dead_code)]
     Ambiguous,
     Unimplemented,
 }
@@ -232,6 +273,20 @@ impl CommandError {
             message: format!("ktsense: {error}"),
         }
     }
+
+    fn no_symbol(query: &str) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: no declaration named {query}"),
+        }
+    }
+
+    fn pick_missed(pick: &str) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: no candidate has the fully-qualified name {pick}"),
+        }
+    }
 }
 
 /// A completed command: the text to print on stdout and the status the process should end with.
@@ -315,6 +370,15 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             deps(&base, level.into(), format).map(CommandOutcome::success)
         }
+        Command::Symbols {
+            query,
+            kind,
+            limit,
+            pick,
+        } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            symbols(&base, &query, kind, limit, pick.as_deref(), format)
+        }
         Command::Check { path } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             check(&base, &resolve_root(Some(&base), &path), format)
@@ -336,6 +400,20 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
         .build()
         .expect("build current-thread runtime")
         .block_on(future)
+}
+
+fn symbols(
+    root: &Path,
+    query: &str,
+    kind: Option<KindFilter>,
+    limit: Option<usize>,
+    pick: Option<&str>,
+    format: Format,
+) -> Result<CommandOutcome, CommandError> {
+    let candidates = block_on(ktsense_lsp::run_symbols(root, query))
+        .map_err(|error| CommandError::passthrough(&error))?;
+    symbols::present_symbols(root, query, candidates, kind, limit, pick, format)
+        .map(CommandOutcome::from)
 }
 
 fn check(root: &Path, path: &Path, format: Format) -> Result<CommandOutcome, CommandError> {
@@ -524,13 +602,39 @@ fn skeleton_for_deps(root: &Path, path: &Path) -> Option<FileSkeleton> {
 
 /// The path as it appears in output: relative to the workspace root and always `/`-separated, so
 /// the same repository yields the same graph on every filesystem.
+///
+/// Paths discovered by walking the root strip directly. The engine reports absolute paths instead,
+/// while `--root` is commonly relative, so those need both sides resolved against the filesystem
+/// before they can be compared at all. Resolution is best effort: a path that cannot be resolved is
+/// still rendered, because a readable absolute path beats an error for what is only a display
+/// concern.
 fn normalized_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
+    if let Ok(relative) = path.strip_prefix(root) {
+        return join_components(relative);
+    }
+    let resolved_root = fs::canonicalize(root);
+    let resolved_path = fs::canonicalize(path);
+    let root_anchor = resolved_root.as_deref().unwrap_or(root);
+    let path_anchor = resolved_path.as_deref().unwrap_or(path);
+    join_components(path_anchor.strip_prefix(root_anchor).unwrap_or(path_anchor))
+}
+
+/// Joins components with `/`, preserving a single leading slash when the path is still absolute.
+///
+/// `Component::RootDir` already renders as `/`, so joining it with a separator like any other
+/// component yields a doubled leading slash.
+fn join_components(path: &Path) -> String {
+    let joined = path
         .components()
+        .filter(|component| !matches!(component, Component::RootDir))
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
-        .join("/")
+        .join("/");
+    if path.has_root() {
+        format!("/{joined}")
+    } else {
+        joined
+    }
 }
 
 fn collect_kotlin_files(root: &Path) -> Result<Vec<PathBuf>, CommandError> {
@@ -654,6 +758,35 @@ fn not_implemented_label(command: &Command) -> &'static str {
 mod tests {
     use super::*;
     use ktsense_lsp::{CheckReport, DiagnoseReport, Diagnostic, Severity, SyntaxError};
+
+    #[test]
+    fn engine_absolute_paths_render_root_relative_and_never_double_the_leading_slash() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("root");
+        let nested = root.join("core/src/main/kotlin/A.kt");
+        fs::create_dir_all(nested.parent().expect("parent")).expect("create tree");
+        fs::write(&nested, "package a\n").expect("write file");
+        // A root carrying a `..` cannot be stripped textually, so this is what forces the
+        // filesystem-resolving fallback that an engine-supplied absolute path depends on.
+        let unresolved_root = root.join("..").join("root");
+
+        let observed = (
+            normalized_path(&unresolved_root, &nested),
+            normalized_path(&root, &nested),
+            normalized_path(&root, Path::new("/elsewhere/Outside.kt")),
+            normalized_path(&root, Path::new("already/relative.kt")),
+        );
+
+        assert_eq!(
+            observed,
+            (
+                "core/src/main/kotlin/A.kt".to_string(),
+                "core/src/main/kotlin/A.kt".to_string(),
+                "/elsewhere/Outside.kt".to_string(),
+                "already/relative.kt".to_string(),
+            )
+        );
+    }
 
     #[test]
     fn exit_codes_are_the_documented_contract() {

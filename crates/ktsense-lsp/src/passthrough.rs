@@ -158,7 +158,15 @@ impl<'a> EngineCommand<'a> {
         parse_diagnose(normalize(self.root, &file), &captured)
     }
 
-    async fn capture(&self, label: &str, args: &[&str]) -> Result<Captured, PassthroughError> {
+    /// Runs the engine with a fixed argv under the shared bound, closing stdin and draining both
+    /// pipes, and hands back the raw streams for a command-specific parser. Crate-visible so the
+    /// symbol resolver builds its `find` call on this same discipline rather than spawning a child
+    /// of its own.
+    pub(crate) async fn capture(
+        &self,
+        label: &str,
+        args: &[&str],
+    ) -> Result<Captured, PassthroughError> {
         let mut command = Command::new(self.binary);
         command
             .args(args)
@@ -199,10 +207,10 @@ pub async fn run_diagnose(root: &Path, file: &Path) -> Result<DiagnoseReport, Pa
     EngineCommand::new(&binary, root).diagnose(file).await
 }
 
-struct Captured {
-    code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+pub(crate) struct Captured {
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 impl From<std::process::Output> for Captured {
@@ -320,14 +328,14 @@ fn normalize(root: &Path, file: &str) -> String {
     }
 }
 
-fn code_label(code: Option<i32>) -> String {
+pub(crate) fn code_label(code: Option<i32>) -> String {
     match code {
         Some(code) => format!("exit {code}"),
         None => "terminated by signal".to_string(),
     }
 }
 
-fn stderr_snippet(stderr: &[u8]) -> String {
+pub(crate) fn stderr_snippet(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let trimmed = text.trim();
     if trimmed.is_empty() {

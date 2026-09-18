@@ -99,7 +99,7 @@ fn wants_version() -> bool {
 /// recognized, mirroring that the real argv is fixed rather than caller-supplied.
 fn command_mode_subcommand() -> Option<String> {
     match env::args().nth(1).as_deref() {
-        Some(subcommand @ ("check" | "diagnose")) => Some(subcommand.to_string()),
+        Some(subcommand @ ("check" | "diagnose" | "find")) => Some(subcommand.to_string()),
         _ => None,
     }
 }

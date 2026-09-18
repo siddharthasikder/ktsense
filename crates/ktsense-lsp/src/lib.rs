@@ -12,6 +12,7 @@ mod framing;
 mod passthrough;
 mod progress;
 mod requests;
+mod symbols;
 mod version;
 
 pub use client::{InitializeConfig, LspClient, LspError, Notification, Teardown};
@@ -22,6 +23,7 @@ pub use passthrough::{
 };
 pub use progress::IndexPhase;
 pub use requests::{DeclarationScope, FilePosition};
+pub use symbols::{resolve_symbol, run_symbols, Resolution, SymbolCandidate, SymbolResolver};
 pub use version::{
     check_version, check_version_within, classify, Compatibility, VersionCheck,
     PINNED_UPSTREAM_VERSION,

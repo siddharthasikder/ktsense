@@ -1,0 +1,12 @@
+---
+source: crates/ktsense-cli/src/symbols.rs
+expression: "format!(\"exit {code}\\n{text}\")"
+---
+exit 3
+## Symbols: save
+
+```text
+shop.order.OrderRepository.save  fun  core/src/main/kotlin/shop/order/OrderRepository.kt:4  fun save(order: Order): OrderId
+```
+
+... 2 more (use --limit)

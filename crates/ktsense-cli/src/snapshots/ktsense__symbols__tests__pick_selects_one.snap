@@ -1,0 +1,10 @@
+---
+source: crates/ktsense-cli/src/symbols.rs
+expression: "format!(\"exit {code}\\n{text}\")"
+---
+exit 0
+## Symbols: save
+
+```text
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8  override fun save(order: Order): OrderId
+```

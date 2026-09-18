@@ -1,0 +1,6 @@
+---
+source: crates/ktsense-cli/src/symbols.rs
+expression: "format!(\"exit {code}\\n{text}\")"
+---
+exit 1
+ktsense: no candidate has the fully-qualified name shop.nope.save
