@@ -1,0 +1,112 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/service/Validator.kt",
+  "package": "app.service",
+  "imports": [
+    "app.domain.Outcome",
+    "app.domain.User",
+    "app.domain.ValidationError"
+  ],
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "Validator",
+      "line": 11,
+      "type_parameters": "<T>",
+      "type_constraints": "T : Any",
+      "doc": "Deliberately awkward signatures.",
+      "children": [
+        {
+          "kind": "function",
+          "name": "validate",
+          "line": 13,
+          "parameters": [
+            {
+              "name": "candidate",
+              "type_name": "T"
+            },
+            {
+              "name": "rules",
+              "type_name": "List<(T) -> ValidationError?>"
+            }
+          ],
+          "return_type": "List<ValidationError>"
+        },
+        {
+          "kind": "function",
+          "name": "combine",
+          "line": 16,
+          "parameters": [
+            {
+              "name": "first",
+              "type_name": "(T) -> ValidationError?"
+            },
+            {
+              "name": "second",
+              "type_name": "(T) -> ValidationError?"
+            }
+          ],
+          "return_type": "(T) -> ValidationError?"
+        },
+        {
+          "kind": "function",
+          "name": "validateAllReturningVeryLongTypeName",
+          "line": 21,
+          "parameters": [
+            {
+              "name": "candidates",
+              "type_name": "Collection<T>"
+            },
+            {
+              "name": "stopOnFirstFailure",
+              "type_name": "Boolean",
+              "default": "false"
+            }
+          ],
+          "return_type": "Map<T, List<ValidationError>>"
+        },
+        {
+          "kind": "function",
+          "name": "sortedBy",
+          "line": 26,
+          "type_parameters": "<R : Comparable<R>>",
+          "parameters": [
+            {
+              "name": "candidates",
+              "type_name": "List<T>"
+            },
+            {
+              "name": "selector",
+              "type_name": "(T) -> R?"
+            }
+          ],
+          "return_type": "List<T>"
+        }
+      ]
+    },
+    {
+      "kind": "function",
+      "name": "userValidator",
+      "line": 30,
+      "return_type": "Validator<User>"
+    },
+    {
+      "kind": "function",
+      "name": "requireSuccess",
+      "line": 32,
+      "parameters": [
+        {
+          "name": "outcome",
+          "type_name": "Outcome<User>"
+        }
+      ],
+      "return_type": "User"
+    }
+  ]
+}

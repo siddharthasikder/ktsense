@@ -1,0 +1,25 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/service/UserService.kt
+
+package app.service
+
+```kotlin
+open class UserService(private val repo: UserRepository, private val clock: Clock) : Service {
+    override val name: String
+    val cachedCount: Int
+    fun createUser(email: String, displayName: String? = null): Outcome<User>
+    suspend fun findAll(page: Int = 0): List<User>
+    suspend fun promote(id: UserId, role: Role): Outcome<User>
+    protected open fun onEviction(user: User)
+    companion object {
+        const val MAX_PAGE_SIZE: Int
+        fun describe(): String
+    }
+}
+```

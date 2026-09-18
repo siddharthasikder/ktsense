@@ -1,0 +1,114 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/util/Clock.kt",
+  "package": "app.util",
+  "declarations": [
+    {
+      "kind": "interface",
+      "name": "Clock",
+      "line": 4,
+      "modifiers": [
+        "fun"
+      ],
+      "doc": "SAM conversion target, so the parser must record `fun interface`.",
+      "children": [
+        {
+          "kind": "function",
+          "name": "nowEpochMillis",
+          "line": 5,
+          "return_type": "Long"
+        }
+      ]
+    },
+    {
+      "kind": "object",
+      "name": "SystemClock",
+      "line": 8,
+      "supertypes": [
+        "Clock"
+      ],
+      "children": [
+        {
+          "kind": "function",
+          "name": "nowEpochMillis",
+          "line": 9,
+          "modifiers": [
+            "override"
+          ],
+          "return_type": "Long"
+        }
+      ]
+    },
+    {
+      "kind": "class",
+      "name": "FixedClock",
+      "line": 12,
+      "parameters": [
+        {
+          "name": "fixed",
+          "type_name": "Long",
+          "property": {
+            "visibility": "private",
+            "mutable": false
+          }
+        }
+      ],
+      "supertypes": [
+        "Clock"
+      ],
+      "children": [
+        {
+          "kind": "function",
+          "name": "nowEpochMillis",
+          "line": 13,
+          "modifiers": [
+            "override"
+          ],
+          "return_type": "Long"
+        }
+      ]
+    },
+    {
+      "kind": "function",
+      "name": "slugify",
+      "line": 16,
+      "parameters": [
+        {
+          "name": "input",
+          "type_name": "String"
+        }
+      ],
+      "return_type": "String"
+    },
+    {
+      "kind": "function",
+      "name": "truncate",
+      "line": 19,
+      "parameters": [
+        {
+          "name": "input",
+          "type_name": "String"
+        },
+        {
+          "name": "limit",
+          "type_name": "Int",
+          "default": "40"
+        }
+      ],
+      "return_type": "String"
+    },
+    {
+      "kind": "val",
+      "name": "NON_SLUG",
+      "line": 22,
+      "visibility": "private",
+      "type_inferred": true
+    }
+  ]
+}

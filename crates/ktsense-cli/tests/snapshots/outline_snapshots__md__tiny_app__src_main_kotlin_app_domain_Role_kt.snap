@@ -1,0 +1,18 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/domain/Role.kt
+
+package app.domain
+
+```kotlin
+enum class Role(val weight: Int) {
+    VIEWER, EDITOR, ADMIN;
+    abstract fun canMutate(): Boolean
+    companion object { fun heaviest(roles: Collection<Role>): Role }
+}
+```

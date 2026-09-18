@@ -1,0 +1,79 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/domain/Role.kt",
+  "package": "app.domain",
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "Role",
+      "line": 4,
+      "modifiers": [
+        "enum"
+      ],
+      "parameters": [
+        {
+          "name": "weight",
+          "type_name": "Int",
+          "property": {
+            "mutable": false
+          }
+        }
+      ],
+      "doc": "Access levels, ordered from least to most privileged.",
+      "children": [
+        {
+          "kind": "enum_entry",
+          "name": "VIEWER",
+          "line": 5
+        },
+        {
+          "kind": "enum_entry",
+          "name": "EDITOR",
+          "line": 8
+        },
+        {
+          "kind": "enum_entry",
+          "name": "ADMIN",
+          "line": 11
+        },
+        {
+          "kind": "function",
+          "name": "canMutate",
+          "line": 15,
+          "modifiers": [
+            "abstract"
+          ],
+          "return_type": "Boolean"
+        },
+        {
+          "kind": "object",
+          "name": "",
+          "line": 17,
+          "modifiers": [
+            "companion"
+          ],
+          "children": [
+            {
+              "kind": "function",
+              "name": "heaviest",
+              "line": 18,
+              "parameters": [
+                {
+                  "name": "roles",
+                  "type_name": "Collection<Role>"
+                }
+              ],
+              "return_type": "Role"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

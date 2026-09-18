@@ -1,0 +1,21 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/service/Validator.kt
+
+package app.service
+
+```kotlin
+class Validator<T> where T : Any {
+    fun validate(candidate: T, rules: List<(T) -> ValidationError?>): List<ValidationError>
+    fun combine(first: (T) -> ValidationError?, second: (T) -> ValidationError?): (T) -> ValidationError?
+    fun validateAllReturningVeryLongTypeName(candidates: Collection<T>, stopOnFirstFailure: Boolean = false): Map<T, List<ValidationError>>
+    fun <R : Comparable<R>> sortedBy(candidates: List<T>, selector: (T) -> R?): List<T>
+}
+fun userValidator(): Validator<User>
+fun requireSuccess(outcome: Outcome<User>): User
+```

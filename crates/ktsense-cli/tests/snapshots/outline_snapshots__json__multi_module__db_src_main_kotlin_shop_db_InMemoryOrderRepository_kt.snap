@@ -1,0 +1,74 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+  "package": "shop.db",
+  "imports": [
+    "java.util.concurrent.ConcurrentHashMap",
+    "java.util.concurrent.atomic.AtomicLong",
+    "shop.order.Order",
+    "shop.order.OrderId",
+    "shop.order.OrderRepository"
+  ],
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "InMemoryOrderRepository",
+      "line": 9,
+      "supertypes": [
+        "OrderRepository"
+      ],
+      "children": [
+        {
+          "kind": "val",
+          "name": "store",
+          "line": 10,
+          "visibility": "private",
+          "type_inferred": true
+        },
+        {
+          "kind": "val",
+          "name": "sequence",
+          "line": 11,
+          "visibility": "private",
+          "type_inferred": true
+        },
+        {
+          "kind": "function",
+          "name": "save",
+          "line": 13,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "order",
+              "type_name": "Order"
+            }
+          ],
+          "return_type": "OrderId"
+        },
+        {
+          "kind": "function",
+          "name": "findById",
+          "line": 19,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "id",
+              "type_name": "OrderId"
+            }
+          ],
+          "return_type": "Order?"
+        }
+      ]
+    }
+  ]
+}

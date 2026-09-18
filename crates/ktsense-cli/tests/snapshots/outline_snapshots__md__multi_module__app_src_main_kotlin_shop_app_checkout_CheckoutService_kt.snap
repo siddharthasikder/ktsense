@@ -1,0 +1,16 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
+
+package shop.app.checkout
+
+```kotlin
+class CheckoutService(private val repository: OrderRepository, private val auditTrail: AuditTrail) {
+    fun placeOrder(order: Order): OrderId
+}
+```

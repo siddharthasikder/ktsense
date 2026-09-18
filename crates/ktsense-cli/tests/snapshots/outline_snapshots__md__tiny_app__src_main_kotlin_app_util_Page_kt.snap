@@ -1,0 +1,23 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/util/Page.kt
+
+package app.util
+
+```kotlin
+class Page<T>(val items: List<T>, val index: Int) {
+    operator fun get(position: Int): T
+    operator fun plus(other: Page<T>): Page<T>
+    operator fun contains(item: T): Boolean
+    infix fun mergedWith(other: Page<T>): Page<T>
+    operator fun iterator(): Iterator<T>
+}
+val User.initials: String
+fun User.hasAnyEmailDomain(vararg domains: String, ignoreCase: Boolean = true): Boolean
+fun <T> pageOf(vararg items: T): Page<T>
+```

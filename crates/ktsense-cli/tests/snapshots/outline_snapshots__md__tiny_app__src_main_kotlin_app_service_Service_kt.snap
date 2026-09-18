@@ -1,0 +1,24 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/service/Service.kt
+
+package app.service
+
+```kotlin
+interface Service {
+    val name: String
+    fun start()
+    fun stop()
+}
+abstract class AbstractCachingService<K, V : Any>(protected val capacity: Int) : Service {
+    abstract fun load(key: K): V?
+    abstract val hitRatio: Double
+    fun get(key: K): V?
+    final override fun stop()
+}
+```

@@ -1,0 +1,16 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/util/Retry.kt
+
+package app.util
+
+```kotlin
+suspend fun <T> retrying(attempts: Int = 3, onFailure: (Throwable, Int) -> Unit = { _, _ -> }, block: suspend () -> T): Outcome<T>
+suspend fun <T, R> Iterable<T>.mapSequentially(transform: suspend (T) -> R): List<R>
+fun buildLabel(prefix: String, build: StringBuilder.() -> Unit): String
+```

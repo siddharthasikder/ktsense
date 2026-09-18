@@ -1,0 +1,54 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt",
+  "package": "shop.app.reporting",
+  "imports": [
+    "java.time.Instant",
+    "shop.app.checkout.CheckoutConfig",
+    "shop.order.Order",
+    "shop.order.OrderRepository"
+  ],
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "ReportBackfill",
+      "line": 8,
+      "parameters": [
+        {
+          "name": "repository",
+          "type_name": "OrderRepository",
+          "property": {
+            "visibility": "private",
+            "mutable": false
+          }
+        }
+      ],
+      "children": [
+        {
+          "kind": "function",
+          "name": "rebuild",
+          "line": 9,
+          "parameters": [
+            {
+              "name": "orders",
+              "type_name": "List<Order>"
+            }
+          ],
+          "return_type": "Int"
+        },
+        {
+          "kind": "function",
+          "name": "stamp",
+          "line": 19,
+          "return_type": "Instant"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt
+
+package shop.app.reporting
+
+```kotlin
+class ReportBackfill(private val repository: OrderRepository) {
+    fun rebuild(orders: List<Order>): Int
+    fun stamp(): Instant
+}
+```

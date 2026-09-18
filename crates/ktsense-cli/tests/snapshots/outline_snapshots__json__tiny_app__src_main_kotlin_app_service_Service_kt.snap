@@ -1,0 +1,113 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/service/Service.kt",
+  "package": "app.service",
+  "declarations": [
+    {
+      "kind": "interface",
+      "name": "Service",
+      "line": 4,
+      "doc": "Marker for anything with a lifecycle the container manages.",
+      "children": [
+        {
+          "kind": "val",
+          "name": "name",
+          "line": 5,
+          "return_type": "String"
+        },
+        {
+          "kind": "function",
+          "name": "start",
+          "line": 7
+        },
+        {
+          "kind": "function",
+          "name": "stop",
+          "line": 9
+        }
+      ]
+    },
+    {
+      "kind": "class",
+      "name": "AbstractCachingService",
+      "line": 12,
+      "modifiers": [
+        "abstract"
+      ],
+      "type_parameters": "<K, V : Any>",
+      "parameters": [
+        {
+          "name": "capacity",
+          "type_name": "Int",
+          "property": {
+            "visibility": "protected",
+            "mutable": false
+          }
+        }
+      ],
+      "supertypes": [
+        "Service"
+      ],
+      "children": [
+        {
+          "kind": "val",
+          "name": "entries",
+          "line": 16,
+          "visibility": "private",
+          "return_type": "LinkedHashMap<K, V>"
+        },
+        {
+          "kind": "function",
+          "name": "load",
+          "line": 18,
+          "modifiers": [
+            "abstract"
+          ],
+          "parameters": [
+            {
+              "name": "key",
+              "type_name": "K"
+            }
+          ],
+          "return_type": "V?"
+        },
+        {
+          "kind": "val",
+          "name": "hitRatio",
+          "line": 20,
+          "modifiers": [
+            "abstract"
+          ],
+          "return_type": "Double"
+        },
+        {
+          "kind": "function",
+          "name": "get",
+          "line": 22,
+          "parameters": [
+            {
+              "name": "key",
+              "type_name": "K"
+            }
+          ],
+          "return_type": "V?"
+        },
+        {
+          "kind": "function",
+          "name": "stop",
+          "line": 24,
+          "modifiers": [
+            "final",
+            "override"
+          ]
+        }
+      ]
+    }
+  ]
+}

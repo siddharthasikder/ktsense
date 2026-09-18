@@ -1,0 +1,150 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/util/Page.kt",
+  "package": "app.util",
+  "imports": [
+    "app.domain.User"
+  ],
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "Page",
+      "line": 6,
+      "type_parameters": "<T>",
+      "parameters": [
+        {
+          "name": "items",
+          "type_name": "List<T>",
+          "property": {
+            "mutable": false
+          }
+        },
+        {
+          "name": "index",
+          "type_name": "Int",
+          "property": {
+            "mutable": false
+          }
+        }
+      ],
+      "doc": "Wraps a page of results.",
+      "children": [
+        {
+          "kind": "function",
+          "name": "get",
+          "line": 8,
+          "modifiers": [
+            "operator"
+          ],
+          "parameters": [
+            {
+              "name": "position",
+              "type_name": "Int"
+            }
+          ],
+          "return_type": "T"
+        },
+        {
+          "kind": "function",
+          "name": "plus",
+          "line": 10,
+          "modifiers": [
+            "operator"
+          ],
+          "parameters": [
+            {
+              "name": "other",
+              "type_name": "Page<T>"
+            }
+          ],
+          "return_type": "Page<T>"
+        },
+        {
+          "kind": "function",
+          "name": "contains",
+          "line": 12,
+          "modifiers": [
+            "operator"
+          ],
+          "parameters": [
+            {
+              "name": "item",
+              "type_name": "T"
+            }
+          ],
+          "return_type": "Boolean"
+        },
+        {
+          "kind": "function",
+          "name": "mergedWith",
+          "line": 14,
+          "modifiers": [
+            "infix"
+          ],
+          "parameters": [
+            {
+              "name": "other",
+              "type_name": "Page<T>"
+            }
+          ],
+          "return_type": "Page<T>"
+        },
+        {
+          "kind": "function",
+          "name": "iterator",
+          "line": 16,
+          "modifiers": [
+            "operator"
+          ],
+          "return_type": "Iterator<T>"
+        }
+      ]
+    },
+    {
+      "kind": "val",
+      "name": "User.initials",
+      "line": 20,
+      "return_type": "String",
+      "doc": "Extension property on a foreign type."
+    },
+    {
+      "kind": "function",
+      "name": "User.hasAnyEmailDomain",
+      "line": 24,
+      "parameters": [
+        {
+          "name": "domains",
+          "type_name": "String",
+          "vararg": true
+        },
+        {
+          "name": "ignoreCase",
+          "type_name": "Boolean",
+          "default": "true"
+        }
+      ],
+      "return_type": "Boolean",
+      "doc": "Extension function with a vararg and a default."
+    },
+    {
+      "kind": "function",
+      "name": "pageOf",
+      "line": 27,
+      "type_parameters": "<T>",
+      "parameters": [
+        {
+          "name": "items",
+          "type_name": "T",
+          "vararg": true
+        }
+      ],
+      "return_type": "Page<T>"
+    }
+  ]
+}

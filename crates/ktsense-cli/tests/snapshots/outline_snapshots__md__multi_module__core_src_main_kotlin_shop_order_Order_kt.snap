@@ -1,0 +1,15 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## core/src/main/kotlin/shop/order/Order.kt
+
+package shop.order
+
+```kotlin
+data class OrderId(val value: Long)
+data class Order(val id: OrderId, val customerEmail: String, val totalCents: Long)
+```

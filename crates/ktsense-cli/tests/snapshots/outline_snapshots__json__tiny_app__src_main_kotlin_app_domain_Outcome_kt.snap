@@ -1,0 +1,179 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/domain/Outcome.kt",
+  "package": "app.domain",
+  "declarations": [
+    {
+      "kind": "interface",
+      "name": "Outcome",
+      "line": 8,
+      "modifiers": [
+        "sealed"
+      ],
+      "type_parameters": "<out T>",
+      "doc": "Outcome of a domain operation.",
+      "children": [
+        {
+          "kind": "class",
+          "name": "Success",
+          "line": 9,
+          "modifiers": [
+            "data"
+          ],
+          "type_parameters": "<out T>",
+          "parameters": [
+            {
+              "name": "value",
+              "type_name": "T",
+              "property": {
+                "mutable": false
+              }
+            }
+          ],
+          "supertypes": [
+            "Outcome<T>"
+          ]
+        },
+        {
+          "kind": "class",
+          "name": "Failure",
+          "line": 11,
+          "modifiers": [
+            "data"
+          ],
+          "parameters": [
+            {
+              "name": "reason",
+              "type_name": "String",
+              "property": {
+                "mutable": false
+              }
+            },
+            {
+              "name": "cause",
+              "type_name": "Throwable?",
+              "default": "null",
+              "property": {
+                "mutable": false
+              }
+            }
+          ],
+          "supertypes": [
+            "Outcome<Nothing>"
+          ]
+        },
+        {
+          "kind": "object",
+          "name": "Pending",
+          "line": 13,
+          "supertypes": [
+            "Outcome<Nothing>"
+          ]
+        },
+        {
+          "kind": "val",
+          "name": "isTerminal",
+          "line": 15,
+          "return_type": "Boolean"
+        }
+      ]
+    },
+    {
+      "kind": "class",
+      "name": "ValidationError",
+      "line": 19,
+      "modifiers": [
+        "sealed"
+      ],
+      "parameters": [
+        {
+          "name": "field",
+          "type_name": "String",
+          "property": {
+            "mutable": false
+          }
+        }
+      ],
+      "children": [
+        {
+          "kind": "class",
+          "name": "Blank",
+          "line": 20,
+          "parameters": [
+            {
+              "name": "field",
+              "type_name": "String"
+            }
+          ],
+          "supertypes": [
+            "ValidationError(field)"
+          ]
+        },
+        {
+          "kind": "class",
+          "name": "TooLong",
+          "line": 21,
+          "parameters": [
+            {
+              "name": "field",
+              "type_name": "String"
+            },
+            {
+              "name": "limit",
+              "type_name": "Int",
+              "property": {
+                "mutable": false
+              }
+            }
+          ],
+          "supertypes": [
+            "ValidationError(field)"
+          ]
+        },
+        {
+          "kind": "class",
+          "name": "Malformed",
+          "line": 22,
+          "parameters": [
+            {
+              "name": "field",
+              "type_name": "String"
+            },
+            {
+              "name": "pattern",
+              "type_name": "String",
+              "property": {
+                "mutable": false
+              }
+            }
+          ],
+          "supertypes": [
+            "ValidationError(field)"
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "function",
+      "name": "Outcome<T>.map",
+      "line": 25,
+      "modifiers": [
+        "inline"
+      ],
+      "type_parameters": "<T, R>",
+      "parameters": [
+        {
+          "name": "transform",
+          "type_name": "(T) -> R"
+        }
+      ],
+      "return_type": "Outcome<R>"
+    }
+  ]
+}

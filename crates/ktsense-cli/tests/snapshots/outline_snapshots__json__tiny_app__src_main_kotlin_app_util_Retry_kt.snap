@@ -1,0 +1,75 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/util/Retry.kt",
+  "package": "app.util",
+  "imports": [
+    "app.domain.Outcome"
+  ],
+  "declarations": [
+    {
+      "kind": "function",
+      "name": "retrying",
+      "line": 6,
+      "modifiers": [
+        "suspend"
+      ],
+      "type_parameters": "<T>",
+      "parameters": [
+        {
+          "name": "attempts",
+          "type_name": "Int",
+          "default": "3"
+        },
+        {
+          "name": "onFailure",
+          "type_name": "(Throwable, Int) -> Unit",
+          "default": "{ _, _ -> }"
+        },
+        {
+          "name": "block",
+          "type_name": "suspend () -> T"
+        }
+      ],
+      "return_type": "Outcome<T>",
+      "doc": "Retry helper: suspend function taking a suspend lambda, so the parser sees both."
+    },
+    {
+      "kind": "function",
+      "name": "Iterable<T>.mapSequentially",
+      "line": 23,
+      "modifiers": [
+        "suspend"
+      ],
+      "type_parameters": "<T, R>",
+      "parameters": [
+        {
+          "name": "transform",
+          "type_name": "suspend (T) -> R"
+        }
+      ],
+      "return_type": "List<R>"
+    },
+    {
+      "kind": "function",
+      "name": "buildLabel",
+      "line": 31,
+      "parameters": [
+        {
+          "name": "prefix",
+          "type_name": "String"
+        },
+        {
+          "name": "build",
+          "type_name": "StringBuilder.() -> Unit"
+        }
+      ],
+      "return_type": "String"
+    }
+  ]
+}

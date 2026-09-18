@@ -1,0 +1,56 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/domain/annotations.kt",
+  "package": "app.domain",
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "Audited",
+      "line": 5,
+      "modifiers": [
+        "annotation"
+      ],
+      "parameters": [
+        {
+          "name": "category",
+          "type_name": "String",
+          "default": "\"default\"",
+          "property": {
+            "mutable": false
+          }
+        }
+      ]
+    },
+    {
+      "kind": "class",
+      "name": "Sanitized",
+      "line": 8,
+      "modifiers": [
+        "annotation"
+      ]
+    },
+    {
+      "kind": "class",
+      "name": "RetryOn",
+      "line": 12,
+      "modifiers": [
+        "annotation"
+      ],
+      "parameters": [
+        {
+          "name": "exception",
+          "type_name": "String",
+          "property": {
+            "mutable": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,280 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/service/InMemoryUserRepository.kt",
+  "package": "app.service",
+  "imports": [
+    "app.domain.Outcome",
+    "app.domain.User",
+    "app.domain.UserPredicate",
+    "app.domain.UserRepository"
+  ],
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "InMemoryUserRepository",
+      "line": 13,
+      "parameters": [
+        {
+          "name": "backing",
+          "type_name": "MutableMap<Long, User>",
+          "property": {
+            "visibility": "private",
+            "mutable": false
+          }
+        }
+      ],
+      "constructor_visibility": "private",
+      "supertypes": [
+        "UserRepository",
+        "ReadOnlyView by MapView(backing)"
+      ],
+      "doc": "In-memory store used by tests and by the fixture's own main().",
+      "children": [
+        {
+          "kind": "constructor",
+          "name": "constructor",
+          "line": 17
+        },
+        {
+          "kind": "constructor",
+          "name": "constructor",
+          "line": 19,
+          "parameters": [
+            {
+              "name": "seed",
+              "type_name": "Collection<User>"
+            }
+          ]
+        },
+        {
+          "kind": "val",
+          "name": "size",
+          "line": 25,
+          "modifiers": [
+            "override"
+          ],
+          "return_type": "Int"
+        },
+        {
+          "kind": "function",
+          "name": "findById",
+          "line": 27,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "id",
+              "type_name": "Long"
+            }
+          ],
+          "return_type": "User?"
+        },
+        {
+          "kind": "function",
+          "name": "findAll",
+          "line": 29,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "page",
+              "type_name": "Int"
+            },
+            {
+              "name": "pageSize",
+              "type_name": "Int"
+            }
+          ],
+          "return_type": "List<User>"
+        },
+        {
+          "kind": "function",
+          "name": "findByEmail",
+          "line": 32,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "email",
+              "type_name": "String"
+            }
+          ],
+          "return_type": "User?"
+        },
+        {
+          "kind": "function",
+          "name": "findMatching",
+          "line": 34,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "predicate",
+              "type_name": "UserPredicate"
+            }
+          ],
+          "return_type": "List<User>"
+        },
+        {
+          "kind": "function",
+          "name": "save",
+          "line": 36,
+          "modifiers": [
+            "override",
+            "suspend"
+          ],
+          "parameters": [
+            {
+              "name": "entity",
+              "type_name": "User"
+            }
+          ],
+          "return_type": "Outcome<User>"
+        },
+        {
+          "kind": "function",
+          "name": "deleteById",
+          "line": 41,
+          "modifiers": [
+            "override",
+            "suspend"
+          ],
+          "parameters": [
+            {
+              "name": "id",
+              "type_name": "Long"
+            }
+          ],
+          "return_type": "Boolean"
+        },
+        {
+          "kind": "function",
+          "name": "saveAll",
+          "line": 43,
+          "modifiers": [
+            "override"
+          ],
+          "parameters": [
+            {
+              "name": "entities",
+              "type_name": "Collection<User>"
+            }
+          ],
+          "return_type": "Int"
+        },
+        {
+          "kind": "class",
+          "name": "Stats",
+          "line": 49,
+          "parameters": [
+            {
+              "name": "reads",
+              "type_name": "Long",
+              "property": {
+                "mutable": false
+              }
+            },
+            {
+              "name": "writes",
+              "type_name": "Long",
+              "property": {
+                "mutable": false
+              }
+            }
+          ],
+          "doc": "Nested: no reference to the outer instance."
+        },
+        {
+          "kind": "class",
+          "name": "Snapshot",
+          "line": 52,
+          "modifiers": [
+            "inner"
+          ],
+          "doc": "Inner: holds a reference to the outer instance, so `inner` matters to the parser.",
+          "children": [
+            {
+              "kind": "val",
+              "name": "takenFrom",
+              "line": 53,
+              "return_type": "Int"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "name": "",
+          "line": 56,
+          "visibility": "private",
+          "modifiers": [
+            "companion"
+          ],
+          "children": [
+            {
+              "kind": "val",
+              "name": "HARD_LIMIT",
+              "line": 57,
+              "modifiers": [
+                "const"
+              ],
+              "return_type": "Int"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "interface",
+      "name": "ReadOnlyView",
+      "line": 61,
+      "children": [
+        {
+          "kind": "function",
+          "name": "keys",
+          "line": 62,
+          "return_type": "Set<Long>"
+        }
+      ]
+    },
+    {
+      "kind": "class",
+      "name": "MapView",
+      "line": 65,
+      "visibility": "private",
+      "parameters": [
+        {
+          "name": "backing",
+          "type_name": "Map<Long, User>",
+          "property": {
+            "visibility": "private",
+            "mutable": false
+          }
+        }
+      ],
+      "supertypes": [
+        "ReadOnlyView"
+      ],
+      "children": [
+        {
+          "kind": "function",
+          "name": "keys",
+          "line": 66,
+          "modifiers": [
+            "override"
+          ],
+          "return_type": "Set<Long>"
+        }
+      ]
+    }
+  ]
+}

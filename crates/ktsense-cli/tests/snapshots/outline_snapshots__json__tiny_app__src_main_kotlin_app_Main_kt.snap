@@ -1,0 +1,42 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/Main.kt",
+  "package": "app",
+  "imports": [
+    "app.domain.Role",
+    "app.domain.User",
+    "app.domain.UserId",
+    "app.service.InMemoryUserRepository",
+    "app.service.ServiceRegistry",
+    "app.service.UserService",
+    "app.util.SystemClock",
+    "app.util.initials",
+    "kotlinx.coroutines.runBlocking"
+  ],
+  "declarations": [
+    {
+      "kind": "function",
+      "name": "main",
+      "line": 13,
+      "parameters": [
+        {
+          "name": "args",
+          "type_name": "Array<String>"
+        }
+      ]
+    },
+    {
+      "kind": "function",
+      "name": "sampleUsers",
+      "line": 29,
+      "visibility": "private",
+      "return_type": "List<User>"
+    }
+  ]
+}

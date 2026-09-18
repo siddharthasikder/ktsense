@@ -1,0 +1,92 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/domain/User.kt",
+  "package": "app.domain",
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "User",
+      "line": 4,
+      "modifiers": [
+        "data"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "type_name": "UserId",
+          "property": {
+            "mutable": false
+          }
+        },
+        {
+          "name": "email",
+          "type_name": "String",
+          "property": {
+            "mutable": false
+          }
+        },
+        {
+          "name": "displayName",
+          "type_name": "String?",
+          "default": "null",
+          "property": {
+            "mutable": false
+          }
+        },
+        {
+          "name": "roles",
+          "type_name": "Set<Role>",
+          "default": "emptySet()",
+          "property": {
+            "mutable": false
+          }
+        }
+      ],
+      "doc": "A user of the system."
+    },
+    {
+      "kind": "class",
+      "name": "UserId",
+      "line": 12,
+      "modifiers": [
+        "value"
+      ],
+      "parameters": [
+        {
+          "name": "raw",
+          "type_name": "Long",
+          "property": {
+            "mutable": false
+          }
+        }
+      ]
+    },
+    {
+      "kind": "type_alias",
+      "name": "UserPredicate",
+      "line": 14,
+      "return_type": "(User) -> Boolean"
+    },
+    {
+      "kind": "val",
+      "name": "ANONYMOUS_DISPLAY_NAME",
+      "line": 16,
+      "modifiers": [
+        "const"
+      ],
+      "return_type": "String"
+    },
+    {
+      "kind": "val",
+      "name": "defaultPredicate",
+      "line": 18,
+      "return_type": "UserPredicate"
+    }
+  ]
+}

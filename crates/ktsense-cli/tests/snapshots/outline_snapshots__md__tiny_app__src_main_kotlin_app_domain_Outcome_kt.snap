@@ -1,0 +1,25 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## src/main/kotlin/app/domain/Outcome.kt
+
+package app.domain
+
+```kotlin
+sealed interface Outcome<out T> {
+    data class Success<out T>(val value: T) : Outcome<T>
+    data class Failure(val reason: String, val cause: Throwable? = null) : Outcome<Nothing>
+    object Pending : Outcome<Nothing>
+    val isTerminal: Boolean
+}
+sealed class ValidationError(val field: String) {
+    class Blank(field: String) : ValidationError(field)
+    class TooLong(field: String, val limit: Int) : ValidationError(field)
+    class Malformed(field: String, val pattern: String) : ValidationError(field)
+}
+inline fun <T, R> Outcome<T>.map(transform: (T) -> R): Outcome<R>
+```

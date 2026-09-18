@@ -1,0 +1,153 @@
+---
+source: crates/ktsense-cli/tests/outline_snapshots.rs
+expression: "outline(fixture.root, relative_path, format)"
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "src/main/kotlin/app/domain/Repository.kt",
+  "package": "app.domain",
+  "declarations": [
+    {
+      "kind": "interface",
+      "name": "Repository",
+      "line": 4,
+      "type_parameters": "<out T>",
+      "doc": "Read side of a store.",
+      "children": [
+        {
+          "kind": "val",
+          "name": "size",
+          "line": 5,
+          "return_type": "Int"
+        },
+        {
+          "kind": "function",
+          "name": "findById",
+          "line": 7,
+          "parameters": [
+            {
+              "name": "id",
+              "type_name": "Long"
+            }
+          ],
+          "return_type": "T?"
+        },
+        {
+          "kind": "function",
+          "name": "findAll",
+          "line": 9,
+          "parameters": [
+            {
+              "name": "page",
+              "type_name": "Int",
+              "default": "0"
+            },
+            {
+              "name": "pageSize",
+              "type_name": "Int",
+              "default": "20"
+            }
+          ],
+          "return_type": "List<T>"
+        },
+        {
+          "kind": "function",
+          "name": "isEmpty",
+          "line": 12,
+          "return_type": "Boolean",
+          "doc": "Default implementation so most stores need not repeat it."
+        }
+      ]
+    },
+    {
+      "kind": "interface",
+      "name": "MutableRepository",
+      "line": 16,
+      "type_parameters": "<T>",
+      "supertypes": [
+        "Repository<T>"
+      ],
+      "doc": "Write side, kept separate so read-only callers cannot mutate.",
+      "children": [
+        {
+          "kind": "function",
+          "name": "save",
+          "line": 17,
+          "modifiers": [
+            "suspend"
+          ],
+          "parameters": [
+            {
+              "name": "entity",
+              "type_name": "T"
+            }
+          ],
+          "return_type": "Outcome<T>"
+        },
+        {
+          "kind": "function",
+          "name": "deleteById",
+          "line": 19,
+          "modifiers": [
+            "suspend"
+          ],
+          "parameters": [
+            {
+              "name": "id",
+              "type_name": "Long"
+            }
+          ],
+          "return_type": "Boolean"
+        },
+        {
+          "kind": "function",
+          "name": "saveAll",
+          "line": 21,
+          "parameters": [
+            {
+              "name": "entities",
+              "type_name": "Collection<T>"
+            }
+          ],
+          "return_type": "Int"
+        }
+      ]
+    },
+    {
+      "kind": "interface",
+      "name": "UserRepository",
+      "line": 24,
+      "supertypes": [
+        "MutableRepository<User>"
+      ],
+      "children": [
+        {
+          "kind": "function",
+          "name": "findByEmail",
+          "line": 25,
+          "parameters": [
+            {
+              "name": "email",
+              "type_name": "String"
+            }
+          ],
+          "return_type": "User?"
+        },
+        {
+          "kind": "function",
+          "name": "findMatching",
+          "line": 27,
+          "parameters": [
+            {
+              "name": "predicate",
+              "type_name": "UserPredicate"
+            }
+          ],
+          "return_type": "List<User>"
+        }
+      ]
+    }
+  ]
+}
