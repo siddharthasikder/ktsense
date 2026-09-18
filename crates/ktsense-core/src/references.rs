@@ -15,9 +15,12 @@
 //! 2. Each reference is tagged with its enclosing declaration: the innermost declaration in the
 //!    file skeleton whose span contains the line. A declaration records only a start line, so the
 //!    span end is recovered from the next sibling's start (the last sibling inherits its parent's
-//!    bound, the last top-level declaration extends to end of file). This is exact for every
-//!    reference site, which is always a symbol occurrence inside a declaration; only bare
-//!    closing-brace or blank lines, which references never occupy, would be mislabelled.
+//!    bound, the last top-level declaration extends to end of file). This assumes siblings are
+//!    stored in ascending source-line order, which the `ktsense-syntax` extractor guarantees by
+//!    walking the tree in source order; a violation is caught by a debug assertion rather than
+//!    silently mislabelling an enclosure. This is exact for every reference site, which is always a
+//!    symbol occurrence inside a declaration; only bare closing-brace or blank lines, which
+//!    references never occupy, would be mislabelled.
 //! 3. References in the file header - below the first declaration, where Kotlin requires imports to
 //!    sit - are noise for a caller question and are dropped by default.
 //! 4. Each group is capped at `limit`; the omitted count travels as data so the renderer can print
@@ -122,6 +125,11 @@ pub struct ReferenceGroup {
 
 /// Groups reference sites by file, attaches each one's enclosing declaration, drops header
 /// references unless asked to keep them, and caps each group.
+///
+/// Precondition: within every skeleton, a declaration's `children` are stored in ascending
+/// source-line order (as the `ktsense-syntax` extractor produces them). Enclosure spans are
+/// derived from that order; a violation is caught by a debug assertion rather than silently
+/// attributing a reference to the wrong declaration.
 pub fn group_references(
     locations: &[Location],
     skeletons: &[FileSkeleton],
@@ -219,10 +227,16 @@ fn enclosing_chain(
 /// The last line a declaration spans, recovered without a stored span: the next sibling's start
 /// minus one, or the parent's bound for the last sibling, or unbounded at the end of the file.
 fn span_end(siblings: &[Declaration], index: usize, parent_end: Option<u32>) -> Option<u32> {
-    siblings
-        .get(index + 1)
-        .map(|next| next.line.saturating_sub(1))
-        .or(parent_end)
+    match siblings.get(index + 1) {
+        Some(next) => {
+            debug_assert!(
+                next.line >= siblings[index].line,
+                "sibling declarations must be stored in ascending source-line order"
+            );
+            Some(next.line.saturating_sub(1))
+        }
+        None => parent_end,
+    }
 }
 
 #[cfg(test)]
@@ -369,6 +383,70 @@ mod tests {
                 summarize(GroupingOptions::default()),
             ),
             ((vec![6, 7, 8], 2), (vec![6, 7, 8, 9, 10], 0))
+        );
+    }
+
+    fn nested_spans() -> FileSkeleton {
+        FileSkeleton::new("app/B.kt").with_declarations(vec![
+            Declaration::class("A", 3).containing(vec![
+                Declaration::function("m1", 4),
+                Declaration::function("m2", 8),
+            ]),
+            Declaration::function("top", 12),
+        ])
+    }
+
+    /// The comparison boundaries that could each drift by one: a reference on a declaration's own
+    /// start line (`A` at 3, `m1` at 4, `top` at 12), on a sibling's start line (`8`, the first
+    /// line past `m1`'s span so it belongs to `m2` not `m1`), and on the last line of a span (`7`
+    /// closes `m1`, `11` closes both `m2` and `A`). Checked as one attribution table.
+    #[test]
+    fn boundary_reference_lines_are_attributed_to_the_enclosing_declaration() {
+        let locations = [3u32, 4, 7, 8, 11, 12]
+            .map(|line| Location::new("app/B.kt", line))
+            .to_vec();
+
+        let attributions: Vec<(u32, Option<String>)> =
+            group_references(&locations, &[nested_spans()], GroupingOptions::default())
+                .into_iter()
+                .flat_map(|group| group.references)
+                .map(|reference| {
+                    (
+                        reference.line,
+                        reference.enclosing.map(|enc| enc.qualified_name),
+                    )
+                })
+                .collect();
+
+        assert_eq!(
+            attributions,
+            vec![
+                (3, Some("A".to_string())),
+                (4, Some("A.m1".to_string())),
+                (7, Some("A.m1".to_string())),
+                (8, Some("A.m2".to_string())),
+                (11, Some("A.m2".to_string())),
+                (12, Some("top".to_string())),
+            ]
+        );
+    }
+
+    /// Siblings out of source-line order violate the precondition, which must be caught rather than
+    /// silently producing a wrong enclosure. Debug-only: the guard is a `debug_assert!` so release
+    /// builds degrade instead of aborting on adversarial input.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ascending source-line order")]
+    fn out_of_order_siblings_are_rejected_rather_than_mislabelled() {
+        let skeleton = FileSkeleton::new("app/B.kt").with_declarations(vec![
+            Declaration::function("later", 10),
+            Declaration::function("earlier", 4),
+        ]);
+
+        let _ = group_references(
+            &[Location::new("app/B.kt", 11)],
+            &[skeleton],
+            GroupingOptions::default(),
         );
     }
 }

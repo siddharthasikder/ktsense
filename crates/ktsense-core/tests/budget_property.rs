@@ -1,6 +1,7 @@
 //! The acceptance property for the budgeted emitter: over randomly generated budgets and item
-//! sizes it must never report an estimate above the budget, that estimate must equal the summed
-//! estimate of exactly the items it emitted, and those items must be a leading prefix of the input.
+//! sizes it must never report a bound above the budget, that bound must equal the summed per-item
+//! estimate and never fall below the estimate of the emitted items concatenated (the direction that
+//! makes it a conservative upper bound), and those items must be a leading prefix of the input.
 //!
 //! There is no property-testing crate here on purpose: a dependency would land in the shared lock
 //! file and cut against this crate's serde-only rule. Instead a splitmix64 generator drives a few
@@ -41,7 +42,7 @@ struct Case {
 #[derive(Debug, PartialEq, Eq)]
 struct Violation {
     case: Case,
-    tokens_used: usize,
+    reported_bound: usize,
     reason: &'static str,
 }
 
@@ -54,12 +55,15 @@ fn check(case: &Case) -> Option<Violation> {
         .iter()
         .map(|text| ByteRatioEstimator.estimate(text))
         .sum();
+    let concat_estimate = ByteRatioEstimator.estimate(&emission.items.concat());
     let is_prefix = emission.items == texts[..emission.items.len()];
 
-    let reason = if emission.tokens_used > case.budget {
-        Some("reported estimate exceeded the budget")
-    } else if emission.tokens_used != recomputed {
-        Some("reported estimate did not match the emitted items")
+    let reason = if emission.token_upper_bound > case.budget {
+        Some("reported bound exceeded the budget")
+    } else if emission.token_upper_bound != recomputed {
+        Some("reported bound did not match the summed per-item estimate")
+    } else if emission.token_upper_bound < concat_estimate {
+        Some("reported bound fell below the estimate of the concatenated output")
     } else if !is_prefix {
         Some("emitted items were not a leading prefix of the input")
     } else {
@@ -71,7 +75,7 @@ fn check(case: &Case) -> Option<Violation> {
             budget: case.budget,
             sizes: case.sizes.clone(),
         },
-        tokens_used: emission.tokens_used,
+        reported_bound: emission.token_upper_bound,
         reason,
     })
 }
