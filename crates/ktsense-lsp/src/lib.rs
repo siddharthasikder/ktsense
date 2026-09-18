@@ -11,52 +11,24 @@ mod client;
 mod framing;
 mod progress;
 mod requests;
+mod version;
 
 pub use client::{InitializeConfig, LspClient, LspError, Notification, Teardown};
 pub use framing::FramingError;
 pub use progress::IndexPhase;
 pub use requests::{DeclarationScope, FilePosition};
+pub use version::{
+    check_version, check_version_within, classify, Compatibility, VersionCheck,
+    PINNED_UPSTREAM_VERSION,
+};
 
 use std::path::PathBuf;
-
-/// Upstream version this build of ktsense was developed and tested against.
-pub const PINNED_UPSTREAM_VERSION: &str = "0.26.0";
 
 /// Environment variable that overrides binary discovery.
 pub const LSP_PATH_ENV: &str = "KTSENSE_LSP_PATH";
 
 /// Name of the upstream engine binary.
 pub const LSP_BINARY: &str = "kmp-lsp";
-
-/// How a reported upstream version compares to the pinned one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Compatibility {
-    /// Same major and minor: the tested combination.
-    Supported,
-    /// Same major, different minor: usable, worth warning about.
-    Untested,
-    /// Different major: refuse rather than produce wrong answers.
-    Unsupported,
-}
-
-/// Classifies a reported upstream version against [`PINNED_UPSTREAM_VERSION`].
-pub fn classify(reported: &str) -> Compatibility {
-    let pinned = major_minor(PINNED_UPSTREAM_VERSION);
-    match major_minor(reported) {
-        Some(found) if Some(found) == pinned => Compatibility::Supported,
-        Some((major, _)) if pinned.map(|(pinned_major, _)| pinned_major) == Some(major) => {
-            Compatibility::Untested
-        }
-        _ => Compatibility::Unsupported,
-    }
-}
-
-fn major_minor(version: &str) -> Option<(u32, u32)> {
-    let mut parts = version.trim().trim_start_matches('v').split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    Some((major, minor))
-}
 
 /// Candidate paths for the engine binary, in the order ktsense tries them.
 ///
@@ -82,10 +54,21 @@ pub fn discovery_order(
 
 /// Locates the engine binary via [`discovery_order`] and spawns a client against it.
 ///
-/// The first candidate that exists on disk wins; failing that, the bare binary name is used and
-/// resolved through `PATH` when the child is spawned.
+/// Before starting an LSP session, the located binary is probed with `--version` and classified
+/// against [`PINNED_UPSTREAM_VERSION`]: a differing major version is refused so ktsense never
+/// produces answers from an incompatible protocol, while every other divergence proceeds with a
+/// warning. The refusal happens before any session child is spawned, so a rejected engine leaves
+/// no process behind.
 pub async fn launch() -> Result<LspClient, LspError> {
-    LspClient::spawn(&locate_binary()).await
+    let binary = locate_binary();
+    match check_version(&binary).await {
+        VersionCheck::Refuse(message) => Err(LspError::Incompatible { message }),
+        VersionCheck::Warn(message) => {
+            tracing::warn!("{message}");
+            LspClient::spawn(&binary).await
+        }
+        VersionCheck::Compatible => LspClient::spawn(&binary).await,
+    }
 }
 
 fn locate_binary() -> PathBuf {
@@ -106,32 +89,6 @@ fn locate_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pinned_version_is_supported() {
-        assert_eq!(classify(PINNED_UPSTREAM_VERSION), Compatibility::Supported);
-    }
-
-    #[test]
-    fn version_classification_covers_minor_drift_and_major_breaks() {
-        let observed = [
-            classify("0.26.0"),
-            classify("v0.26.0"),
-            classify("0.27.1"),
-            classify("1.0.0"),
-            classify("not-a-version"),
-        ];
-        assert_eq!(
-            observed,
-            [
-                Compatibility::Supported,
-                Compatibility::Supported,
-                Compatibility::Untested,
-                Compatibility::Unsupported,
-                Compatibility::Unsupported,
-            ]
-        );
-    }
 
     #[test]
     fn discovery_prefers_an_override_then_libexec_then_path() {

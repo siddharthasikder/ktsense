@@ -53,6 +53,8 @@ pub enum LspError {
     Framing(FramingError),
     #[error("`{uri}` is not a valid document URI")]
     InvalidUri { uri: String },
+    #[error("{message}")]
+    Incompatible { message: String },
 }
 
 /// Options for the LSP `initialize` handshake.

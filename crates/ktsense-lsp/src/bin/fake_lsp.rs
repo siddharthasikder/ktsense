@@ -35,6 +35,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 const SCRIPT_ENV: &str = "FAKE_LSP_SCRIPT";
+const VERSION_ENV: &str = "FAKE_LSP_VERSION";
+const HANG_SENTINEL: &str = "__HANG__";
 
 #[derive(Deserialize)]
 struct Script {
@@ -67,10 +69,37 @@ enum Step {
 }
 
 fn main() {
+    if wants_version() {
+        report_version();
+        return;
+    }
     if let Err(err) = run() {
         eprintln!("fake_lsp: {err:#}");
         std::process::exit(1);
     }
+}
+
+fn wants_version() -> bool {
+    env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+}
+
+/// Emits a `--version` line for the compatibility probe. Defaults to the pinned version so the
+/// happy path stays in one place; `FAKE_LSP_VERSION` drives the other cases, and the `__HANG__`
+/// sentinel reproduces an engine that never answers `--version`.
+fn report_version() {
+    let reported = env::var(VERSION_ENV).unwrap_or_else(|_| {
+        format!(
+            "{} {}",
+            ktsense_lsp::LSP_BINARY,
+            ktsense_lsp::PINNED_UPSTREAM_VERSION
+        )
+    });
+    if reported == HANG_SENTINEL {
+        park_until_killed();
+    }
+    println!("{reported}");
 }
 
 fn run() -> Result<()> {
