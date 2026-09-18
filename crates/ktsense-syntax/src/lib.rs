@@ -1,9 +1,13 @@
 //! Syntactic adapter: parses Kotlin source with tree-sitter and produces `ktsense-core` values.
 //!
-//! Declaration extraction lands in KT-05. This module currently owns only parser construction, so
-//! that the grammar and ABI pairing is proven by a test from the first commit.
+//! [`parse`] owns parser construction so the grammar and ABI pairing is proven by a test, and
+//! [`extract`] maps the resulting tree onto the core skeleton model.
 
 #![forbid(unsafe_code)]
+
+pub mod extract;
+
+pub use extract::extract;
 
 use anyhow::{Context, Result};
 use tree_sitter::{Parser, Tree};

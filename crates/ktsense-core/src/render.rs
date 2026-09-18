@@ -16,9 +16,14 @@
 //! 7. Private and internal declarations are omitted unless asked for. A file that has nothing else
 //!    renders as an empty skeleton, which is the correct answer rather than an error.
 
-use crate::skeleton::{Declaration, FileSkeleton, Modifier, Parameter, Visibility};
+use crate::skeleton::{DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility};
 
 const INDENT: &str = "    ";
+
+/// Width past which a single-member container opens braces instead of collapsing onto one line.
+/// Narrower than Kotlin's own 120-column guidance, because this output is read inside an agent's
+/// context window where a long line costs the same as several short ones but scans worse.
+const MAX_INLINE_WIDTH: usize = 100;
 
 /// What to include. The default is the cheapest useful answer: public API, no documentation.
 #[derive(Debug, Clone, Copy, Default)]
@@ -55,11 +60,9 @@ fn is_visible_api(visibility: Visibility) -> bool {
 
 /// The Kotlin-like skeleton body. No trailing newline, so callers decide how to join it.
 pub fn render_skeleton(file: &FileSkeleton, options: &RenderOptions) -> String {
-    let mut lines = Vec::new();
-    for declaration in &file.declarations {
-        render_declaration(declaration, 0, options, &mut lines);
-    }
-    lines.join("\n")
+    let mut writer = SkeletonWriter::new(options);
+    writer.write_all(&file.declarations, 0);
+    writer.finish()
 }
 
 /// The skeleton wrapped for an agent: path heading, package line, then a fenced Kotlin block.
@@ -82,119 +85,252 @@ pub fn render_markdown(file: &FileSkeleton, options: &RenderOptions) -> String {
     out
 }
 
-fn render_declaration(
-    declaration: &Declaration,
-    depth: usize,
-    options: &RenderOptions,
-    lines: &mut Vec<String>,
-) {
-    if !options.admits(declaration) {
-        return;
-    }
-
-    let padding = INDENT.repeat(depth);
-
-    if options.include_doc {
-        if let Some(doc) = &declaration.doc {
-            lines.push(format!("{padding}/** {doc} */"));
-        }
-    }
-
-    let header = header_of(declaration, options);
-    let children: Vec<&Declaration> = declaration
-        .children
-        .iter()
-        .filter(|child| options.admits(child))
-        .collect();
-
-    if !declaration.is_container() || children.is_empty() {
-        lines.push(format!("{padding}{header}"));
-        return;
-    }
-
-    if let [only] = children.as_slice() {
-        if only.children.is_empty() && !(options.include_doc && only.doc.is_some()) {
-            let inner = header_of(only, options);
-            lines.push(format!("{padding}{header} {{ {inner} }}"));
-            return;
-        }
-    }
-
-    lines.push(format!("{padding}{header} {{"));
-    for child in children {
-        render_declaration(child, depth + 1, options, lines);
-    }
-    lines.push(format!("{padding}}}"));
+/// Accumulates skeleton lines.
+///
+/// The options and the output travel with the writer rather than through every recursive call, so
+/// the recursion carries only what actually changes: the declaration and its depth.
+struct SkeletonWriter<'a> {
+    options: &'a RenderOptions,
+    lines: Vec<String>,
 }
 
+impl<'a> SkeletonWriter<'a> {
+    fn new(options: &'a RenderOptions) -> Self {
+        Self {
+            options,
+            lines: Vec::new(),
+        }
+    }
+
+    fn finish(self) -> String {
+        self.lines.join("\n")
+    }
+
+    fn write_all(&mut self, declarations: &[Declaration], depth: usize) {
+        for declaration in declarations {
+            self.write(declaration, depth);
+        }
+    }
+
+    fn write(&mut self, declaration: &Declaration, depth: usize) {
+        if !self.options.admits(declaration) {
+            return;
+        }
+
+        let padding = INDENT.repeat(depth);
+        self.write_doc(declaration, &padding);
+
+        let header = header_of(declaration, self.options);
+        let members = self.visible_members(declaration);
+
+        if !declaration.is_container() || members.is_empty() {
+            self.lines.push(format!("{padding}{header}"));
+        } else if let Some(inlined) = self.inline_form(&header, &members, padding.len()) {
+            self.lines.push(format!("{padding}{inlined}"));
+        } else {
+            self.lines.push(format!("{padding}{header} {{"));
+            self.write_members(&members, depth + 1);
+            self.lines.push(format!("{padding}}}"));
+        }
+    }
+
+    fn write_doc(&mut self, declaration: &Declaration, padding: &str) {
+        if !self.options.include_doc {
+            return;
+        }
+        if let Some(doc) = &declaration.doc {
+            self.lines.push(format!("{padding}/** {doc} */"));
+        }
+    }
+
+    fn visible_members<'d>(&self, declaration: &'d Declaration) -> Vec<&'d Declaration> {
+        declaration
+            .children
+            .iter()
+            .filter(|child| self.options.admits(child))
+            .collect()
+    }
+
+    /// The one-line form of a container whose only member is a leaf, or `None` when it must open a
+    /// brace. Keeps a one-constant companion object at one line instead of three, but gives up once
+    /// the result passes [`MAX_INLINE_WIDTH`], where braces read better than a wall of text.
+    fn inline_form(
+        &self,
+        header: &str,
+        members: &[&Declaration],
+        indent_width: usize,
+    ) -> Option<String> {
+        let [only] = members else { return None };
+        let carries_doc = self.options.include_doc && only.doc.is_some();
+        if !only.children.is_empty() || carries_doc {
+            return None;
+        }
+        let inlined = format!("{header} {{ {} }}", header_of(only, self.options));
+        (indent_width + inlined.len() <= MAX_INLINE_WIDTH).then_some(inlined)
+    }
+
+    /// Members of a container, with one special case: consecutive enum entries share a line.
+    ///
+    /// `VIEWER, EDITOR, ADMIN` costs one line instead of three, and the commas are what make the
+    /// fenced block valid Kotlin rather than something that merely looks like it.
+    fn write_members(&mut self, members: &[&Declaration], depth: usize) {
+        let entries = leading_enum_entries(members);
+        if !entries.is_empty() {
+            let padding = INDENT.repeat(depth);
+            let terminator = if entries.len() < members.len() {
+                ";"
+            } else {
+                ""
+            };
+            self.lines
+                .push(format!("{padding}{}{terminator}", join_names(&entries)));
+        }
+        for member in &members[entries.len()..] {
+            self.write(member, depth);
+        }
+    }
+}
+
+fn leading_enum_entries<'d>(members: &[&'d Declaration]) -> Vec<&'d Declaration> {
+    members
+        .iter()
+        .copied()
+        .take_while(|member| member.kind == DeclKind::EnumEntry)
+        .collect()
+}
+
+fn join_names(declarations: &[&Declaration]) -> String {
+    declarations
+        .iter()
+        .map(|declaration| declaration.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One declaration rendered as a single signature line, assembled from independent segments.
+///
+/// The trailing trim matters: a declaration with no name of its own, such as an unnamed companion
+/// object, contributes an empty name segment, and a signature line must never end in whitespace.
 fn header_of(declaration: &Declaration, options: &RenderOptions) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    [
+        keyword_prefix(declaration),
+        name_segment(declaration),
+        parameter_segment(declaration),
+        type_segment(declaration),
+        supertype_segment(declaration),
+        constraint_segment(declaration),
+        line_segment(declaration, options),
+    ]
+    .concat()
+    .trim_end()
+    .to_string()
+}
+
+/// Visibility, modifiers, keyword, and a function's type parameters, which Kotlin writes before the
+/// name: `inline fun <T, R> Outcome<T>.map` against `class Box<T>`.
+fn keyword_prefix(declaration: &Declaration) -> String {
+    let mut words: Vec<&str> = Vec::new();
 
     let visibility = declaration.visibility.keyword();
     if !visibility.is_empty() {
-        parts.push(visibility.to_string());
+        words.push(visibility);
     }
 
-    let mut modifiers = declaration.modifiers.clone();
-    modifiers.sort();
-    modifiers.dedup();
-    parts.extend(
-        modifiers
-            .iter()
-            .map(|modifier| modifier.keyword().to_string()),
-    );
+    let modifiers = canonical_modifiers(declaration);
+    words.extend(modifiers.iter().map(|modifier| modifier.keyword()));
 
     let keyword = declaration.kind.keyword();
     if !keyword.is_empty() {
-        parts.push(keyword.to_string());
+        words.push(keyword);
     }
 
-    let mut header = parts.join(" ");
+    let leading_type_parameters = declaration
+        .type_parameters
+        .as_deref()
+        .filter(|_| declaration.kind.type_parameters_precede_name());
+    words.extend(leading_type_parameters);
 
-    if !declaration.name.is_empty() {
-        if !header.is_empty() {
-            header.push(' ');
+    if words.is_empty() {
+        return String::new();
+    }
+    format!("{} ", words.join(" "))
+}
+
+/// Modifiers in the canonical Kotlin order, so source order cannot change the output.
+fn canonical_modifiers(declaration: &Declaration) -> Vec<Modifier> {
+    let mut modifiers = declaration.modifiers.clone();
+    modifiers.sort();
+    modifiers.dedup();
+    modifiers
+}
+
+fn name_segment(declaration: &Declaration) -> String {
+    let trailing_type_parameters = declaration
+        .type_parameters
+        .as_deref()
+        .filter(|_| !declaration.kind.type_parameters_precede_name())
+        .unwrap_or_default();
+    format!("{}{trailing_type_parameters}", declaration.name)
+}
+
+fn parameter_segment(declaration: &Declaration) -> String {
+    if !declaration.kind.takes_parentheses() && declaration.parameters.is_empty() {
+        return String::new();
+    }
+    let rendered = declaration
+        .parameters
+        .iter()
+        .map(render_parameter)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({rendered})", constructor_keyword(declaration))
+}
+
+/// `private constructor` for a class whose primary constructor is not public. Without it the
+/// skeleton advertises a constructor the caller cannot reach.
+fn constructor_keyword(declaration: &Declaration) -> String {
+    match declaration.constructor_visibility {
+        Some(visibility) if !visibility.is_public() => {
+            format!(" {} constructor", visibility.keyword())
         }
-        header.push_str(&declaration.name);
+        _ => String::new(),
     }
+}
 
-    if let Some(type_parameters) = &declaration.type_parameters {
-        header.push_str(type_parameters);
+/// A return type, or the aliased type of a `typealias`, which is an assignment rather than an
+/// annotation: `typealias UserPredicate = (User) -> Boolean`.
+fn type_segment(declaration: &Declaration) -> String {
+    let Some(type_name) = &declaration.return_type else {
+        return String::new();
+    };
+    let separator = if declaration.kind == DeclKind::TypeAlias {
+        " = "
+    } else {
+        ": "
+    };
+    format!("{separator}{type_name}")
+}
+
+fn supertype_segment(declaration: &Declaration) -> String {
+    if declaration.supertypes.is_empty() {
+        return String::new();
     }
+    format!(" : {}", declaration.supertypes.join(", "))
+}
 
-    if declaration.kind.takes_parentheses() || !declaration.parameters.is_empty() {
-        header.push('(');
-        header.push_str(
-            &declaration
-                .parameters
-                .iter()
-                .map(render_parameter)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-        header.push(')');
+fn constraint_segment(declaration: &Declaration) -> String {
+    match &declaration.type_constraints {
+        Some(constraints) => format!(" where {constraints}"),
+        None => String::new(),
     }
+}
 
-    if let Some(return_type) = &declaration.return_type {
-        header.push_str(": ");
-        header.push_str(return_type);
-    }
-
-    if !declaration.supertypes.is_empty() {
-        header.push_str(" : ");
-        header.push_str(&declaration.supertypes.join(", "));
-    }
-
-    if let Some(constraints) = &declaration.type_constraints {
-        header.push_str(" where ");
-        header.push_str(constraints);
-    }
-
+fn line_segment(declaration: &Declaration, options: &RenderOptions) -> String {
     if options.include_lines {
-        header.push_str(&format!("  # L{}", declaration.line));
+        format!("  # L{}", declaration.line)
+    } else {
+        String::new()
     }
-
-    header
 }
 
 fn render_parameter(parameter: &Parameter) -> String {

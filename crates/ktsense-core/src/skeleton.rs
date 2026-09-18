@@ -82,6 +82,12 @@ pub struct Declaration {
     /// Function parameters, or a class's primary constructor parameters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<Parameter>,
+    /// Visibility of a class's primary constructor when it differs from public.
+    ///
+    /// Without this a `class X private constructor(...)` renders as though `X(...)` were callable,
+    /// which is exactly the kind of confident wrong answer the accuracy rule forbids.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constructor_visibility: Option<Visibility>,
     /// Absent means Unit for a function, or an inferred type for a property.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_type: Option<String>,
@@ -107,6 +113,7 @@ impl Declaration {
             modifiers: Vec::new(),
             type_parameters: None,
             parameters: Vec::new(),
+            constructor_visibility: None,
             return_type: None,
             supertypes: Vec::new(),
             type_constraints: None,
@@ -156,6 +163,11 @@ impl Declaration {
 
     pub fn with_parameters(mut self, parameters: Vec<Parameter>) -> Self {
         self.parameters = parameters;
+        self
+    }
+
+    pub fn with_constructor_visibility(mut self, visibility: Visibility) -> Self {
+        self.constructor_visibility = Some(visibility);
         self
     }
 
@@ -221,7 +233,10 @@ impl DeclKind {
             Self::Val => "val",
             Self::Var => "var",
             Self::TypeAlias => "typealias",
-            Self::Constructor => "constructor",
+            // A constructor's keyword is its name, so it arrives as the name and the kind
+            // contributes no keyword of its own. That keeps `constructor()` from rendering as
+            // `constructor ()`.
+            Self::Constructor => "",
             Self::EnumEntry => "",
         }
     }
@@ -231,6 +246,14 @@ impl DeclKind {
     /// `fun start()` keeps its empty parentheses because they are part of how it is called;
     /// `class Empty` drops them, because a class with no primary constructor has none.
     pub fn takes_parentheses(self) -> bool {
+        matches!(self, Self::Function | Self::Constructor)
+    }
+
+    /// Whether type parameters print before the name rather than after it.
+    ///
+    /// Kotlin writes `fun <T> List<T>.first()` but `class Box<T>`, so the position depends on the
+    /// kind rather than being a single rule.
+    pub fn type_parameters_precede_name(self) -> bool {
         matches!(self, Self::Function | Self::Constructor)
     }
 }
