@@ -19,9 +19,10 @@ use tokio::process::{ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 use tokio::time::timeout;
 
-use crate::framing::{self, FrameDecoder};
+use crate::framing::{self, FrameDecoder, FramingError};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_EXIT_GRACE: Duration = Duration::from_secs(2);
 const READ_CHUNK: usize = 8192;
 
@@ -48,6 +49,8 @@ pub enum LspError {
     },
     #[error("engine stream closed before `{method}` was answered")]
     ChildExited { method: String },
+    #[error("engine produced a malformed frame and the client is faulted: {0}")]
+    Framing(FramingError),
 }
 
 /// Options for the LSP `initialize` handshake.
@@ -75,16 +78,20 @@ pub enum Teardown {
 type ResponseError = (i64, String);
 type ResponseOutcome = Result<Value, ResponseError>;
 type Pending = Arc<StdMutex<HashMap<i64, oneshot::Sender<ResponseOutcome>>>>;
+type SharedChild = Arc<TokioMutex<tokio::process::Child>>;
+type Fault = Arc<StdMutex<Option<FramingError>>>;
 
 /// A running `kmp-lsp` child and the machinery to talk to it.
 pub struct LspClient {
-    child: tokio::process::Child,
+    child: SharedChild,
     stdin: Arc<TokioMutex<tokio::process::ChildStdin>>,
     pending: Pending,
     notifications: mpsc::UnboundedReceiver<Notification>,
     next_id: AtomicI64,
     request_timeout: Duration,
+    shutdown_timeout: Duration,
     exit_grace: Duration,
+    fault: Fault,
 }
 
 impl LspClient {
@@ -106,9 +113,17 @@ impl LspClient {
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        let child: SharedChild = Arc::new(TokioMutex::new(child));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
+        let fault: Fault = Arc::new(StdMutex::new(None));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-        tokio::spawn(read_loop(stdout, Arc::clone(&pending), notif_tx));
+        let reader = Reader {
+            pending: Arc::clone(&pending),
+            notifications: notif_tx,
+            fault: Arc::clone(&fault),
+            child: Arc::clone(&child),
+        };
+        tokio::spawn(reader.run(stdout));
 
         Ok(Self {
             child,
@@ -117,12 +132,18 @@ impl LspClient {
             notifications: notif_rx,
             next_id: AtomicI64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             exit_grace: DEFAULT_EXIT_GRACE,
+            fault,
         })
     }
 
     pub fn set_request_timeout(&mut self, timeout: Duration) {
         self.request_timeout = timeout;
+    }
+
+    pub fn set_shutdown_timeout(&mut self, timeout: Duration) {
+        self.shutdown_timeout = timeout;
     }
 
     pub fn set_exit_grace(&mut self, grace: Duration) {
@@ -131,29 +152,46 @@ impl LspClient {
 
     /// Sends a request, awaits the matching response (or times out), and returns its `result`.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, LspError> {
+        self.request_within(method, params, self.request_timeout)
+            .await
+    }
+
+    async fn request_within(
+        &self,
+        method: &str,
+        params: Value,
+        bound: Duration,
+    ) -> Result<Value, LspError> {
+        if let Some(fault) = self.current_fault() {
+            return Err(LspError::Framing(fault));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
         let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        if let Err(err) = self.write_message(&message).await {
-            self.pending.lock().unwrap().remove(&id);
-            return Err(err);
-        }
-        match timeout(self.request_timeout, rx).await {
-            Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err((code, message)))) => Err(LspError::Response {
-                method: method.to_string(),
-                code,
-                message,
-            }),
-            Ok(Err(_closed)) => Err(LspError::ChildExited {
-                method: method.to_string(),
-            }),
+
+        let send_and_wait = async {
+            self.write_message(&message).await?;
+            match rx.await {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err((code, text))) => Err(LspError::Response {
+                    method: method.to_string(),
+                    code,
+                    message: text,
+                }),
+                Err(_closed) => Err(LspError::ChildExited {
+                    method: method.to_string(),
+                }),
+            }
+        };
+
+        match timeout(bound, send_and_wait).await {
+            Ok(result) => result,
             Err(_elapsed) => {
                 self.pending.lock().unwrap().remove(&id);
                 Err(LspError::Timeout {
                     method: method.to_string(),
-                    timeout: self.request_timeout,
+                    timeout: bound,
                 })
             }
         }
@@ -161,8 +199,31 @@ impl LspClient {
 
     /// Sends a notification (a message with no id, expecting no reply).
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), LspError> {
+        self.notify_within(method, params, self.request_timeout)
+            .await
+    }
+
+    async fn notify_within(
+        &self,
+        method: &str,
+        params: Value,
+        bound: Duration,
+    ) -> Result<(), LspError> {
+        if let Some(fault) = self.current_fault() {
+            return Err(LspError::Framing(fault));
+        }
         let message = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        self.write_message(&message).await
+        match timeout(bound, self.write_message(&message)).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(LspError::Timeout {
+                method: method.to_string(),
+                timeout: bound,
+            }),
+        }
+    }
+
+    fn current_fault(&self) -> Option<FramingError> {
+        self.fault.lock().unwrap().clone()
     }
 
     /// Runs the `initialize` handshake and returns the server's `InitializeResult`.
@@ -187,17 +248,23 @@ impl LspClient {
         self.notifications.recv().await
     }
 
-    /// Requests `shutdown`, sends `exit`, and guarantees the child is reaped: it waits a short grace
-    /// period and kills the child if it has not exited, so no caller can leak the process.
+    /// Requests `shutdown`, sends `exit`, and guarantees the child is reaped: the shutdown request and
+    /// the `exit` notification each carry a short bound so a wedged child cannot stall teardown, and the
+    /// child is killed if it has not exited within the grace period, so no caller can leak the process.
     pub async fn shutdown(&mut self) -> Result<Teardown, LspError> {
-        let _ = self.request("shutdown", Value::Null).await;
-        let _ = self.notify("exit", Value::Null).await;
-        match timeout(self.exit_grace, self.child.wait()).await {
+        let _ = self
+            .request_within("shutdown", Value::Null, self.shutdown_timeout)
+            .await;
+        let _ = self
+            .notify_within("exit", Value::Null, self.shutdown_timeout)
+            .await;
+        let mut child = self.child.lock().await;
+        match timeout(self.exit_grace, child.wait()).await {
             Ok(Ok(_status)) => Ok(Teardown::Exited),
             Ok(Err(err)) => Err(err.into()),
             Err(_elapsed) => {
-                self.child.kill().await?;
-                self.child.wait().await?;
+                child.kill().await?;
+                child.wait().await?;
                 Ok(Teardown::Killed)
             }
         }
@@ -212,46 +279,69 @@ impl LspClient {
     }
 }
 
-async fn read_loop(
-    mut stdout: ChildStdout,
-    pending: Pending,
-    notifications: mpsc::UnboundedSender<Notification>,
-) {
-    let mut decoder = FrameDecoder::default();
-    let mut chunk = vec![0u8; READ_CHUNK];
-    'read: loop {
-        let read = match stdout.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(read) => read,
-        };
-        decoder.push(&chunk[..read]);
-        loop {
-            match decoder.next_frame() {
-                Ok(Some(body)) => dispatch(&body, &pending, &notifications),
-                Ok(None) => continue 'read,
-                Err(_malformed) => break 'read,
-            }
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.child.try_lock() {
+            let _ = child.start_kill();
         }
     }
-    fail_pending(&pending);
 }
 
-fn dispatch(body: &[u8], pending: &Pending, notifications: &mpsc::UnboundedSender<Notification>) {
-    let Ok(message) = serde_json::from_slice::<Value>(body) else {
-        return;
-    };
-    if let Some(method) = message.get("method").and_then(Value::as_str) {
-        if message.get("id").is_none() {
-            let _ = notifications.send(Notification {
-                method: method.to_string(),
-                params: message.get("params").cloned().unwrap_or(Value::Null),
-            });
+/// Background task that drains the child's stdout, dispatching responses and notifications until the
+/// stream closes or a frame cannot be decoded.
+struct Reader {
+    pending: Pending,
+    notifications: mpsc::UnboundedSender<Notification>,
+    fault: Fault,
+    child: SharedChild,
+}
+
+impl Reader {
+    async fn run(self, mut stdout: ChildStdout) {
+        let mut decoder = FrameDecoder::default();
+        let mut chunk = vec![0u8; READ_CHUNK];
+        let mut decode_fault = None;
+        'read: loop {
+            let read = match stdout.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => read,
+            };
+            decoder.push(&chunk[..read]);
+            loop {
+                match decoder.next_frame() {
+                    Ok(Some(body)) => self.dispatch(&body),
+                    Ok(None) => continue 'read,
+                    Err(malformed) => {
+                        decode_fault = Some(malformed);
+                        break 'read;
+                    }
+                }
+            }
         }
-        return;
+        if let Some(fault) = decode_fault {
+            *self.fault.lock().unwrap() = Some(fault);
+            let _ = self.child.lock().await.start_kill();
+        }
+        fail_pending(&self.pending);
     }
-    if let Some(id) = message.get("id").and_then(Value::as_i64) {
-        if let Some(sender) = pending.lock().unwrap().remove(&id) {
-            let _ = sender.send(response_outcome(&message));
+
+    fn dispatch(&self, body: &[u8]) {
+        let Ok(message) = serde_json::from_slice::<Value>(body) else {
+            return;
+        };
+        if let Some(method) = message.get("method").and_then(Value::as_str) {
+            if message.get("id").is_none() {
+                let _ = self.notifications.send(Notification {
+                    method: method.to_string(),
+                    params: message.get("params").cloned().unwrap_or(Value::Null),
+                });
+            }
+            return;
+        }
+        if let Some(id) = message.get("id").and_then(Value::as_i64) {
+            if let Some(sender) = self.pending.lock().unwrap().remove(&id) {
+                let _ = sender.send(response_outcome(&message));
+            }
         }
     }
 }

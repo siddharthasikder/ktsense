@@ -129,3 +129,123 @@ async fn request_without_a_reply_returns_a_typed_timeout() {
         "outcome was {outcome:?} after {elapsed:?}"
     );
 }
+
+#[tokio::test]
+async fn request_surfaces_a_jsonrpc_error_response() {
+    let script = json!({
+        "steps": [
+            { "kind": "expect", "method": "initialize", "respond": { "result": {} } },
+            { "kind": "expect", "method": "initialized" },
+            { "kind": "expect", "method": "textDocument/references",
+              "respond": { "error": { "code": -32601, "message": "method not found" } } },
+            { "kind": "expect", "method": "shutdown", "respond": { "result": null } },
+            { "kind": "expect", "method": "exit" }
+        ]
+    });
+    let mut client = spawn_with_script(&script).await;
+    client.initialize(&init_config()).await.expect("initialize");
+
+    let outcome = client.request("textDocument/references", json!({})).await;
+    let teardown = client.shutdown().await.expect("shutdown");
+
+    let observed = json!({
+        "is_response_error": matches!(&outcome, Err(LspError::Response { method, code, message })
+            if method == "textDocument/references" && *code == -32601 && message == "method not found"),
+        "teardown_exited": teardown == Teardown::Exited,
+    });
+    assert_eq!(
+        observed,
+        json!({ "is_response_error": true, "teardown_exited": true }),
+        "outcome was {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn request_reports_child_exit_when_the_stream_closes_mid_request() {
+    let script = json!({
+        "steps": [
+            { "kind": "expect", "method": "initialize", "respond": { "result": {} } },
+            { "kind": "expect", "method": "initialized" },
+            { "kind": "expect", "method": "textDocument/references" }
+        ]
+    });
+    let mut client = spawn_with_script(&script).await;
+    client.set_request_timeout(Duration::from_secs(5));
+    client.initialize(&init_config()).await.expect("initialize");
+
+    let started = Instant::now();
+    let outcome = client.request("textDocument/references", json!({})).await;
+    let elapsed = started.elapsed();
+
+    let observed = json!({
+        "is_child_exited": matches!(&outcome, Err(LspError::ChildExited { method }) if method == "textDocument/references"),
+        "returned_before_timeout": elapsed < Duration::from_secs(4),
+    });
+    assert_eq!(
+        observed,
+        json!({ "is_child_exited": true, "returned_before_timeout": true }),
+        "outcome was {outcome:?} after {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_frame_faults_the_client_and_fails_later_requests_promptly() {
+    let script = json!({
+        "steps": [
+            { "kind": "expect", "method": "initialize", "respond": { "result": {} } },
+            { "kind": "expect", "method": "initialized" },
+            { "kind": "raw", "bytes": "garbage-not-a-frame\r\n\r\n" },
+            { "kind": "delay", "ms": 3000 }
+        ]
+    });
+    let mut client = spawn_with_script(&script).await;
+    client.set_request_timeout(Duration::from_millis(500));
+    client.initialize(&init_config()).await.expect("initialize");
+
+    let stream_after_fault = client.next_notification().await;
+    let started = Instant::now();
+    let outcome = client.request("textDocument/references", json!({})).await;
+    let elapsed = started.elapsed();
+
+    let observed = json!({
+        "stream_closed": stream_after_fault.is_none(),
+        "is_framing_fault": matches!(&outcome, Err(LspError::Framing(_))),
+        "returned_promptly": elapsed < Duration::from_millis(400),
+    });
+    assert_eq!(
+        observed,
+        json!({ "stream_closed": true, "is_framing_fault": true, "returned_promptly": true }),
+        "outcome was {outcome:?} after {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_of_a_wedged_child_does_not_wait_out_the_request_timeout() {
+    let script = json!({
+        "steps": [
+            { "kind": "expect", "method": "initialize", "respond": { "result": {} } },
+            { "kind": "expect", "method": "initialized" },
+            { "kind": "expect", "method": "shutdown" },
+            { "kind": "delay", "ms": 10000 }
+        ]
+    });
+    let mut client = spawn_with_script(&script).await;
+    client.set_request_timeout(Duration::from_secs(10));
+    client.set_shutdown_timeout(Duration::from_millis(300));
+    client.set_exit_grace(Duration::from_millis(300));
+    client.initialize(&init_config()).await.expect("initialize");
+
+    let started = Instant::now();
+    let teardown = client.shutdown().await.expect("shutdown");
+    let elapsed = started.elapsed();
+
+    let observed = json!({
+        "teardown_killed": teardown == Teardown::Killed,
+        "faster_than_request_timeout": elapsed < Duration::from_secs(2),
+    });
+    assert_eq!(
+        observed,
+        json!({ "teardown_killed": true, "faster_than_request_timeout": true }),
+        "shutdown took {elapsed:?}"
+    );
+}

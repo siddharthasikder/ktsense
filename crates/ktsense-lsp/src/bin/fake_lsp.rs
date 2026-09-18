@@ -61,6 +61,9 @@ enum Step {
     Delay {
         ms: u64,
     },
+    Raw {
+        bytes: String,
+    },
 }
 
 fn main() {
@@ -85,6 +88,10 @@ fn run() -> Result<()> {
     for step in &script.steps {
         match step {
             Step::Delay { ms } => std::thread::sleep(Duration::from_millis(*ms)),
+            Step::Raw { bytes } => {
+                out.write_all(bytes.as_bytes())?;
+                out.flush()?;
+            }
             Step::Notify { method, params } => {
                 let message = json!({
                     "jsonrpc": "2.0",
