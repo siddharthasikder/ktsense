@@ -7,12 +7,21 @@
 
 #![forbid(unsafe_code)]
 
+pub mod budget;
+pub mod rank;
+pub mod references;
 pub mod render;
 pub mod skeleton;
 
+pub use budget::{emit_within_budget, BudgetedEmission};
+pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
+pub use references::{
+    group_references, EnclosingDeclaration, GroupingOptions, Location, Reference, ReferenceGroup,
+};
 pub use render::{render_markdown, render_skeleton, RenderOptions};
 pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
+    MAX_NESTING_DEPTH,
 };
 
 /// Version reported by every front-end, sourced from the workspace manifest.
