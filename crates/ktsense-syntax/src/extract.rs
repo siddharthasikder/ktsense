@@ -15,8 +15,12 @@
 //! Resolution here is syntactic. A type is whatever the source wrote, never a resolved or inferred
 //! one: `val x = 3` has no type in the skeleton, because inferring `Int` is a type checker's job.
 
+use std::cell::Cell;
+
 use anyhow::{Context, Result};
-use ktsense_core::{DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility};
+use ktsense_core::{
+    DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
+};
 use tree_sitter::Node;
 
 /// Node kinds that can stand where a type is expected.
@@ -36,7 +40,10 @@ const TYPE_KINDS: &[&str] = &[
 pub fn extract(path: impl Into<String>, source: &str) -> Result<FileSkeleton> {
     let tree = crate::parse(source).context("parsing Kotlin source")?;
     let root = tree.root_node();
-    let extractor = Extractor { source };
+    let extractor = Extractor {
+        source,
+        truncated: Cell::new(false),
+    };
 
     let mut file = FileSkeleton::new(path);
     let mut cursor = root.walk();
@@ -57,17 +64,19 @@ pub fn extract(path: impl Into<String>, source: &str) -> Result<FileSkeleton> {
                     .collect();
             }
             _ => {
-                if let Some(declaration) = extractor.declaration(node) {
+                if let Some(declaration) = extractor.declaration(node, 0) {
                     file.declarations.push(declaration);
                 }
             }
         }
     }
+    file.truncated = extractor.truncated.get();
     Ok(file)
 }
 
 struct Extractor<'a> {
     source: &'a str,
+    truncated: Cell<bool>,
 }
 
 impl<'a> Extractor<'a> {
@@ -76,9 +85,9 @@ impl<'a> Extractor<'a> {
     }
 
     fn first_child_of_kind<'t>(&self, node: Node<'t>, kind: &str) -> Option<Node<'t>> {
-        self.children(node)
-            .into_iter()
-            .find(|child| child.kind() == kind)
+        let mut cursor = node.walk();
+        let mut children = node.children(&mut cursor);
+        children.find(|child| child.kind() == kind)
     }
 
     fn children<'t>(&self, node: Node<'t>) -> Vec<Node<'t>> {
@@ -88,11 +97,11 @@ impl<'a> Extractor<'a> {
 
     /// Dispatches on node kind. Returns `None` for anything that is not a declaration, which is how
     /// comments, getters, semicolons and expression statements are dropped.
-    fn declaration(&self, node: Node<'_>) -> Option<Declaration> {
+    fn declaration(&self, node: Node<'_>, depth: usize) -> Option<Declaration> {
         match node.kind() {
-            "class_declaration" => Some(self.class_like(node)),
-            "object_declaration" => Some(self.object_like(node, false)),
-            "companion_object" => Some(self.object_like(node, true)),
+            "class_declaration" => Some(self.class_like(node, depth)),
+            "object_declaration" => Some(self.object_of(node, depth)),
+            "companion_object" => Some(self.companion_object(node, depth)),
             "function_declaration" => Some(self.function(node)),
             "property_declaration" => self.property(node),
             "type_alias" => Some(self.type_alias(node)),
@@ -106,7 +115,7 @@ impl<'a> Extractor<'a> {
     /// `value class` all arrive as `class_declaration`; the keyword and the modifiers tell them
     /// apart. `enum` and the `fun` of `fun interface` are unnamed keyword children rather than
     /// entries in the `modifiers` node, so they are read from the keyword set.
-    fn class_like(&self, node: Node<'_>) -> Declaration {
+    fn class_like(&self, node: Node<'_>, depth: usize) -> Declaration {
         let children = self.children(node);
         let keywords: Vec<&str> = children
             .iter()
@@ -148,15 +157,12 @@ impl<'a> Extractor<'a> {
         declaration.supertypes = self.supertypes_of(node);
         self.attach_constraints(&mut declaration, node);
         declaration.doc = self.doc_of(node);
-        declaration.children = self.body_of(node);
+        declaration.children = self.body_of(node, depth);
         declaration
     }
 
-    fn object_like(&self, node: Node<'_>, companion: bool) -> Declaration {
-        let (visibility, mut modifiers) = self.modifiers_of(node);
-        if companion {
-            modifiers.push(Modifier::Companion);
-        }
+    fn object_of(&self, node: Node<'_>, depth: usize) -> Declaration {
+        let (visibility, modifiers) = self.modifiers_of(node);
         let name_node = self.first_child_of_kind(node, "type_identifier");
         let mut declaration = Declaration::new(
             DeclKind::Object,
@@ -168,7 +174,15 @@ impl<'a> Extractor<'a> {
 
         declaration.supertypes = self.supertypes_of(node);
         declaration.doc = self.doc_of(node);
-        declaration.children = self.body_of(node);
+        declaration.children = self.body_of(node, depth);
+        declaration
+    }
+
+    /// A companion object is an object carrying [`Modifier::Companion`]; the renderer sorts it into
+    /// canonical order, so appending it after the source modifiers is enough.
+    fn companion_object(&self, node: Node<'_>, depth: usize) -> Declaration {
+        let mut declaration = self.object_of(node, depth);
+        declaration.modifiers.push(Modifier::Companion);
         declaration
     }
 
@@ -190,9 +204,22 @@ impl<'a> Extractor<'a> {
             declaration.parameters = self.function_parameters(parameters);
         }
         declaration.return_type = self.return_type_of(node);
+        if declaration.return_type.is_none() {
+            declaration.type_inferred = self.has_expression_body(node);
+        }
         self.attach_constraints(&mut declaration, node);
         declaration.doc = self.doc_of(node);
         declaration
+    }
+
+    /// An expression body (`fun f() = expr`) has a return type Kotlin infers, so an absent written
+    /// type means "inferred", not Unit. A block body (`fun f() {}`) or no body at all is genuinely
+    /// Unit. The grammar gives no field for this; an expression body's `function_body` opens with
+    /// `=`, a block body's opens with `{`.
+    fn has_expression_body(&self, node: Node<'_>) -> bool {
+        self.first_child_of_kind(node, "function_body")
+            .map(|body| self.text(body).trim_start().starts_with('='))
+            .unwrap_or(false)
     }
 
     fn property(&self, node: Node<'_>) -> Option<Declaration> {
@@ -222,6 +249,7 @@ impl<'a> Extractor<'a> {
             .into_iter()
             .find(|child| TYPE_KINDS.contains(&child.kind()))
             .map(|type_node| self.text(type_node).to_string());
+        declaration.type_inferred = declaration.return_type.is_none();
         declaration.doc = self.doc_of(node);
         Some(declaration)
     }
@@ -237,6 +265,7 @@ impl<'a> Extractor<'a> {
         .with_visibility(visibility)
         .with_modifiers(modifiers);
 
+        self.attach_type_parameters(&mut declaration, node);
         // The aliased type sits after the name; rendering it as the "return type" keeps one field
         // doing one job, and `typealias P = (User) -> Boolean` reads correctly.
         declaration.return_type = self
@@ -442,16 +471,22 @@ impl<'a> Extractor<'a> {
     }
 
     /// Members of a class, interface, object or enum body.
-    fn body_of(&self, node: Node<'_>) -> Vec<Declaration> {
+    fn body_of(&self, node: Node<'_>, depth: usize) -> Vec<Declaration> {
         let body = self
             .first_child_of_kind(node, "class_body")
             .or_else(|| self.first_child_of_kind(node, "enum_class_body"));
         let Some(body) = body else {
             return Vec::new();
         };
+        if depth >= MAX_NESTING_DEPTH {
+            if body.named_child_count() > 0 {
+                self.truncated.set(true);
+            }
+            return Vec::new();
+        }
         self.children(body)
             .into_iter()
-            .filter_map(|child| self.declaration(child))
+            .filter_map(|child| self.declaration(child, depth + 1))
             .collect()
     }
 

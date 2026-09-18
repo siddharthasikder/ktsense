@@ -4,7 +4,7 @@
 //! assertion covers the kind, its modifiers, its signature and its nesting at once. Rendering is
 //! already pinned by `ktsense-core`'s own tests, so a failure here is an extraction failure.
 
-use ktsense_core::{render_skeleton, RenderOptions};
+use ktsense_core::{render_skeleton, RenderOptions, MAX_NESTING_DEPTH};
 use ktsense_syntax::extract;
 
 fn skeleton_of(source: &str) -> String {
@@ -272,4 +272,52 @@ class UserService(private val repo: UserRepository)
             Some("Application service for user lifecycle.".to_string()),
         )
     );
+}
+
+#[test]
+fn inferred_types_are_marked_unknown_while_genuine_unit_and_written_types_are_not() {
+    let skeleton = skeleton_of(
+        r#"
+val inferred = 3
+val typed: Int = 3
+fun expressionBody() = compute()
+fun blockBody() { compute() }
+fun explicit(): Int = compute()
+interface Contract { fun abstractMethod() }
+"#,
+    );
+
+    assert_eq!(
+        skeleton,
+        concat!(
+            "val inferred /* inferred */\n",
+            "val typed: Int\n",
+            "fun expressionBody() /* inferred */\n",
+            "fun blockBody()\n",
+            "fun explicit(): Int\n",
+            "interface Contract { fun abstractMethod() }"
+        )
+    );
+}
+
+#[test]
+fn a_generic_typealias_keeps_its_type_parameters() {
+    let skeleton = skeleton_of("typealias Pred<T> = (T) -> Boolean\n");
+
+    assert_eq!(skeleton, "typealias Pred<T> = (T) -> Boolean");
+}
+
+#[test]
+fn nesting_past_the_depth_limit_truncates_instead_of_overflowing_the_stack() {
+    let requested_depth = 2000;
+    let mut source = String::new();
+    for level in 0..requested_depth {
+        source.push_str(&format!("class C{level} {{\n"));
+    }
+    source.push_str(&"}".repeat(requested_depth));
+
+    let file = extract("deep.kt", &source).expect("extract");
+
+    let observed = (file.truncated, file.declaration_count());
+    assert_eq!(observed, (true, MAX_NESTING_DEPTH + 1));
 }

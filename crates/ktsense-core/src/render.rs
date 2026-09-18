@@ -16,9 +16,20 @@
 //! 7. Private and internal declarations are omitted unless asked for. A file that has nothing else
 //!    renders as an empty skeleton, which is the correct answer rather than an error.
 
-use crate::skeleton::{DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility};
+use crate::skeleton::{
+    DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
+};
 
 const INDENT: &str = "    ";
+
+/// Printed where a type would go when the type is inferred and not written in source. Deliberately
+/// not a valid type: the fenced block stays honest that the type is unknown rather than inventing
+/// a concrete one, which the accuracy rule forbids.
+const INFERRED_TYPE_MARKER: &str = "/* inferred */";
+
+/// Printed in place of members the depth limit stopped the renderer from descending into, so a
+/// bounded render announces itself rather than reading as a complete outline.
+const TRUNCATION_NOTICE: &str = "// truncated: nesting depth limit reached";
 
 /// Width past which a single-member container opens braces instead of collapsing onto one line.
 /// Narrower than Kotlin's own 120-column guidance, because this output is read inside an agent's
@@ -62,6 +73,9 @@ fn is_visible_api(visibility: Visibility) -> bool {
 pub fn render_skeleton(file: &FileSkeleton, options: &RenderOptions) -> String {
     let mut writer = SkeletonWriter::new(options);
     writer.write_all(&file.declarations, 0);
+    if file.truncated {
+        writer.note_truncation(0);
+    }
     writer.finish()
 }
 
@@ -125,6 +139,10 @@ impl<'a> SkeletonWriter<'a> {
 
         if !declaration.is_container() || members.is_empty() {
             self.lines.push(format!("{padding}{header}"));
+        } else if depth >= MAX_NESTING_DEPTH {
+            self.lines.push(format!("{padding}{header} {{"));
+            self.note_truncation(depth + 1);
+            self.lines.push(format!("{padding}}}"));
         } else if let Some(inlined) = self.inline_form(&header, &members, padding.len()) {
             self.lines.push(format!("{padding}{inlined}"));
         } else {
@@ -132,6 +150,11 @@ impl<'a> SkeletonWriter<'a> {
             self.write_members(&members, depth + 1);
             self.lines.push(format!("{padding}}}"));
         }
+    }
+
+    fn note_truncation(&mut self, depth: usize) {
+        self.lines
+            .push(format!("{}{TRUNCATION_NOTICE}", INDENT.repeat(depth)));
     }
 
     fn write_doc(&mut self, declaration: &Declaration, padding: &str) {
@@ -301,7 +324,11 @@ fn constructor_keyword(declaration: &Declaration) -> String {
 /// annotation: `typealias UserPredicate = (User) -> Boolean`.
 fn type_segment(declaration: &Declaration) -> String {
     let Some(type_name) = &declaration.return_type else {
-        return String::new();
+        return if declaration.type_inferred {
+            format!(" {INFERRED_TYPE_MARKER}")
+        } else {
+            String::new()
+        };
     };
     let separator = if declaration.kind == DeclKind::TypeAlias {
         " = "
@@ -547,5 +574,53 @@ mod tests {
                 "fun hasAnyEmailDomain(vararg domains: String, ignoreCase: Boolean = true): Boolean  # L24"
             )
         );
+    }
+
+    #[test]
+    fn an_inferred_type_renders_a_visible_marker_never_a_bare_or_unit_declaration() {
+        let file = FileSkeleton::new("app/Inferred.kt").with_declarations(vec![
+            Declaration::val_property("inferred", 1).with_inferred_type(),
+            Declaration::function("expressionBody", 2).with_inferred_type(),
+            Declaration::function("returnsUnit", 3),
+        ]);
+
+        assert_eq!(
+            render_skeleton(&file, &RenderOptions::default()),
+            concat!(
+                "val inferred /* inferred */\n",
+                "fun expressionBody() /* inferred */\n",
+                "fun returnsUnit()"
+            )
+        );
+    }
+
+    #[test]
+    fn a_file_truncated_by_extraction_appends_a_notice_so_it_never_reads_as_complete() {
+        let file = FileSkeleton::new("deep.kt")
+            .with_declarations(vec![Declaration::class("C", 1)])
+            .marked_truncated();
+
+        assert_eq!(
+            render_skeleton(&file, &RenderOptions::default()),
+            concat!("class C\n", "// truncated: nesting depth limit reached")
+        );
+    }
+
+    #[test]
+    fn rendering_below_the_depth_limit_truncates_with_a_notice_rather_than_recursing_unbounded() {
+        let mut container = Declaration::class("C0", 1)
+            .containing(vec![Declaration::val_property("leaf", 1).returning("Int")]);
+        for level in 1..MAX_NESTING_DEPTH + 5 {
+            container = Declaration::class(format!("C{level}"), 1).containing(vec![container]);
+        }
+        let file = FileSkeleton::new("deep.kt").with_declarations(vec![container]);
+
+        let rendered = render_skeleton(&file, &RenderOptions::default());
+        let observed = (
+            rendered.contains(TRUNCATION_NOTICE),
+            rendered.matches("class C").count(),
+        );
+
+        assert_eq!(observed, (true, MAX_NESTING_DEPTH + 1));
     }
 }

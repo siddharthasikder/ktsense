@@ -14,6 +14,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum declaration nesting the extractor descends into and the renderer emits.
+///
+/// Both walk one recursive frame per nesting level, so an adversarial or generated file can
+/// overflow the thread stack and abort the process; a daemon pointed at an arbitrary repository
+/// must degrade to a value instead. Real Kotlin nests only a handful of levels, so this bound is
+/// far above any legitimate source yet small enough to stay well within a worker thread's stack.
+pub const MAX_NESTING_DEPTH: usize = 64;
+
 /// One source file reduced to its declarations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileSkeleton {
@@ -25,6 +33,10 @@ pub struct FileSkeleton {
     pub imports: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declarations: Vec<Declaration>,
+    /// True when extraction stopped before the deepest declarations because nesting exceeded
+    /// [`MAX_NESTING_DEPTH`]. Set so a bounded outline is never read as a complete one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 impl FileSkeleton {
@@ -34,6 +46,7 @@ impl FileSkeleton {
             package: None,
             imports: Vec::new(),
             declarations: Vec::new(),
+            truncated: false,
         }
     }
 
@@ -49,6 +62,12 @@ impl FileSkeleton {
 
     pub fn with_declarations(mut self, declarations: Vec<Declaration>) -> Self {
         self.declarations = declarations;
+        self
+    }
+
+    /// Marks the outline as truncated: extraction stopped before the deepest declarations.
+    pub fn marked_truncated(mut self) -> Self {
+        self.truncated = true;
         self
     }
 
@@ -88,9 +107,18 @@ pub struct Declaration {
     /// which is exactly the kind of confident wrong answer the accuracy rule forbids.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constructor_visibility: Option<Visibility>,
-    /// Absent means Unit for a function, or an inferred type for a property.
+    /// The type as written in source: a function's declared return type, or the aliased type of a
+    /// `typealias`. Read together with `type_inferred`: absent while `type_inferred` is false means
+    /// a function genuinely returns Unit, whereas absent while `type_inferred` is true means the
+    /// type is inferred and not syntactically knowable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_type: Option<String>,
+    /// True when a value or return type exists in the language but is not written in source: an
+    /// expression-body function or a property with an inferred type. Kept distinct from an absent
+    /// `return_type` so an inferred type is never rendered as a concrete one or mistaken for Unit,
+    /// which the accuracy rule forbids.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub type_inferred: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supertypes: Vec<String>,
     /// A trailing constraint clause without the keyword, for example `T : Any`.
@@ -115,6 +143,7 @@ impl Declaration {
             parameters: Vec::new(),
             constructor_visibility: None,
             return_type: None,
+            type_inferred: false,
             supertypes: Vec::new(),
             type_constraints: None,
             doc: None,
@@ -173,6 +202,13 @@ impl Declaration {
 
     pub fn returning(mut self, return_type: impl Into<String>) -> Self {
         self.return_type = Some(return_type.into());
+        self
+    }
+
+    /// Marks the value or return type as inferred: present in the language but not written in
+    /// source, so the outline must show it is unknown rather than print a concrete type.
+    pub fn with_inferred_type(mut self) -> Self {
+        self.type_inferred = true;
         self
     }
 
