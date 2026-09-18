@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use ktsense_core::{render_markdown, FileSkeleton, RenderOptions};
+use ktsense_core::{
+    build_import_graph, render_deps_dot, render_deps_markdown, render_markdown, DepLevel,
+    FileSkeleton, ImportGraph, RenderOptions,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -38,6 +41,24 @@ struct Cli {
 enum Format {
     Md,
     Json,
+    /// Graphviz DOT. Only `deps` produces it; other commands reject it rather than pretend.
+    Dot,
+}
+
+/// Whether `deps` connects packages or individual files.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Level {
+    File,
+    Package,
+}
+
+impl From<Level> for DepLevel {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::File => DepLevel::File,
+            Level::Package => DepLevel::Package,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,7 +78,11 @@ enum Command {
     /// Definition, usages, implementors and callers of one symbol
     Trace { symbol: String },
     /// Import graph of the workspace
-    Deps,
+    Deps {
+        /// Whether nodes are packages or individual files.
+        #[arg(long, value_enum, default_value_t = Level::Package)]
+        level: Level,
+    },
     /// Token-budgeted map of the most central files
     Map {
         #[arg(long, default_value_t = 4000)]
@@ -189,6 +214,13 @@ impl CommandError {
             message: format!("ktsense: {card} is not implemented yet"),
         }
     }
+
+    fn unsupported_format(command: &str) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: {command} does not support --format dot (only deps does)"),
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -250,6 +282,10 @@ fn run(cli: Cli) -> Result<String, CommandError> {
             }
             outline(&resolve_root(root.as_deref(), &file), format, &options)
         }
+        Command::Deps { level } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            deps(&base, level.into(), format)
+        }
         ref pending => Err(CommandError::unimplemented(not_implemented_label(pending))),
     }
 }
@@ -298,7 +334,103 @@ fn present(
         Format::Json => serde_json::to_string_pretty(skeleton)
             .map(|json| format!("{json}\n"))
             .map_err(CommandError::serialization),
+        Format::Dot => Err(CommandError::unsupported_format("outline")),
     }
+}
+
+/// Directory names never worth walking into: version control, build output, and editor state.
+const IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "target",
+    "build",
+    ".gradle",
+    ".idea",
+    "node_modules",
+];
+
+/// A ceiling on directory recursion so a symlink the walk failed to skip, or a pathologically deep
+/// tree, degrades to a bounded result instead of exhausting the process.
+const MAX_TRAVERSAL_DEPTH: usize = 64;
+
+fn deps(root: &Path, level: DepLevel, format: Format) -> Result<String, CommandError> {
+    let files = collect_kotlin_files(root)?;
+    let skeletons: Vec<FileSkeleton> = files
+        .iter()
+        .filter_map(|path| skeleton_for_deps(root, path))
+        .collect();
+    let graph = build_import_graph(&skeletons, level);
+    present_deps(&graph, format)
+}
+
+fn present_deps(graph: &ImportGraph, format: Format) -> Result<String, CommandError> {
+    match format {
+        Format::Md => Ok(render_deps_markdown(graph)),
+        Format::Dot => Ok(render_deps_dot(graph)),
+        Format::Json => serde_json::to_string_pretty(graph)
+            .map(|json| format!("{json}\n"))
+            .map_err(CommandError::serialization),
+    }
+}
+
+/// A malformed file contributes no honest edges, so it is skipped rather than aborting the whole
+/// graph: one unreadable or non-UTF-8 file in a large tree must not deny an answer for the rest.
+fn skeleton_for_deps(root: &Path, path: &Path) -> Option<FileSkeleton> {
+    let source = fs::read_to_string(path).ok()?;
+    ktsense_syntax::extract(normalized_path(root, path), &source).ok()
+}
+
+/// The path as it appears in output: relative to the workspace root and always `/`-separated, so
+/// the same repository yields the same graph on every filesystem.
+fn normalized_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn collect_kotlin_files(root: &Path) -> Result<Vec<PathBuf>, CommandError> {
+    let mut files = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        let mut children = read_child_paths(&directory)?;
+        children.sort();
+        for child in children {
+            let metadata =
+                fs::symlink_metadata(&child).map_err(|error| CommandError::read(&child, &error))?;
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if depth < MAX_TRAVERSAL_DEPTH && !is_ignored_dir(&child) {
+                    pending.push((child, depth + 1));
+                }
+            } else if has_kotlin_extension(&child) {
+                files.push(child);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn read_child_paths(directory: &Path) -> Result<Vec<PathBuf>, CommandError> {
+    let entries = fs::read_dir(directory).map_err(|error| CommandError::read(directory, &error))?;
+    entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| CommandError::read(directory, &error))
+        })
+        .collect()
+}
+
+fn is_ignored_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || IGNORED_DIRS.contains(&name))
 }
 
 fn not_implemented_label(command: &Command) -> &'static str {
@@ -306,7 +438,7 @@ fn not_implemented_label(command: &Command) -> &'static str {
         Command::Outline { .. } => "outline (KT-07)",
         Command::Symbols { .. } => "symbols (KT-16)",
         Command::Trace { .. } => "trace (KT-18)",
-        Command::Deps => "deps (KT-20)",
+        Command::Deps { .. } => "deps (KT-20)",
         Command::Map { .. } => "map (KT-22)",
         Command::Check { .. } => "check (KT-23)",
         Command::Context { .. } => "context (KT-35)",

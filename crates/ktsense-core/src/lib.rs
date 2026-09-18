@@ -8,17 +8,23 @@
 #![forbid(unsafe_code)]
 
 pub mod budget;
+pub mod imports;
 pub mod rank;
 pub mod references;
 pub mod render;
+pub mod scc;
 pub mod skeleton;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
+pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
     group_references, EnclosingDeclaration, GroupingOptions, Location, Reference, ReferenceGroup,
 };
-pub use render::{render_markdown, render_skeleton, RenderOptions};
+pub use render::{
+    render_deps_dot, render_deps_markdown, render_markdown, render_skeleton, RenderOptions,
+};
+pub use scc::{cycles, strongly_connected_components};
 pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
     MAX_NESTING_DEPTH,

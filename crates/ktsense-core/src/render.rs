@@ -24,6 +24,7 @@
 
 use std::borrow::Cow;
 
+use crate::imports::ImportGraph;
 use crate::skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
 };
@@ -118,6 +119,90 @@ pub fn render_markdown(file: &FileSkeleton, options: &RenderOptions) -> String {
     out.push_str(&body);
     out.push_str(&format!("\n{fence}\n"));
     out
+}
+
+/// The import graph as compressed Markdown an agent reads: a one-line census, then the edges,
+/// cycles and external imports, each list saying `- none` rather than vanishing when it is empty.
+/// Every node and import is source-derived, so it passes through [`neutralize`] on the way out.
+pub fn render_deps_markdown(graph: &ImportGraph) -> String {
+    let mut out = String::from("# Dependencies\n\n");
+    out.push_str(&format!(
+        "Level: {}. {}, {}, {}, {}.\n",
+        graph.level.noun(),
+        pluralize(graph.nodes.len(), graph.level.noun()),
+        pluralize(graph.edges.len(), "edge"),
+        pluralize(graph.external.len(), "external import"),
+        pluralize(graph.cycles.len(), "cycle"),
+    ));
+
+    out.push_str("\n## Edges\n");
+    append_lines(&mut out, &graph.edges, |edge| {
+        format!("- {} -> {}", neutralize(&edge.from), neutralize(&edge.to))
+    });
+
+    out.push_str("\n## Cycles\n");
+    append_lines(&mut out, &graph.cycles, |cycle| {
+        format!("- {{ {} }}", join_neutralized(cycle))
+    });
+
+    out.push_str("\n## External imports\n");
+    append_lines(&mut out, &graph.external, |external| {
+        format!(
+            "- {} -> {}",
+            neutralize(&external.source),
+            neutralize(&external.import)
+        )
+    });
+
+    out.push_str(
+        "\nResolution is syntactic: edges are import statements, not type-checked references.\n",
+    );
+    out
+}
+
+/// The import graph as a Graphviz digraph: nodes then directed edges, both sorted upstream, so the
+/// same graph always renders the same text. Source-derived identifiers pass through [`neutralize`].
+pub fn render_deps_dot(graph: &ImportGraph) -> String {
+    let mut out = String::from("digraph deps {\n  rankdir=LR;\n");
+    for node in &graph.nodes {
+        out.push_str(&format!("  \"{}\";\n", neutralize(node)));
+    }
+    for edge in &graph.edges {
+        out.push_str(&format!(
+            "  \"{}\" -> \"{}\";\n",
+            neutralize(&edge.from),
+            neutralize(&edge.to)
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn append_lines<T>(out: &mut String, items: &[T], mut render_line: impl FnMut(&T) -> String) {
+    if items.is_empty() {
+        out.push_str("- none\n");
+        return;
+    }
+    for item in items {
+        out.push_str(&render_line(item));
+        out.push('\n');
+    }
+}
+
+fn join_neutralized(members: &[String]) -> String {
+    members
+        .iter()
+        .map(|member| neutralize(member).into_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn pluralize(count: usize, singular: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
 }
 
 /// A fence long enough to survive the body: one backtick past its longest backtick run, never

@@ -71,6 +71,33 @@ impl<N: Ord + Clone> Graph<N> {
     pub fn nodes(&self) -> impl Iterator<Item = &N> {
         self.node_ids.iter()
     }
+
+    /// Every directed edge as a `(from, to)` pair, parallel edges already collapsed. The order
+    /// follows node interning, so a consumer that needs determinism sorts its own result.
+    pub fn edges(&self) -> impl Iterator<Item = (&N, &N)> + '_ {
+        self.out_edges
+            .iter()
+            .enumerate()
+            .flat_map(move |(from, targets)| {
+                targets
+                    .iter()
+                    .map(move |&to| (&self.node_ids[from], &self.node_ids[to]))
+            })
+    }
+
+    /// Whether the graph holds the directed edge `from -> to`. A self-loop is the case where the
+    /// two arguments are equal, which is how a single-node strongly-connected component is told
+    /// apart from a genuine cycle.
+    pub fn contains_edge(&self, from: &N, to: &N) -> bool {
+        match (self.position(from), self.position(to)) {
+            (Some(from), Some(to)) => self.out_edges[from].binary_search(&to).is_ok(),
+            _ => false,
+        }
+    }
+
+    fn position(&self, node: &N) -> Option<usize> {
+        self.node_ids.iter().position(|candidate| candidate == node)
+    }
 }
 
 fn intern<N: Ord + Clone>(
