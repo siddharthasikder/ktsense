@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ktsense-core",
+    "crates/ktsense-syntax",
+    "crates/ktsense-lsp",
+    "crates/ktsense-daemon",
+    "crates/ktsense-mcp",
+    "crates/ktsense-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/sikders/ktsense"
+homepage = "https://github.com/sikders/ktsense"
+authors = ["ktsense contributors"]
+
+[workspace.dependencies]
+ktsense-core = { path = "crates/ktsense-core", version = "0.0.0" }
+ktsense-syntax = { path = "crates/ktsense-syntax", version = "0.0.0" }
+ktsense-lsp = { path = "crates/ktsense-lsp", version = "0.0.0" }
+ktsense-daemon = { path = "crates/ktsense-daemon", version = "0.0.0" }
+ktsense-mcp = { path = "crates/ktsense-mcp", version = "0.0.0" }
+
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"
+ignore = "0.4"
+lsp-types = "0.97"
+tree-sitter = "0.26"
+tree-sitter-kotlin = { package = "brokk-tree-sitter-kotlin", version = "0.4" }
+insta = { version = "1", features = ["json"] }
+assert_cmd = "2"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

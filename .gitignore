@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# benchmark corpora are cloned, never vendored
+/bench/repos/
+/bench/out/
+
+# agent artifacts: scratchpad and task breakdowns are never committed
+.agents/scratchpad/
+.agents/tasks/
+
+# local engine cache and daemon sockets
+.ktsense/
+*.sock

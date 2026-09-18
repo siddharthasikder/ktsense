@@ -1,0 +1,18 @@
+[package]
+name = "ktsense-mcp"
+description = "MCP stdio server exposing the ktsense commands as agent tools."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ktsense-core = { workspace = true }
+ktsense-lsp = { workspace = true }
+ktsense-syntax = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

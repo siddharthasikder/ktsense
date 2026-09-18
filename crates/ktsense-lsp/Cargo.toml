@@ -1,0 +1,22 @@
+[package]
+name = "ktsense-lsp"
+description = "LSP client that drives an embedded kmp-lsp child process over stdio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+real-lsp = []
+
+[dependencies]
+ktsense-core = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+lsp-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
