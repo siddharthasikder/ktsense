@@ -41,8 +41,18 @@
 # the reported totals do not depend on file iteration order. Outline runs with
 # paths relative to <root> so the report is identical on any machine.
 #
-# Exits 1 if outline fails on any file, so a broken file is never silently
-# dropped from the denominator.
+# Rejected files      A file `ktsense outline` refuses (a syntax error as the
+#                   parser sees it) is excluded from BOTH totals, the same
+#                   symmetric treatment .kts files get, and every such file is
+#                   listed in the report with the reason, so nothing is dropped
+#                   silently and the percent is honest about what it covers.
+#                   Rejections do not fail the run: the exit status is reserved
+#                   for the --max-percent gate, so the gate can be demonstrated on
+#                   a corpus with a handful of files the grammar cannot yet parse
+#                   (tracked as KT-52).
+#
+# Exit status: 0 on a report, or a gate that passes; 1 when the gate fails or no
+# file could be measured; 2 on a usage error.
 
 set -euo pipefail
 
@@ -102,16 +112,23 @@ root_abs=$(cd "$root" && pwd)
 raw_total=0
 skel_total=0
 file_count=0
+rejected_count=0
+rejected_raw=0
 skel_tmp=$(mktemp)
-trap 'rm -f "$skel_tmp"' EXIT
+err_tmp=$(mktemp)
+rejected_tmp=$(mktemp)
+trap 'rm -f "$skel_tmp" "$err_tmp" "$rejected_tmp"' EXIT
 
 cd "$root_abs"
 while IFS= read -r -d '' file; do
     file=${file#./}
     raw=$(wc -c < "$file")
-    if ! "$bin" outline "$file" > "$skel_tmp"; then
-        echo "compress.sh: outline failed on $file" >&2
-        exit 1
+    if ! "$bin" outline "$file" > "$skel_tmp" 2> "$err_tmp"; then
+        reason=$(head -n 1 "$err_tmp" | sed -e 's/^ktsense: //' -e "s|^$file ||")
+        printf '  %s: %s\n' "$file" "${reason:-outline exited non-zero}" >> "$rejected_tmp"
+        rejected_count=$((rejected_count + 1))
+        rejected_raw=$((rejected_raw + raw))
+        continue
     fi
     skel=$(wc -c < "$skel_tmp")
     raw_total=$((raw_total + raw))
@@ -123,7 +140,15 @@ done < <(find . \
         -o -name node_modules \) -prune \) \
     -o \( -type f -name '*.kt' -print0 \))
 
-[ "$file_count" -gt 0 ] || { echo "compress.sh: no .kt files under $root" >&2; exit 1; }
+if [ "$file_count" -eq 0 ]; then
+    if [ "$rejected_count" -gt 0 ]; then
+        echo "compress.sh: every .kt file under $root was rejected by outline:" >&2
+        cat "$rejected_tmp" >&2
+    else
+        echo "compress.sh: no .kt files under $root" >&2
+    fi
+    exit 1
+fi
 
 read -r est_tokens skel_pct reduction_pct <<EOF
 $(awk -v raw="$raw_total" -v skel="$skel_total" 'BEGIN {
@@ -135,12 +160,17 @@ EOF
 
 printf 'ktsense compression report\n'
 printf 'root:              %s\n' "$root"
-printf 'files (.kt):       %d\n' "$file_count"
-printf 'raw bytes:         %d\n' "$raw_total"
+printf 'files (.kt):       %d measured, %d rejected\n' "$file_count" "$rejected_count"
+printf 'raw bytes:         %d  (measured files only)\n' "$raw_total"
 printf 'skeleton bytes:    %d\n' "$skel_total"
 printf 'estimated tokens:  %d  (skeleton, ceil(bytes/3.6), estimate)\n' "$est_tokens"
 printf 'skeleton is %s%% of raw source\n' "$skel_pct"
 printf 'reduction:         %s%%\n' "$reduction_pct"
+if [ "$rejected_count" -gt 0 ]; then
+    printf 'rejected by outline (%d files, %d raw bytes, excluded from both totals):\n' \
+        "$rejected_count" "$rejected_raw"
+    cat "$rejected_tmp"
+fi
 
 if [ -n "$max_percent" ]; then
     if awk -v p="$skel_pct" -v m="$max_percent" 'BEGIN { exit !(p >= m) }'; then
