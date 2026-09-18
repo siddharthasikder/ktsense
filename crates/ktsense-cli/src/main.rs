@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod daemon;
 mod symbols;
 
 use std::borrow::Cow;
@@ -159,6 +160,10 @@ enum DaemonAction {
     Start,
     Stop,
     Status,
+    /// Serve until stopped, idle, or faulted. Hidden because it is how `start` detaches, not a
+    /// command to run by hand.
+    #[command(hide = true)]
+    Serve,
 }
 
 /// Process exit codes are a contract the calling agent branches on, so the whole set is named once
@@ -383,6 +388,15 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         Command::Map { budget } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             repository_map(&base, budget, format).map(CommandOutcome::success)
+        }
+        Command::Daemon { action } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            match action {
+                DaemonAction::Start => daemon::start(&base),
+                DaemonAction::Stop => daemon::shutdown(&base),
+                DaemonAction::Status => daemon::report_status(&base),
+                DaemonAction::Serve => daemon::serve(&base),
+            }
         }
         Command::Check { path } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
