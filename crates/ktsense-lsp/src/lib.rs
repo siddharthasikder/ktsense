@@ -1,11 +1,17 @@
 //! Client for the embedded `kmp-lsp` engine.
 //!
 //! ktsense wraps upstream by process rather than by linking: `kmp-lsp` publishes only a binary
-//! target, so there is no library to depend on. The client and the request wrappers land in KT-13
-//! and KT-14. This module currently owns the version pin and the binary lookup order, which every
-//! later piece needs.
+//! target, so there is no library to depend on. This crate owns the version pin, the binary lookup
+//! order, the stdio framing codec, and the async [`LspClient`] that drives the child process. The
+//! typed request wrappers layer on top in KT-14.
 
 #![forbid(unsafe_code)]
+
+mod client;
+mod framing;
+
+pub use client::{InitializeConfig, LspClient, LspError, Notification, Teardown};
+pub use framing::FramingError;
 
 use std::path::PathBuf;
 
@@ -68,6 +74,29 @@ pub fn discovery_order(
     }
     candidates.push(PathBuf::from(LSP_BINARY));
     candidates
+}
+
+/// Locates the engine binary via [`discovery_order`] and spawns a client against it.
+///
+/// The first candidate that exists on disk wins; failing that, the bare binary name is used and
+/// resolved through `PATH` when the child is spawned.
+pub async fn launch() -> Result<LspClient, LspError> {
+    LspClient::spawn(&locate_binary()).await
+}
+
+fn locate_binary() -> PathBuf {
+    let candidates = discovery_order(
+        std::env::var_os(LSP_PATH_ENV).map(PathBuf::from),
+        std::env::current_exe().ok(),
+    );
+    let fallback = candidates
+        .last()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(LSP_BINARY));
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]
