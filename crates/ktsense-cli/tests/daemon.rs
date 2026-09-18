@@ -179,3 +179,89 @@ fn the_lifecycle_starts_once_is_idempotent_and_stops_cleanly() {
         )
     );
 }
+
+/// KT-29: with a live daemon, `outline` and `deps` answered through the socket are byte-identical
+/// to the in-process answers, in both formats. `KTSENSE_REQUIRE_DAEMON=1` forbids the fallback so
+/// the daemon path is proven to have answered, and `KTSENSE_NO_DAEMON=1` forces the in-process
+/// path; without both knobs the equality could pass with the daemon never consulted.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn routed_outline_and_deps_match_the_in_process_answers_byte_for_byte() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let started = daemon(temp.path(), &["daemon", "start", "--root", FIXTURE]);
+    assert_eq!(started.code, Some(0), "start failed: {}", started.stderr);
+
+    let cases: [&[&str]; 4] = [
+        &[
+            "outline",
+            "core/src/main/kotlin/shop/order/OrderRepository.kt",
+        ],
+        &[
+            "--format",
+            "json",
+            "outline",
+            "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+            "--private",
+        ],
+        &["deps"],
+        &["--format", "dot", "deps", "--level", "file"],
+    ];
+    let mut answers = Vec::new();
+    for case in cases {
+        let via_daemon = routed(temp.path(), case, "KTSENSE_REQUIRE_DAEMON");
+        let in_process = routed(temp.path(), case, "KTSENSE_NO_DAEMON");
+        answers.push((
+            via_daemon.code,
+            in_process.code,
+            via_daemon.stdout == in_process.stdout,
+            via_daemon.stderr.is_empty() && in_process.stderr.is_empty(),
+            !via_daemon.stdout.is_empty(),
+        ));
+    }
+    let unreachable = routed(
+        temp.path(),
+        &[
+            "--root",
+            "fixtures/tiny-app",
+            "outline",
+            "src/main/kotlin/app/service/Service.kt",
+        ],
+        "KTSENSE_REQUIRE_DAEMON",
+    );
+    let stopped = daemon(temp.path(), &["daemon", "stop", "--root", FIXTURE]);
+
+    assert_eq!(
+        (
+            answers,
+            unreachable.code,
+            unreachable.stderr.contains("no daemon answered"),
+            stopped.code,
+        ),
+        (
+            vec![(Some(0), Some(0), true, true, true); 4],
+            Some(1),
+            true,
+            Some(0),
+        ),
+        "unreachable stderr: {}",
+        unreachable.stderr
+    );
+}
+
+#[cfg(feature = "real-lsp")]
+fn routed(runtime_dir: &Path, args: &[&str], knob: &str) -> Run {
+    let mut command = Command::cargo_bin("ktsense").expect("binary builds");
+    command
+        .current_dir(WORKSPACE_ROOT)
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env(knob, "1");
+    if !args.contains(&"--root") {
+        command.args(["--root", FIXTURE]);
+    }
+    let output = command.args(args).output().expect("binary runs");
+    Run {
+        code: output.status.code(),
+        stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+    }
+}

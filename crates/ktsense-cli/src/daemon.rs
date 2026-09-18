@@ -112,6 +112,7 @@ pub(crate) fn serve(root: &Path) -> Result<CommandOutcome, CommandError> {
         let engine = WarmEngine::warm_up(initialize)
             .await
             .map_err(|error| failure(format!("ktsense: cannot start the engine: {error}")))?;
+        let engine = crate::routing::CommandEngine::new(root, engine);
         run(config, engine)
             .await
             .map_err(|error| failure(format!("ktsense: daemon failed: {error}")))
@@ -133,12 +134,13 @@ fn reason_label(reason: StopReason) -> &'static str {
 
 /// The socket a root's daemon listens on, resolved exactly as the daemon crate resolves it so the two
 /// halves cannot disagree about where to meet. The environment is read here, at the edge.
-fn socket_for(root: &Path) -> PathBuf {
+pub(crate) fn socket_for(root: &Path) -> PathBuf {
+    let root = canonical_root(root);
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    socket_path(&socket_dir(runtime.as_deref(), &home), root)
+    socket_path(&socket_dir(runtime.as_deref(), &home), &root)
 }
 
 /// Resolves the root before it is used as a daemon's identity, so `.`, a relative path and an

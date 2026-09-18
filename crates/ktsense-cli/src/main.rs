@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod daemon;
+mod routing;
 mod symbols;
 mod trace;
 
@@ -296,6 +297,26 @@ impl CommandError {
         }
     }
 
+    /// A daemon answered the routed command with this failure; the message is already the CLI's
+    /// own, produced by the same code the in-process path runs.
+    fn routed_failure(message: String) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message,
+        }
+    }
+
+    fn no_daemon(root: &Path) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!(
+                "ktsense: no daemon answered for {} and {} is set",
+                root.display(),
+                routing::REQUIRE_DAEMON_ENV
+            ),
+        }
+    }
+
     fn mcp(error: anyhow::Error) -> Self {
         Self {
             exit: Exit::Failure,
@@ -392,19 +413,22 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             private,
             kdoc,
         } => {
-            let mut options = RenderOptions::default();
-            if private {
-                options = options.with_private();
-            }
-            if kdoc {
-                options = options.with_doc();
-            }
-            outline(&resolve_root(root.as_deref(), &file), format, &options)
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            let command = routing::RoutedCommand::Outline {
+                file,
+                private,
+                kdoc,
+            };
+            routing::route(&base, &daemon::socket_for(&base), command, format)
                 .map(CommandOutcome::success)
         }
         Command::Deps { level } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
-            deps(&base, level.into(), format).map(CommandOutcome::success)
+            let command = routing::RoutedCommand::Deps {
+                level: DepLevel::from(level).into(),
+            };
+            routing::route(&base, &daemon::socket_for(&base), command, format)
+                .map(CommandOutcome::success)
         }
         Command::Symbols {
             query,
@@ -610,10 +634,18 @@ fn has_kotlin_extension(file: &Path) -> bool {
     )
 }
 
-fn outline(file: &Path, format: Format, options: &RenderOptions) -> Result<String, CommandError> {
+/// Outlines `file`, labelling the skeleton with its path relative to `root`, so the same file gets
+/// the same heading whether the root was given as `.`, a relative path or an absolute one, and
+/// whether a daemon or this process answered.
+fn outline(
+    root: &Path,
+    file: &Path,
+    format: Format,
+    options: &RenderOptions,
+) -> Result<String, CommandError> {
     let source = fs::read_to_string(file).map_err(|error| CommandError::read(file, &error))?;
     reject_syntax_errors(file, &source)?;
-    let skeleton = ktsense_syntax::extract(file.to_string_lossy(), &source)
+    let skeleton = ktsense_syntax::extract(normalized_path(root, file), &source)
         .map_err(|error| CommandError::extraction(file, &error))?;
     present(&skeleton, format, options)
 }
