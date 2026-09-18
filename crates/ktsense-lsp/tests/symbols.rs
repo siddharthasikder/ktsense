@@ -167,7 +167,9 @@ mod real {
         let root = multi_module();
 
         let save = resolve_symbol(&root, "save").await.expect("find save");
-        let missing = resolve_symbol(&root, "ZzzNope").await.expect("find missing");
+        let missing = resolve_symbol(&root, "ZzzNope")
+            .await
+            .expect("find missing");
 
         let observed = match &save {
             Resolution::Ambiguous(candidates) => (
