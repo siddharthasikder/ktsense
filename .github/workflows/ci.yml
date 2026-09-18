@@ -42,3 +42,59 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+  # Gate 2 (KT-25): the same suite with the engine-gated tests compiled in, against the pinned
+  # upstream binary, plus the publishable compression gate over the real corpora. A separate job so
+  # the install-free suite above stays fast and never depends on the network.
+  real-lsp:
+    name: real-lsp tests and compression gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The pin lives in one place, ktsense-lsp::PINNED_UPSTREAM_VERSION; read it rather than
+      # repeat it, so a deliberate bump there is the only edit a release needs.
+      - name: Read the pinned engine version
+        id: pin
+        run: |
+          version=$(sed -n 's/^pub const PINNED_UPSTREAM_VERSION: &str = "\(.*\)";$/\1/p' crates/ktsense-lsp/src/version.rs)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # `cargo install kmp-lsp` provides the engine only, not the kmp-jar-indexer sidecar; nothing
+      # in this job assumes the sidecar exists.
+      - name: Install kmp-lsp ${{ steps.pin.outputs.version }}
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: kmp-lsp@${{ steps.pin.outputs.version }}
+
+      - name: Engine reports the pinned version
+        run: kmp-lsp --version | tee /dev/stderr | grep -F "${{ steps.pin.outputs.version }}"
+
+      - name: Test with the engine
+        run: cargo test --workspace --locked --features ktsense-cli/real-lsp,ktsense-lsp/real-lsp
+
+      - name: Build the release binary the benchmark measures
+        run: cargo build -p ktsense-cli --release --locked
+
+      - name: Restore the pinned corpora
+        uses: actions/cache@v4
+        with:
+          path: bench/repos
+          key: bench-repos-${{ hashFiles('bench/clone.sh') }}
+
+      - name: Clone the pinned corpora
+        run: bash bench/clone.sh
+
+      - name: Compression gate, kotlinx.coroutines
+        run: bash bench/compress.sh bench/repos/kotlinx.coroutines --max-percent 30
+
+      - name: Compression gate, ktor
+        run: bash bench/compress.sh bench/repos/ktor --max-percent 30

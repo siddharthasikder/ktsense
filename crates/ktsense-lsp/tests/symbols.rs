@@ -148,3 +148,42 @@ async fn a_hanging_engine_is_bounded_and_the_child_is_not_left_running() {
         "result {result:?} after {elapsed:?}"
     );
 }
+
+#[cfg(feature = "real-lsp")]
+mod real {
+    use std::path::{Path, PathBuf};
+
+    use ktsense_lsp::{resolve_symbol, Resolution};
+
+    fn multi_module() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/multi-module")
+    }
+
+    /// The pinned engine's `find --json` against the fixture: `save` is declared three times (the
+    /// interface method and its two overrides), a name declared nowhere resolves to nothing, and
+    /// every reported file is an absolute path the follow-up LSP request can address.
+    #[tokio::test]
+    async fn the_real_engine_resolves_save_to_three_declarations_and_an_unknown_name_to_none() {
+        let root = multi_module();
+
+        let save = resolve_symbol(&root, "save").await.expect("find save");
+        let missing = resolve_symbol(&root, "ZzzNope").await.expect("find missing");
+
+        let observed = match &save {
+            Resolution::Ambiguous(candidates) => (
+                candidates.len(),
+                candidates
+                    .iter()
+                    .all(|candidate| Path::new(&candidate.file).is_absolute()),
+                candidates
+                    .iter()
+                    .filter(|candidate| candidate.file.ends_with("shop/order/OrderRepository.kt"))
+                    .map(|candidate| (candidate.line, candidate.col))
+                    .collect::<Vec<_>>(),
+                matches!(missing, Resolution::None),
+            ),
+            other => panic!("expected an ambiguous resolution, got {other:?}"),
+        };
+        assert_eq!(observed, (3, true, vec![(4, 9)], true));
+    }
+}
