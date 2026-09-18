@@ -15,6 +15,7 @@ pub mod render;
 pub mod repo_map;
 pub mod scc;
 pub mod skeleton;
+pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
@@ -24,13 +25,17 @@ pub use references::{
 };
 pub use render::{
     render_deps_dot, render_deps_markdown, render_map_markdown, render_markdown, render_skeleton,
-    RenderOptions,
+    render_trace_markdown, RenderOptions,
 };
 pub use repo_map::{build_repo_map, MappedFile, RepoMap};
 pub use scc::{cycles, strongly_connected_components};
 pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
     MAX_NESTING_DEPTH,
+};
+pub use trace::{
+    build_trace, callers_of, CallerLevel, Definition, IndexCompleteness, RelatedDeclaration,
+    TraceInput, TraceReport,
 };
 
 /// Version reported by every front-end, sourced from the workspace manifest.

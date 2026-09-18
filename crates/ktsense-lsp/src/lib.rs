@@ -21,8 +21,8 @@ pub use passthrough::{
     run_check, run_diagnose, CheckReport, DiagnoseReport, Diagnostic, EngineCommand,
     PassthroughError, Severity, SyntaxError, DEFAULT_PASSTHROUGH_TIMEOUT,
 };
-pub use progress::IndexPhase;
-pub use requests::{DeclarationScope, FilePosition};
+pub use progress::{wait_for_index, IndexPhase, IndexWait};
+pub use requests::{uri_to_path, DeclarationScope, FilePosition, SiteLocation};
 pub use symbols::{resolve_symbol, run_symbols, Resolution, SymbolCandidate, SymbolResolver};
 pub use version::{
     check_version, check_version_within, classify, Compatibility, VersionCheck,

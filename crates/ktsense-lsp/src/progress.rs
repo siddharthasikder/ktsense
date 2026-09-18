@@ -1,8 +1,10 @@
 //! Index progress tracking derived from the engine's `$/progress` notification stream.
 
+use std::time::{Duration, Instant};
+
 use lsp_types::{ProgressParams, ProgressParamsValue, WorkDoneProgress};
 
-use crate::client::Notification;
+use crate::client::{LspClient, Notification};
 
 const PROGRESS_METHOD: &str = "$/progress";
 
@@ -40,5 +42,47 @@ impl IndexPhase {
             | ProgressParamsValue::WorkDone(WorkDoneProgress::Report(_)) => IndexPhase::Indexing,
             ProgressParamsValue::WorkDone(WorkDoneProgress::End(_)) => IndexPhase::Ready,
         }
+    }
+
+    /// Whether answers read now are complete rather than a lower bound.
+    pub fn is_ready(self) -> bool {
+        matches!(self, IndexPhase::Ready)
+    }
+}
+
+/// What the waiter saw: the phase reached and how long it watched for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexWait {
+    pub phase: IndexPhase,
+    pub waited: Duration,
+}
+
+/// Folds the engine's notification stream into an [`IndexPhase`] until the index is [`Ready`],
+/// the stream closes, or `cap` elapses, whichever comes first. The phase reached is returned either
+/// way, so the caller can label its answer `partial` rather than pretend the wait paid off.
+///
+/// [`Ready`]: IndexPhase::Ready
+pub async fn wait_for_index(client: &mut LspClient, cap: Duration) -> IndexWait {
+    let started = Instant::now();
+    let deadline = tokio::time::sleep(cap);
+    tokio::pin!(deadline);
+    let mut phase = IndexPhase::default();
+    loop {
+        tokio::select! {
+            notification = client.next_notification() => match notification {
+                Some(notification) => {
+                    phase = phase.observe(&notification);
+                    if phase.is_ready() {
+                        break;
+                    }
+                }
+                None => break,
+            },
+            () = &mut deadline => break,
+        }
+    }
+    IndexWait {
+        phase,
+        waited: started.elapsed(),
     }
 }

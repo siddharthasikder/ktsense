@@ -1,0 +1,49 @@
+---
+source: crates/ktsense-cli/tests/trace.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+# Trace: shop.order.OrderRepository.save
+
+index: complete
+
+## Definition
+
+core/src/main/kotlin/shop/order/OrderRepository.kt:4
+
+```kotlin
+fun save(order: Order): OrderId
+```
+
+## Implementors (2)
+- shop.db.InMemoryOrderRepository.save  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13
+- shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
+
+## Callers (3)
+- shop.app.checkout.CheckoutService.placeOrder  app/src/main/kotlin/shop/app/checkout/CheckoutService.kt:12
+- shop.app.checkout.OrderImporter.importAll  app/src/main/kotlin/shop/app/checkout/OrderImporter.kt:8
+- shop.app.reporting.ReportBackfill.rebuild  app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt:9
+
+## Usages (6 sites in 6 files)
+
+app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
+- 13 in CheckoutService.placeOrder
+
+app/src/main/kotlin/shop/app/checkout/OrderImporter.kt
+- 11 in OrderImporter.importAll
+
+app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt
+- 13 in ReportBackfill.rebuild
+
+core/src/main/kotlin/shop/order/OrderRepository.kt
+- 4 in OrderRepository.save
+
+db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
+- 13 in InMemoryOrderRepository.save
+
+db/src/main/kotlin/shop/db/JdbcOrderRepository.kt
+- 8 in JdbcOrderRepository.save
+
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked.

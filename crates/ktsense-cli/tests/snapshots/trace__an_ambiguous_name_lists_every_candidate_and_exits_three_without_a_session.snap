@@ -1,0 +1,14 @@
+---
+source: crates/ktsense-cli/tests/trace.rs
+expression: record(&run)
+---
+exit 3
+stderr empty
+---
+## Symbols: save
+
+```text
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8  override fun save(order: Order): OrderId
+shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+shop.order.OrderRepository.save  fun  core/src/main/kotlin/shop/order/OrderRepository.kt:4  fun save(order: Order): OrderId
+```

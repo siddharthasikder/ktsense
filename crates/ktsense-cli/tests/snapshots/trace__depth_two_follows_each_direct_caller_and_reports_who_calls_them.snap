@@ -1,0 +1,14 @@
+---
+source: crates/ktsense-cli/tests/trace.rs
+expression: "format!(\"exit {}\\nstderr {}\\n---\\n{callers_section}\",\nrun.code.expect(\"exited normally\"), if run.stderr.is_empty() { \"empty\" } else\n{ run.stderr.trim() },)"
+---
+exit 0
+stderr empty
+---
+## Callers (3)
+- shop.app.checkout.CheckoutService.placeOrder  app/src/main/kotlin/shop/app/checkout/CheckoutService.kt:12
+- shop.app.checkout.OrderImporter.importAll  app/src/main/kotlin/shop/app/checkout/OrderImporter.kt:8
+- shop.app.reporting.ReportBackfill.rebuild  app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt:9
+
+### Callers at depth 2 (1)
+- shop.app.checkout.OrderImporter.importAll  app/src/main/kotlin/shop/app/checkout/OrderImporter.kt:8

@@ -25,10 +25,12 @@
 use std::borrow::Cow;
 
 use crate::imports::ImportGraph;
+use crate::references::ReferenceGroup;
 use crate::repo_map::RepoMap;
 use crate::skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
 };
+use crate::trace::{RelatedDeclaration, TraceReport};
 
 const INDENT: &str = "    ";
 
@@ -211,6 +213,90 @@ pub fn render_map_markdown(map: &RepoMap) -> String {
          many files import them by name, not by type-checked references.\n",
     );
     out
+}
+
+/// Renders a `trace` answer: the definition, then who implements it, who refers to it, and every
+/// site by file. The index marker comes first, before any list, because a reader who stops early
+/// must still have seen it: a `partial` answer is a lower bound, not the answer.
+pub fn render_trace_markdown(report: &TraceReport) -> String {
+    let mut out = format!("# Trace: {}\n\n", neutralize(&report.symbol));
+    out.push_str(&format!("index: {}\n", report.index.label()));
+
+    out.push_str("\n## Definition\n\n");
+    out.push_str(&format!(
+        "{}:{}\n",
+        neutralize(&report.definition.path),
+        report.definition.line
+    ));
+    if !report.definition.signature.is_empty() {
+        let fence = fence_for(&report.definition.signature);
+        out.push_str(&format!(
+            "\n{fence}kotlin\n{}\n{fence}\n",
+            report.definition.signature
+        ));
+    }
+
+    out.push_str(&format!(
+        "\n## Implementors ({})\n",
+        report.implementors.len()
+    ));
+    append_lines(&mut out, &report.implementors, related_line);
+
+    for level in &report.callers {
+        let heading = match level.depth {
+            1 => format!("\n## Callers ({})\n", level.callers.len()),
+            depth => format!("\n### Callers at depth {depth} ({})\n", level.callers.len()),
+        };
+        out.push_str(&heading);
+        append_lines(&mut out, &level.callers, related_line);
+    }
+
+    out.push_str(&format!(
+        "\n## Usages ({} in {})\n",
+        pluralize(report.sites, "site"),
+        pluralize(report.usages.len(), "file")
+    ));
+    for group in &report.usages {
+        append_usage_group(&mut out, group);
+    }
+
+    out.push_str(
+        "\nCallers are the declarations enclosing each reference site; the engine reports no call \
+         hierarchy. Resolution is syntactic, not type-checked.\n",
+    );
+    out
+}
+
+fn related_line(declaration: &RelatedDeclaration) -> String {
+    let name = declaration
+        .qualified_name
+        .as_deref()
+        .map(|name| neutralize(name).into_owned())
+        .unwrap_or_else(|| "(enclosing declaration not resolved)".to_string());
+    let sites = match declaration.sites {
+        1 => String::new(),
+        sites => format!(" ({sites} sites)"),
+    };
+    format!(
+        "- {name}  {}:{}{sites}",
+        neutralize(&declaration.path),
+        declaration.line
+    )
+}
+
+fn append_usage_group(out: &mut String, group: &ReferenceGroup) {
+    out.push_str(&format!("\n{}\n", neutralize(&group.path)));
+    for reference in &group.references {
+        let within = reference
+            .enclosing
+            .as_ref()
+            .map(|enclosing| format!(" in {}", neutralize(&enclosing.qualified_name)))
+            .unwrap_or_default();
+        out.push_str(&format!("- {}{within}\n", reference.line));
+    }
+    if group.omitted > 0 {
+        out.push_str(&format!("- ... {} more\n", group.omitted));
+    }
 }
 
 fn append_lines<T>(out: &mut String, items: &[T], mut render_line: impl FnMut(&T) -> String) {

@@ -8,6 +8,7 @@
 
 mod daemon;
 mod symbols;
+mod trace;
 
 use std::borrow::Cow;
 use std::fs;
@@ -21,7 +22,7 @@ use ktsense_core::{
     render_markdown, ByteRatioEstimator, DepLevel, FileSkeleton, ImportGraph, RenderOptions,
     RepoMap,
 };
-use ktsense_lsp::{CheckReport, DiagnoseReport, PassthroughError, Severity};
+use ktsense_lsp::{CheckReport, DiagnoseReport, LspError, PassthroughError, Severity};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -122,7 +123,18 @@ enum Command {
         pick: Option<String>,
     },
     /// Definition, usages, implementors and callers of one symbol
-    Trace { symbol: String },
+    Trace {
+        symbol: String,
+        /// Select the single candidate with this fully-qualified name when the name is ambiguous.
+        #[arg(long, value_name = "FQN")]
+        pick: Option<String>,
+        /// How many levels of callers to follow: 1 is the declarations that refer to the symbol.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=5))]
+        depth: u8,
+        /// Show at most this many reference sites per file; the rest are counted.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Import graph of the workspace
     Deps {
         /// Whether nodes are packages or individual files.
@@ -280,6 +292,13 @@ impl CommandError {
         }
     }
 
+    fn engine(error: LspError) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: {error}"),
+        }
+    }
+
     fn no_symbol(query: &str) -> Self {
         Self {
             exit: Exit::Failure,
@@ -388,6 +407,22 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         Command::Map { budget } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             repository_map(&base, budget, format).map(CommandOutcome::success)
+        }
+        Command::Trace {
+            symbol,
+            pick,
+            depth,
+            limit,
+        } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            trace::trace(trace::TraceRequest {
+                root: &base,
+                symbol: &symbol,
+                pick: pick.as_deref(),
+                depth: usize::from(depth),
+                limit,
+                format,
+            })
         }
         Command::Daemon { action } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));

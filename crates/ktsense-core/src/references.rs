@@ -202,7 +202,10 @@ fn in_header(boundary: Option<u32>, line: u32) -> bool {
     boundary.is_some_and(|boundary| line < boundary)
 }
 
-fn enclosing_declaration(skeleton: &FileSkeleton, line: u32) -> Option<EnclosingDeclaration> {
+pub(crate) fn enclosing_declaration(
+    skeleton: &FileSkeleton,
+    line: u32,
+) -> Option<EnclosingDeclaration> {
     let chain = enclosing_chain(&skeleton.declarations, line, None);
     (!chain.is_empty()).then(|| EnclosingDeclaration::from_chain(&chain))
 }

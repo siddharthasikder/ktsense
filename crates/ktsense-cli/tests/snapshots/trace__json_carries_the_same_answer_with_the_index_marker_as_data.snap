@@ -1,0 +1,154 @@
+---
+source: crates/ktsense-cli/tests/trace.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+{
+  "symbol": "shop.order.OrderRepository.save",
+  "index": "complete",
+  "definition": {
+    "qualified_name": "shop.order.OrderRepository.save",
+    "path": "core/src/main/kotlin/shop/order/OrderRepository.kt",
+    "line": 4,
+    "signature": "fun save(order: Order): OrderId"
+  },
+  "implementors": [
+    {
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+      "line": 13,
+      "qualified_name": "shop.db.InMemoryOrderRepository.save",
+      "kind": "function",
+      "sites": 1
+    },
+    {
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+      "line": 8,
+      "qualified_name": "shop.db.JdbcOrderRepository.save",
+      "kind": "function",
+      "sites": 1
+    }
+  ],
+  "callers": [
+    {
+      "depth": 1,
+      "callers": [
+        {
+          "path": "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+          "line": 12,
+          "qualified_name": "shop.app.checkout.CheckoutService.placeOrder",
+          "kind": "function",
+          "sites": 1
+        },
+        {
+          "path": "app/src/main/kotlin/shop/app/checkout/OrderImporter.kt",
+          "line": 8,
+          "qualified_name": "shop.app.checkout.OrderImporter.importAll",
+          "kind": "function",
+          "sites": 1
+        },
+        {
+          "path": "app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt",
+          "line": 9,
+          "qualified_name": "shop.app.reporting.ReportBackfill.rebuild",
+          "kind": "function",
+          "sites": 1
+        }
+      ]
+    }
+  ],
+  "usages": [
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+      "references": [
+        {
+          "line": 13,
+          "column": 29,
+          "enclosing": {
+            "kind": "function",
+            "qualified_name": "CheckoutService.placeOrder",
+            "line": 12
+          }
+        }
+      ],
+      "omitted": 0
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout/OrderImporter.kt",
+      "references": [
+        {
+          "line": 11,
+          "column": 24,
+          "enclosing": {
+            "kind": "function",
+            "qualified_name": "OrderImporter.importAll",
+            "line": 8
+          }
+        }
+      ],
+      "omitted": 0
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt",
+      "references": [
+        {
+          "line": 13,
+          "column": 31,
+          "enclosing": {
+            "kind": "function",
+            "qualified_name": "ReportBackfill.rebuild",
+            "line": 9
+          }
+        }
+      ],
+      "omitted": 0
+    },
+    {
+      "path": "core/src/main/kotlin/shop/order/OrderRepository.kt",
+      "references": [
+        {
+          "line": 4,
+          "column": 9,
+          "enclosing": {
+            "kind": "function",
+            "qualified_name": "OrderRepository.save",
+            "line": 4
+          }
+        }
+      ],
+      "omitted": 0
+    },
+    {
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+      "references": [
+        {
+          "line": 13,
+          "column": 18,
+          "enclosing": {
+            "kind": "function",
+            "qualified_name": "InMemoryOrderRepository.save",
+            "line": 13
+          }
+        }
+      ],
+      "omitted": 0
+    },
+    {
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+      "references": [
+        {
+          "line": 8,
+          "column": 18,
+          "enclosing": {
+            "kind": "function",
+            "qualified_name": "JdbcOrderRepository.save",
+            "line": 8
+          }
+        }
+      ],
+      "omitted": 0
+    }
+  ],
+  "sites": 6
+}

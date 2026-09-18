@@ -26,12 +26,12 @@ use crate::{neutralize, normalized_path, CommandError, CommandOutcome, Exit, For
 /// skeleton knows about the declaration at that point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ResolvedSymbol {
-    fqn: String,
-    kind: String,
-    file: String,
-    line: u32,
+    pub(crate) fqn: String,
+    pub(crate) kind: String,
+    pub(crate) file: String,
+    pub(crate) line: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
-    signature: String,
+    pub(crate) signature: String,
 }
 
 impl ResolvedSymbol {
@@ -94,6 +94,50 @@ pub(crate) fn present_symbols(
                 Exit::Ambiguous,
                 format,
             )
+        }
+    }
+}
+
+/// What resolving a name to exactly one declaration produced: the one, or the answer to print when
+/// there is not exactly one. Shared by `trace`, so the ambiguity contract (list every candidate,
+/// exit 3 unless `--pick`) is stated once, here.
+pub(crate) enum Selection {
+    One(SymbolCandidate, ResolvedSymbol),
+    Ambiguous(SymbolsOutcome),
+}
+
+/// Narrows engine candidates to the single declaration a follow-up command should act on.
+pub(crate) fn select(
+    root: &Path,
+    query: &str,
+    candidates: Vec<SymbolCandidate>,
+    pick: Option<&str>,
+    format: Format,
+) -> Result<Selection, CommandError> {
+    let mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = candidates
+        .into_iter()
+        .map(|candidate| {
+            let resolved = enrich(root, &candidate);
+            (candidate, resolved)
+        })
+        .collect();
+    if let Some(pick) = pick {
+        return enriched
+            .into_iter()
+            .find(|(_, resolved)| resolved.fqn == pick)
+            .map(|(candidate, resolved)| Selection::One(candidate, resolved))
+            .ok_or_else(|| CommandError::pick_missed(pick));
+    }
+    match enriched.len() {
+        0 => Err(CommandError::no_symbol(query)),
+        1 => {
+            let (candidate, resolved) = enriched.remove(0);
+            Ok(Selection::One(candidate, resolved))
+        }
+        _ => {
+            let resolved: Vec<ResolvedSymbol> =
+                enriched.into_iter().map(|(_, resolved)| resolved).collect();
+            render(query, &resolved, None, Exit::Ambiguous, format).map(Selection::Ambiguous)
         }
     }
 }
