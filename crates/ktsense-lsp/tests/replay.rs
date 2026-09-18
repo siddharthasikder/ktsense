@@ -149,35 +149,58 @@ fn reports_a_legible_mismatch_and_fails() {
     );
 }
 
+/// Mirrors kmp-lsp 0.26.0: `exit` does not end the process even after `initialized`; only stdin EOF
+/// does. A client that merely sends `exit` therefore leaks the child, and the fake must reproduce
+/// that so the client's test suite cannot pass for the wrong reason.
 #[test]
-fn refuses_to_exit_when_initialized_was_skipped() {
+fn stays_alive_after_exit_until_stdin_reaches_eof() {
     let script = json!({
         "steps": [
             { "kind": "expect", "method": "initialize", "respond": { "result": {} } },
+            { "kind": "expect", "method": "initialized" },
             { "kind": "expect", "method": "shutdown", "respond": { "result": null } },
             { "kind": "expect", "method": "exit" }
         ]
     })
     .to_string();
     let mut child = spawn(&script, Some("error"));
-    feed(
-        &mut child,
-        &[
-            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
-            json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
-            json!({ "jsonrpc": "2.0", "method": "exit" }),
-        ],
-    );
+    let mut stdin = child.stdin.take().expect("child stdin");
+    for message in [
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+        json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
+        json!({ "jsonrpc": "2.0", "method": "exit" }),
+    ] {
+        stdin.write_all(&frame(&message)).expect("write frame");
+    }
 
-    std::thread::sleep(Duration::from_millis(500));
-    let still_running = child.try_wait().expect("poll fake_lsp").is_none();
+    std::thread::sleep(EXIT_SETTLE);
+    let alive_after_exit = child.try_wait().expect("poll fake_lsp").is_none();
+    drop(stdin);
+    let exited_after_eof = wait_up_to(&mut child, EOF_EXIT_DEADLINE);
+
+    assert_eq!(
+        (alive_after_exit, exited_after_eof),
+        (true, Some(true)),
+        "alive after exit: {alive_after_exit}, exit status after EOF: {exited_after_eof:?}"
+    );
+}
+
+const EXIT_SETTLE: Duration = Duration::from_millis(300);
+const EOF_EXIT_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Polls until the child exits or the deadline passes; `Some(success)` on exit, `None` on timeout.
+fn wait_up_to(child: &mut Child, deadline: Duration) -> Option<bool> {
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline {
+        if let Some(status) = child.try_wait().expect("poll fake_lsp") {
+            return Some(status.success());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     child.kill().expect("kill fake_lsp");
     child.wait().expect("reap fake_lsp");
-
-    assert!(
-        still_running,
-        "fake exited on `exit` even though `initialized` was never sent"
-    );
+    None
 }
 
 #[test]

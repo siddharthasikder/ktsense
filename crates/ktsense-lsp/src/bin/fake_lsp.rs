@@ -154,7 +154,6 @@ fn run() -> Result<()> {
         emit_log_noise(&mut out)?;
     }
 
-    let mut initialized_seen = false;
     for step in &script.steps {
         match step {
             Step::Delay { ms } => std::thread::sleep(Duration::from_millis(*ms)),
@@ -181,17 +180,14 @@ fn run() -> Result<()> {
                 if let Some(expected) = params {
                     verify_params(method, expected, &message)?;
                 }
-                if method == "initialized" {
-                    initialized_seen = true;
-                }
                 if method == "exit" {
-                    // kmp-lsp 0.26.0 ignores `exit` until it has received the `initialized`
-                    // notification, so a client that skips it must kill the child. Reproduce that
-                    // hang rather than exiting cleanly, so the buggy client fails its test.
-                    if initialized_seen {
-                        return Ok(());
-                    }
-                    park_until_killed();
+                    // kmp-lsp 0.26.0 never terminates on `exit`, with or without `initialized`;
+                    // the child ends only when its stdin reaches EOF (verified 2026-09-18, see
+                    // AGENTS.md). Model that here, so a client that sends `exit` and merely waits
+                    // is killed at the end of its grace period instead of passing for the wrong
+                    // reason.
+                    drain_until_eof(&mut reader)?;
+                    return Ok(());
                 }
                 if let Some(respond) = respond {
                     let id = message.get("id").cloned().with_context(|| {
@@ -301,4 +297,14 @@ fn park_until_killed() -> ! {
     loop {
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Consumes and discards everything the client writes until it closes our stdin, the only event
+/// that ends the real engine. A client that never closes stdin leaves us alive to be killed.
+fn drain_until_eof(reader: &mut impl BufRead) -> Result<()> {
+    let mut sink = Vec::new();
+    while reader.read_until(b'\n', &mut sink)? != 0 {
+        sink.clear();
+    }
+    Ok(())
 }

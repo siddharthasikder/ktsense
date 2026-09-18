@@ -88,7 +88,7 @@ type Fault = Arc<StdMutex<Option<FramingError>>>;
 /// A running `kmp-lsp` child and the machinery to talk to it.
 pub struct LspClient {
     child: SharedChild,
-    stdin: Arc<TokioMutex<tokio::process::ChildStdin>>,
+    stdin: EngineStdin,
     pending: Pending,
     notifications: mpsc::UnboundedReceiver<Notification>,
     next_id: AtomicI64,
@@ -96,6 +96,16 @@ pub struct LspClient {
     shutdown_timeout: Duration,
     exit_grace: Duration,
     fault: Fault,
+}
+
+/// The child's stdin, `None` once teardown has closed it: dropping the handle is what delivers EOF.
+type EngineStdin = Arc<TokioMutex<Option<tokio::process::ChildStdin>>>;
+
+fn stdin_closed() -> LspError {
+    LspError::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "the engine's stdin was closed by shutdown",
+    ))
 }
 
 impl LspClient {
@@ -131,7 +141,7 @@ impl LspClient {
 
         Ok(Self {
             child,
-            stdin: Arc::new(TokioMutex::new(stdin)),
+            stdin: Arc::new(TokioMutex::new(Some(stdin))),
             pending,
             notifications: notif_rx,
             next_id: AtomicI64::new(1),
@@ -241,8 +251,9 @@ impl LspClient {
             }
         });
         let result = self.request("initialize", params).await?;
-        // kmp-lsp 0.26.0 will not honour `shutdown`/`exit` until it has seen `initialized`; it must
-        // follow the initialize response immediately or the child leaks. (see AGENTS.md)
+        // The protocol requires `initialized` right after the initialize response and the fake
+        // insists on it. It is not what ends the child: kmp-lsp 0.26.0 answers `shutdown` without it
+        // and ignores `exit` with or without it; only stdin EOF terminates the engine. (see AGENTS.md)
         self.notify("initialized", json!({})).await?;
         Ok(result)
     }
@@ -252,9 +263,10 @@ impl LspClient {
         self.notifications.recv().await
     }
 
-    /// Requests `shutdown`, sends `exit`, and guarantees the child is reaped: the shutdown request and
-    /// the `exit` notification each carry a short bound so a wedged child cannot stall teardown, and the
-    /// child is killed if it has not exited within the grace period, so no caller can leak the process.
+    /// Requests `shutdown`, sends `exit`, closes the child's stdin, and guarantees the child is
+    /// reaped: the shutdown request and the `exit` notification each carry a short bound so a wedged
+    /// child cannot stall teardown, and the child is killed if it has not exited within the grace
+    /// period, so no caller can leak the process.
     pub async fn shutdown(&mut self) -> Result<Teardown, LspError> {
         let _ = self
             .request_within("shutdown", Value::Null, self.shutdown_timeout)
@@ -262,6 +274,7 @@ impl LspClient {
         let _ = self
             .notify_within("exit", Value::Null, self.shutdown_timeout)
             .await;
+        self.close_stdin().await;
         let mut child = self.child.lock().await;
         match timeout(self.exit_grace, child.wait()).await {
             Ok(Ok(_status)) => Ok(Teardown::Exited),
@@ -274,9 +287,16 @@ impl LspClient {
         }
     }
 
+    /// kmp-lsp 0.26.0 never terminates on `exit`, with or without `initialized`; it ends only when
+    /// its stdin reaches EOF (verified 2026-09-18, see AGENTS.md). Dropping the handle is that EOF.
+    async fn close_stdin(&self) {
+        self.stdin.lock().await.take();
+    }
+
     async fn write_message(&self, message: &Value) -> Result<(), LspError> {
         let framed = framing::encode(&serde_json::to_vec(message)?);
         let mut stdin = self.stdin.lock().await;
+        let stdin = stdin.as_mut().ok_or_else(stdin_closed)?;
         stdin.write_all(&framed).await?;
         stdin.flush().await?;
         Ok(())

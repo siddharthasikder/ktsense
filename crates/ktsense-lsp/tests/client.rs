@@ -249,3 +249,74 @@ async fn shutdown_of_a_wedged_child_does_not_wait_out_the_request_timeout() {
         "shutdown took {elapsed:?}"
     );
 }
+
+const WELL_INSIDE_EXIT_GRACE: Duration = Duration::from_millis(500);
+
+/// kmp-lsp 0.26.0 never terminates on the `exit` notification; the child ends only when its stdin
+/// reaches EOF. The fake models that, so a client that sends `exit` and merely waits is killed at
+/// the end of the grace period, while a client that closes stdin sees a prompt clean exit.
+#[tokio::test]
+async fn shutdown_ends_the_child_by_closing_stdin_rather_than_waiting_out_the_grace() {
+    let script = json!({
+        "steps": [
+            { "kind": "expect", "method": "initialize", "respond": { "result": {} } },
+            { "kind": "expect", "method": "initialized" },
+            { "kind": "expect", "method": "shutdown", "respond": { "result": null } },
+            { "kind": "expect", "method": "exit" }
+        ]
+    });
+    let mut client = spawn_with_script(&script).await;
+    client.set_exit_grace(Duration::from_secs(2));
+    client.initialize(&init_config()).await.expect("initialize");
+
+    let started = Instant::now();
+    let teardown = client.shutdown().await.expect("shutdown");
+    let elapsed = started.elapsed();
+
+    let observed = json!({
+        "teardown_exited": teardown == Teardown::Exited,
+        "well_inside_grace": elapsed < WELL_INSIDE_EXIT_GRACE,
+    });
+    assert_eq!(
+        observed,
+        json!({ "teardown_exited": true, "well_inside_grace": true }),
+        "shutdown took {elapsed:?}"
+    );
+}
+
+#[cfg(feature = "real-lsp")]
+mod real {
+    use super::*;
+
+    fn multi_module_root_uri() -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/multi-module")
+            .canonicalize()
+            .expect("fixture root");
+        format!("file://{}", root.display())
+    }
+
+    #[tokio::test]
+    async fn real_engine_exits_cleanly_and_promptly_on_shutdown() {
+        let mut client = ktsense_lsp::launch().await.expect("launch real engine");
+        let config = InitializeConfig {
+            root_uri: multi_module_root_uri(),
+            ignore_patterns: vec!["**/build/**".to_string()],
+        };
+        client.initialize(&config).await.expect("initialize");
+
+        let started = Instant::now();
+        let teardown = client.shutdown().await.expect("shutdown");
+        let elapsed = started.elapsed();
+
+        let observed = json!({
+            "teardown_exited": teardown == Teardown::Exited,
+            "well_inside_grace": elapsed < WELL_INSIDE_EXIT_GRACE,
+        });
+        assert_eq!(
+            observed,
+            json!({ "teardown_exited": true, "well_inside_grace": true }),
+            "shutdown took {elapsed:?}"
+        );
+    }
+}

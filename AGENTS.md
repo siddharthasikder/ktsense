@@ -24,8 +24,14 @@ and compression testable from hand-built values.
 - Binary lookup order: `KTSENSE_LSP_PATH`, then `<exe>/../libexec/kmp-lsp`, then `PATH`.
 - Spawn children with `RUST_LOG=error`: upstream writes `env_logger` INFO lines into the same stream
   as command output, which corrupts parsing otherwise.
-- Send the LSP `initialized` notification immediately after the `initialize` response. Without it,
-  `shutdown` and `exit` do not terminate the child and it has to be killed.
+- **`exit` never terminates `kmp-lsp` 0.26.0; only stdin EOF does.** With or without `initialized`,
+  the child is still alive seconds after `shutdown` and `exit`, while closing its stdin ends it in
+  about 10 ms with exit code 0 (a bare EOF with nothing sent does the same). `LspClient::shutdown`
+  therefore closes stdin after `exit` and only then waits out the grace period; anything that drives
+  the engine by hand must do likewise or it will kill the child. Still send `initialized` right after
+  the `initialize` response: the protocol requires it and the fake insists on it. Corrected
+  2026-09-18 (KT-50); the earlier wording here blamed a missing `initialized` and had been measured
+  against the fake, not the engine.
 - `kmp-lsp` 0.26.0 has **no** `callHierarchyProvider`. Callers come from `references` plus the
   enclosing declaration of each reference site, never from call hierarchy.
 - **Always pass `--root` to a command-mode invocation.** Upstream defaults the workspace root to the
