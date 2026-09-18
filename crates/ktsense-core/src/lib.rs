@@ -12,6 +12,7 @@ pub mod imports;
 pub mod rank;
 pub mod references;
 pub mod render;
+pub mod repo_map;
 pub mod scc;
 pub mod skeleton;
 
@@ -22,8 +23,10 @@ pub use references::{
     group_references, EnclosingDeclaration, GroupingOptions, Location, Reference, ReferenceGroup,
 };
 pub use render::{
-    render_deps_dot, render_deps_markdown, render_markdown, render_skeleton, RenderOptions,
+    render_deps_dot, render_deps_markdown, render_map_markdown, render_markdown, render_skeleton,
+    RenderOptions,
 };
+pub use repo_map::{build_repo_map, MappedFile, RepoMap};
 pub use scc::{cycles, strongly_connected_components};
 pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,

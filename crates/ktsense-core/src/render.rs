@@ -25,6 +25,7 @@
 use std::borrow::Cow;
 
 use crate::imports::ImportGraph;
+use crate::repo_map::RepoMap;
 use crate::skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
 };
@@ -175,6 +176,40 @@ pub fn render_deps_dot(graph: &ImportGraph) -> String {
         ));
     }
     out.push_str("}\n");
+    out
+}
+
+/// Renders a budgeted repository map: files most central first, signatures within each.
+///
+/// The reported bound covers the mapped content, the headings and signature lines that the budget
+/// actually gated, and not this document's title or fences. Saying so is the point: a figure that
+/// silently included scaffolding would not be the figure the packing decision used.
+pub fn render_map_markdown(map: &RepoMap) -> String {
+    let mut out = String::from("# Repository map\n\n");
+    out.push_str(&format!(
+        "Budget {} tokens, content bound {}. {} shown, {} omitted.\n",
+        map.budget,
+        map.token_upper_bound,
+        pluralize(map.files.len(), "file"),
+        map.files_omitted,
+    ));
+
+    if map.files.is_empty() {
+        out.push_str("\nThe budget was too small for any file.\n");
+        return out;
+    }
+
+    for file in &map.files {
+        let body = file.declarations.join("\n");
+        let fence = fence_for(&body);
+        out.push_str(&format!("\n## {}\n", neutralize(&file.path)));
+        out.push_str(&format!("\n{fence}kotlin\n{body}\n{fence}\n"));
+    }
+
+    out.push_str(
+        "\nRanking is syntactic: files are ordered by import centrality and declarations by how \
+         many files import them by name, not by type-checked references.\n",
+    );
     out
 }
 

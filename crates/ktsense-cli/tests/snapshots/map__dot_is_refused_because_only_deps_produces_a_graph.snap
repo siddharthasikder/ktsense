@@ -1,0 +1,7 @@
+---
+source: crates/ktsense-cli/tests/map.rs
+expression: record(&run)
+---
+exit 1
+stderr ktsense: map does not support --format dot (only deps does)
+---

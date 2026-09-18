@@ -1,0 +1,69 @@
+---
+source: crates/ktsense-cli/tests/map.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+{
+  "files": [
+    {
+      "path": "core/src/main/kotlin/shop/order/Order.kt",
+      "declarations": [
+        "data class Order(val id: OrderId, val customerEmail: String, val totalCents: Long)",
+        "data class OrderId(val value: Long)"
+      ]
+    },
+    {
+      "path": "core/src/main/kotlin/shop/order/OrderRepository.kt",
+      "declarations": [
+        "interface OrderRepository"
+      ]
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt",
+      "declarations": [
+        "object CheckoutConfig"
+      ]
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+      "declarations": [
+        "class CheckoutService(private val repository: OrderRepository, private val auditTrail: AuditTrail)"
+      ]
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout/OrderImporter.kt",
+      "declarations": [
+        "class OrderImporter(private val repository: OrderRepository = InMemoryOrderRepository())"
+      ]
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/reporting/AuditTrail.kt",
+      "declarations": [
+        "class AuditTrail"
+      ]
+    },
+    {
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+      "declarations": [
+        "class InMemoryOrderRepository : OrderRepository"
+      ]
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt",
+      "declarations": [
+        "class ReportBackfill(private val repository: OrderRepository)"
+      ]
+    },
+    {
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+      "declarations": [
+        "class JdbcOrderRepository(private val url: String = \"jdbc:h2:mem:orders\") : OrderRepository"
+      ]
+    }
+  ],
+  "budget": 4000,
+  "token_upper_bound": 302,
+  "files_omitted": 0
+}

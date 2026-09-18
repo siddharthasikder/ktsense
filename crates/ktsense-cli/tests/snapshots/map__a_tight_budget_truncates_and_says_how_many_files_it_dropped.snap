@@ -1,0 +1,19 @@
+---
+source: crates/ktsense-cli/tests/map.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+# Repository map
+
+Budget 60 tokens, content bound 60. 1 file shown, 8 omitted.
+
+## core/src/main/kotlin/shop/order/Order.kt
+
+```kotlin
+data class Order(val id: OrderId, val customerEmail: String, val totalCents: Long)
+data class OrderId(val value: Long)
+```
+
+Ranking is syntactic: files are ordered by import centrality and declarations by how many files import them by name, not by type-checked references.

@@ -16,8 +16,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ktsense_core::{
-    build_import_graph, render_deps_dot, render_deps_markdown, render_markdown, DepLevel,
-    FileSkeleton, ImportGraph, RenderOptions,
+    build_import_graph, build_repo_map, render_deps_dot, render_deps_markdown, render_map_markdown,
+    render_markdown, ByteRatioEstimator, DepLevel, FileSkeleton, ImportGraph, RenderOptions,
+    RepoMap,
 };
 use ktsense_lsp::{CheckReport, DiagnoseReport, PassthroughError, Severity};
 
@@ -379,6 +380,10 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             symbols(&base, &query, kind, limit, pick.as_deref(), format)
         }
+        Command::Map { budget } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            repository_map(&base, budget, format).map(CommandOutcome::success)
+        }
         Command::Check { path } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             check(&base, &resolve_root(Some(&base), &path), format)
@@ -581,6 +586,50 @@ fn deps(root: &Path, level: DepLevel, format: Format) -> Result<String, CommandE
         .collect();
     let graph = build_import_graph(&skeletons, level);
     present_deps(&graph, format)
+}
+
+/// Builds the budgeted repository map. Traversal and parsing live here so the ranking and packing
+/// algorithm in core stays testable from hand-built values.
+///
+/// Test sources are excluded. Measured on kotlinx.coroutines, including them puts
+/// `test-utils/.../MainDispatcherTestBase.kt` at the top of the map: hundreds of test files import
+/// the test-utils package, so it outranks the library's own package on in-degree. A map exists to
+/// answer "what is this repository", and test scaffolding is the wrong answer to that question.
+/// `deps` deliberately keeps whole-repository semantics, because a dependency graph that hid half
+/// the edges would be a different kind of lie.
+fn repository_map(root: &Path, budget: usize, format: Format) -> Result<String, CommandError> {
+    let files = collect_kotlin_files(root)?;
+    let skeletons: Vec<FileSkeleton> = files
+        .iter()
+        .filter(|path| !is_test_source(root, path))
+        .filter_map(|path| skeleton_for_deps(root, path))
+        .collect();
+    let map = build_repo_map(&skeletons, budget, &ByteRatioEstimator);
+    present_map(&map, format)
+}
+
+/// Whether a path belongs to a test source set, by the directory conventions Gradle and the Kotlin
+/// multiplatform layouts use. Matching on path segments rather than substrings keeps a production
+/// file such as `contest/Manifest.kt` out of the net.
+fn is_test_source(root: &Path, path: &Path) -> bool {
+    const TEST_SEGMENTS: [&str; 4] = ["test", "tests", "androidTest", "test-utils"];
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    relative.components().any(|component| {
+        let segment = component.as_os_str().to_string_lossy();
+        TEST_SEGMENTS.contains(&segment.as_ref())
+            || segment.ends_with("Test")
+            || segment.ends_with("Tests")
+    })
+}
+
+fn present_map(map: &RepoMap, format: Format) -> Result<String, CommandError> {
+    match format {
+        Format::Md => Ok(render_map_markdown(map)),
+        Format::Json => serde_json::to_string_pretty(map)
+            .map(|json| format!("{json}\n"))
+            .map_err(CommandError::serialization),
+        Format::Dot => Err(CommandError::unsupported_format("map")),
+    }
 }
 
 fn present_deps(graph: &ImportGraph, format: Format) -> Result<String, CommandError> {

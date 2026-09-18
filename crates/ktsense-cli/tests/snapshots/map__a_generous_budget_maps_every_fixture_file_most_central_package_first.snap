@@ -1,0 +1,67 @@
+---
+source: crates/ktsense-cli/tests/map.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+# Repository map
+
+Budget 4000 tokens, content bound 302. 9 files shown, 0 omitted.
+
+## core/src/main/kotlin/shop/order/Order.kt
+
+```kotlin
+data class Order(val id: OrderId, val customerEmail: String, val totalCents: Long)
+data class OrderId(val value: Long)
+```
+
+## core/src/main/kotlin/shop/order/OrderRepository.kt
+
+```kotlin
+interface OrderRepository
+```
+
+## app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt
+
+```kotlin
+object CheckoutConfig
+```
+
+## app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
+
+```kotlin
+class CheckoutService(private val repository: OrderRepository, private val auditTrail: AuditTrail)
+```
+
+## app/src/main/kotlin/shop/app/checkout/OrderImporter.kt
+
+```kotlin
+class OrderImporter(private val repository: OrderRepository = InMemoryOrderRepository())
+```
+
+## app/src/main/kotlin/shop/app/reporting/AuditTrail.kt
+
+```kotlin
+class AuditTrail
+```
+
+## db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
+
+```kotlin
+class InMemoryOrderRepository : OrderRepository
+```
+
+## app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt
+
+```kotlin
+class ReportBackfill(private val repository: OrderRepository)
+```
+
+## db/src/main/kotlin/shop/db/JdbcOrderRepository.kt
+
+```kotlin
+class JdbcOrderRepository(private val url: String = "jdbc:h2:mem:orders") : OrderRepository
+```
+
+Ranking is syntactic: files are ordered by import centrality and declarations by how many files import them by name, not by type-checked references.
