@@ -28,7 +28,9 @@ jobs:
       # rust-toolchain.toml is the single source of truth for channel,
       # components and targets; install exactly what it pins.
       - name: Install pinned toolchain
-        run: rustup toolchain install
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
 
