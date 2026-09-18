@@ -11,6 +11,10 @@ repository.workspace = true
 name = "ktsense"
 path = "src/main.rs"
 
+[features]
+default = []
+real-lsp = []
+
 [dependencies]
 ktsense-core = { workspace = true }
 ktsense-daemon = { workspace = true }
@@ -20,9 +24,11 @@ ktsense-syntax = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
 insta = "=1.48.0"
+tempfile = { workspace = true }

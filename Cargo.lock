@@ -314,6 +314,8 @@ dependencies = [
  "ktsense-mcp",
  "ktsense-syntax",
  "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

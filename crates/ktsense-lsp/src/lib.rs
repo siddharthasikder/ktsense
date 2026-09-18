@@ -9,12 +9,17 @@
 
 mod client;
 mod framing;
+mod passthrough;
 mod progress;
 mod requests;
 mod version;
 
 pub use client::{InitializeConfig, LspClient, LspError, Notification, Teardown};
 pub use framing::FramingError;
+pub use passthrough::{
+    run_check, run_diagnose, CheckReport, DiagnoseReport, Diagnostic, EngineCommand,
+    PassthroughError, Severity, SyntaxError, DEFAULT_PASSTHROUGH_TIMEOUT,
+};
 pub use progress::IndexPhase;
 pub use requests::{DeclarationScope, FilePosition};
 pub use version::{

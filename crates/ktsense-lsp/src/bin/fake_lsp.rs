@@ -38,6 +38,11 @@ const SCRIPT_ENV: &str = "FAKE_LSP_SCRIPT";
 const VERSION_ENV: &str = "FAKE_LSP_VERSION";
 const HANG_SENTINEL: &str = "__HANG__";
 
+const CMD_STDOUT_ENV: &str = "FAKE_CMD_STDOUT";
+const CMD_STDERR_ENV: &str = "FAKE_CMD_STDERR";
+const CMD_EXIT_ENV: &str = "FAKE_CMD_EXIT";
+const CMD_HANG_ENV: &str = "FAKE_CMD_HANG";
+
 #[derive(Deserialize)]
 struct Script {
     #[serde(default)]
@@ -73,6 +78,10 @@ fn main() {
         report_version();
         return;
     }
+    if let Some(subcommand) = command_mode_subcommand() {
+        replay_command(&subcommand);
+        return;
+    }
     if let Err(err) = run() {
         eprintln!("fake_lsp: {err:#}");
         std::process::exit(1);
@@ -83,6 +92,38 @@ fn wants_version() -> bool {
     env::args()
         .skip(1)
         .any(|arg| arg == "--version" || arg == "-V")
+}
+
+/// The one-shot subcommand a passthrough caller invokes, distinguished from an LSP session (no
+/// subcommand) and the version probe. Only the commands ktsense actually shells out to are
+/// recognized, mirroring that the real argv is fixed rather than caller-supplied.
+fn command_mode_subcommand() -> Option<String> {
+    match env::args().nth(1).as_deref() {
+        Some(subcommand @ ("check" | "diagnose")) => Some(subcommand.to_string()),
+        _ => None,
+    }
+}
+
+/// Replays a canned command-mode result driven by env: `FAKE_CMD_STDOUT`/`FAKE_CMD_STDERR` for the
+/// two streams, `FAKE_CMD_EXIT` for the status, and `FAKE_CMD_HANG` to reproduce an engine that
+/// never returns so the caller's timeout and no-leak guarantees are exercised.
+fn replay_command(_subcommand: &str) {
+    if env::var_os(CMD_HANG_ENV).is_some() {
+        park_until_killed();
+    }
+    if let Ok(stdout) = env::var(CMD_STDOUT_ENV) {
+        print!("{stdout}");
+    }
+    let _ = io::stdout().flush();
+    if let Ok(stderr) = env::var(CMD_STDERR_ENV) {
+        eprint!("{stderr}");
+    }
+    let _ = io::stderr().flush();
+    let code = env::var(CMD_EXIT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0);
+    std::process::exit(code);
 }
 
 /// Emits a `--version` line for the compatibility probe. Defaults to the pinned version so the

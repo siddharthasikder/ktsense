@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ use ktsense_core::{
     build_import_graph, render_deps_dot, render_deps_markdown, render_markdown, DepLevel,
     FileSkeleton, ImportGraph, RenderOptions,
 };
+use ktsense_lsp::{CheckReport, DiagnoseReport, PassthroughError, Severity};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -90,6 +92,8 @@ enum Command {
     },
     /// Syntax-check files; exits non-zero when a file has errors
     Check { path: PathBuf },
+    /// Semantic diagnostics on one file (requires the engine index)
+    Diagnose { file: PathBuf },
     /// Budgeted context bundle for one symbol
     Context {
         symbol: String,
@@ -221,6 +225,30 @@ impl CommandError {
             message: format!("ktsense: {command} does not support --format dot (only deps does)"),
         }
     }
+
+    fn passthrough(error: &PassthroughError) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: {error}"),
+        }
+    }
+}
+
+/// A completed command: the text to print on stdout and the status the process should end with.
+/// Most commands succeed, but `check` must be able to print its report and still exit non-zero, so
+/// the exit travels with the output rather than being inferred from success or failure alone.
+struct CommandOutcome {
+    text: String,
+    exit: Exit,
+}
+
+impl CommandOutcome {
+    fn success(text: String) -> Self {
+        Self {
+            text,
+            exit: Exit::Success,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -230,9 +258,9 @@ fn main() -> ExitCode {
         Err(usage) => return report_usage(usage),
     };
     match run(cli) {
-        Ok(output) => {
-            print!("{output}");
-            Exit::Success.into()
+        Ok(outcome) => {
+            print!("{}", outcome.text);
+            outcome.exit.into()
         }
         Err(failure) => {
             eprintln!("{}", failure.message);
@@ -264,7 +292,7 @@ fn init_tracing() {
         .init();
 }
 
-fn run(cli: Cli) -> Result<String, CommandError> {
+fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
     let format = cli.format;
     let root = cli.root;
     match cli.command {
@@ -281,12 +309,127 @@ fn run(cli: Cli) -> Result<String, CommandError> {
                 options = options.with_doc();
             }
             outline(&resolve_root(root.as_deref(), &file), format, &options)
+                .map(CommandOutcome::success)
         }
         Command::Deps { level } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
-            deps(&base, level.into(), format)
+            deps(&base, level.into(), format).map(CommandOutcome::success)
+        }
+        Command::Check { path } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            check(&base, &resolve_root(Some(&base), &path), format)
+        }
+        Command::Diagnose { file } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            diagnose(&base, &resolve_root(Some(&base), &file), format).map(CommandOutcome::success)
         }
         ref pending => Err(CommandError::unimplemented(not_implemented_label(pending))),
+    }
+}
+
+/// Drives one bounded async engine invocation to completion on a dedicated current-thread runtime,
+/// so the otherwise synchronous CLI can reuse the async passthrough adapter without a global
+/// runtime.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build current-thread runtime")
+        .block_on(future)
+}
+
+fn check(root: &Path, path: &Path, format: Format) -> Result<CommandOutcome, CommandError> {
+    let report = block_on(ktsense_lsp::run_check(root, path))
+        .map_err(|error| CommandError::passthrough(&error))?;
+    let exit = if report.has_errors() {
+        Exit::Failure
+    } else {
+        Exit::Success
+    };
+    Ok(CommandOutcome {
+        text: render_check(&report, format)?,
+        exit,
+    })
+}
+
+fn diagnose(root: &Path, file: &Path, format: Format) -> Result<String, CommandError> {
+    let report = block_on(ktsense_lsp::run_diagnose(root, file))
+        .map_err(|error| CommandError::passthrough(&error))?;
+    render_diagnose(&report, format)
+}
+
+fn render_check(report: &CheckReport, format: Format) -> Result<String, CommandError> {
+    match format {
+        Format::Md => Ok(check_markdown(report)),
+        Format::Json => serde_json::to_string_pretty(report)
+            .map(|json| format!("{json}\n"))
+            .map_err(CommandError::serialization),
+        Format::Dot => Err(CommandError::unsupported_format("check")),
+    }
+}
+
+fn render_diagnose(report: &DiagnoseReport, format: Format) -> Result<String, CommandError> {
+    match format {
+        Format::Md => Ok(diagnose_markdown(report)),
+        Format::Json => serde_json::to_string_pretty(report)
+            .map(|json| format!("{json}\n"))
+            .map_err(CommandError::serialization),
+        Format::Dot => Err(CommandError::unsupported_format("diagnose")),
+    }
+}
+
+fn check_markdown(report: &CheckReport) -> String {
+    let mut out = format!(
+        "## Syntax check\n\n{} OK, {} with errors.\n",
+        report.files_ok, report.files_with_errors
+    );
+    if report.errors.is_empty() {
+        return out;
+    }
+    let lines: Vec<String> = report
+        .errors
+        .iter()
+        .map(|error| {
+            format!(
+                "{}:{}:{}: {}",
+                error.file, error.line, error.col, error.message
+            )
+        })
+        .collect();
+    out.push('\n');
+    out.push_str(&fenced_block(&lines));
+    out
+}
+
+fn diagnose_markdown(report: &DiagnoseReport) -> String {
+    let mut out = format!("## Diagnostics: {}\n", neutralize(&report.file));
+    if report.diagnostics.is_empty() {
+        out.push_str("\nNo diagnostics.\n");
+        return out;
+    }
+    let lines: Vec<String> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "{}:{} [{}]: {}",
+                diagnostic.line,
+                diagnostic.col,
+                severity_word(diagnostic.severity),
+                diagnostic.message
+            )
+        })
+        .collect();
+    out.push('\n');
+    out.push_str(&fenced_block(&lines));
+    out
+}
+
+fn severity_word(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
     }
 }
 
@@ -433,6 +576,64 @@ fn is_ignored_dir(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with('.') || IGNORED_DIRS.contains(&name))
 }
 
+/// Bidirectional-override codepoints (the "Trojan Source" set, CVE-2021-42574). They are Unicode
+/// category Cf, so `char::is_control` misses them, yet they reorder how text renders. The core
+/// renderer neutralizes the same set on skeleton output; passthrough text is likewise source
+/// derived and reaches an LLM reader, so it passes through an equivalent boundary rather than being
+/// emitted raw. Core's boundary is private to that crate, hence this local equivalent.
+const BIDIRECTIONAL_OVERRIDES: [char; 12] = [
+    '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}',
+    '\u{2069}', '\u{200E}', '\u{200F}', '\u{061C}',
+];
+
+const MIN_FENCE_BACKTICKS: usize = 3;
+
+/// Wraps engine-derived lines in a `text` code fence sized to survive any backtick run they carry,
+/// with each line neutralized first. A diagnostic message quoting source cannot then break out of
+/// the block or reorder what the reader sees.
+fn fenced_block(lines: &[String]) -> String {
+    let body: Vec<String> = lines
+        .iter()
+        .map(|line| neutralize(line).into_owned())
+        .collect();
+    let joined = body.join("\n");
+    let fence = fence_for(&joined);
+    format!("{fence}text\n{joined}\n{fence}\n")
+}
+
+/// A fence one backtick longer than the longest backtick run in `body`, never shorter than
+/// [`MIN_FENCE_BACKTICKS`], so a backtick run inside the body sits as text instead of closing it.
+fn fence_for(body: &str) -> String {
+    let longest_run = body
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    "`".repeat((longest_run + 1).max(MIN_FENCE_BACKTICKS))
+}
+
+/// Source-derived text made safe to embed in a line of Markdown: a line break, any other control
+/// character, or a bidirectional override becomes a visible `<U+XXXX>` marker; every other byte is
+/// left untouched. Backtick runs are the fence's job, not this one's.
+fn neutralize(text: &str) -> Cow<'_, str> {
+    if !text.contains(is_unsafe_in_output) {
+        return Cow::Borrowed(text);
+    }
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if is_unsafe_in_output(character) {
+            escaped.push_str(&format!("<U+{:04X}>", character as u32));
+        } else {
+            escaped.push(character);
+        }
+    }
+    Cow::Owned(escaped)
+}
+
+fn is_unsafe_in_output(character: char) -> bool {
+    character.is_control() || BIDIRECTIONAL_OVERRIDES.contains(&character)
+}
+
 fn not_implemented_label(command: &Command) -> &'static str {
     match command {
         Command::Outline { .. } => "outline (KT-07)",
@@ -441,6 +642,7 @@ fn not_implemented_label(command: &Command) -> &'static str {
         Command::Deps { .. } => "deps (KT-20)",
         Command::Map { .. } => "map (KT-22)",
         Command::Check { .. } => "check (KT-23)",
+        Command::Diagnose { .. } => "diagnose (KT-23)",
         Command::Context { .. } => "context (KT-35)",
         Command::Status => "status (KT-36)",
         Command::Mcp => "mcp (KT-31)",
@@ -450,7 +652,8 @@ fn not_implemented_label(command: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::Exit;
+    use super::*;
+    use ktsense_lsp::{CheckReport, DiagnoseReport, Diagnostic, Severity, SyntaxError};
 
     #[test]
     fn exit_codes_are_the_documented_contract() {
@@ -463,5 +666,99 @@ mod tests {
         );
 
         assert_eq!(observed, (0, 1, 2, 3, 70));
+    }
+
+    fn check_error(message: &str) -> CheckReport {
+        CheckReport {
+            files_ok: 0,
+            files_with_errors: 1,
+            errors: vec![SyntaxError {
+                file: "src/X.kt".to_string(),
+                line: 1,
+                col: 1,
+                message: message.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn check_markdown_states_the_census_and_fences_reported_errors() {
+        let clean = CheckReport {
+            files_ok: 3,
+            files_with_errors: 0,
+            errors: Vec::new(),
+        };
+
+        let observed = (
+            check_markdown(&clean),
+            check_markdown(&check_error("unexpected `fun`")),
+        );
+        assert_eq!(
+            observed,
+            (
+                "## Syntax check\n\n3 OK, 0 with errors.\n".to_string(),
+                concat!(
+                    "## Syntax check\n\n0 OK, 1 with errors.\n\n",
+                    "```text\n",
+                    "src/X.kt:1:1: unexpected `fun`\n",
+                    "```\n",
+                )
+                .to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn a_message_with_a_fence_and_a_newline_is_widened_and_neutralized_not_left_to_break_out() {
+        assert_eq!(
+            check_markdown(&check_error("a\n``` b")),
+            concat!(
+                "## Syntax check\n\n0 OK, 1 with errors.\n\n",
+                "````text\n",
+                "src/X.kt:1:1: a<U+000A>``` b\n",
+                "````\n",
+            )
+        );
+    }
+
+    #[test]
+    fn diagnose_markdown_says_none_or_fences_findings_with_a_neutralized_heading() {
+        let clean = DiagnoseReport {
+            file: "ok.kt\n## Injected".to_string(),
+            diagnostics: Vec::new(),
+        };
+        let findings = DiagnoseReport {
+            file: "src/When.kt".to_string(),
+            diagnostics: vec![Diagnostic {
+                line: 3,
+                col: 15,
+                severity: Severity::Warning,
+                message: "'when' is missing branches: B".to_string(),
+            }],
+        };
+
+        let observed = (diagnose_markdown(&clean), diagnose_markdown(&findings));
+        assert_eq!(
+            observed,
+            (
+                "## Diagnostics: ok.kt<U+000A>## Injected\n\nNo diagnostics.\n".to_string(),
+                concat!(
+                    "## Diagnostics: src/When.kt\n\n",
+                    "```text\n",
+                    "3:15 [warning]: 'when' is missing branches: B\n",
+                    "```\n",
+                )
+                .to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn json_rendering_reflects_the_normalized_report() {
+        let report = check_error("boom");
+        assert_eq!(
+            render_check(&report, Format::Json).unwrap(),
+            serde_json::to_string_pretty(&report).unwrap() + "\n"
+        );
     }
 }
