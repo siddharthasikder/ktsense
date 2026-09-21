@@ -9,6 +9,13 @@
 //! engine, run in the default suite. Cases whose subject is the engine's own answers need the real
 //! upstream engine and are gated behind `real-lsp`, matching how the other engine-dependent tests
 //! are gated.
+//!
+//! Two lifecycle proofs need a mechanism this repository has only verified on Linux: a process census
+//! through `ps -e -ww -o args=`, and a hard link to a socket file, which POSIX leaves
+//! implementation-defined for a non-regular file. Those live in tests whose names begin `on_linux_`
+//! and carry `#[cfg(target_os = "linux")]`, so the platform boundary is visible in the test list
+//! rather than buried in a helper. CI runs ubuntu and macos-14; a green macOS run has made the
+//! portable lifecycle proofs and not those two.
 
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -302,6 +309,10 @@ impl Lifecycle {
 
     /// How many daemons and how many engine children this harness owns, read from the process table.
     /// `ps` is asked for untruncated arguments because the identifying path is long.
+    ///
+    /// Linux only: these `ps` flags are not verified on macOS, and a census that silently reported
+    /// zero processes would turn every assertion resting on it into a pass.
+    #[cfg(target_os = "linux")]
     fn population(&self) -> (usize, usize) {
         let listing = Command::new("ps")
             .args(["-e", "-ww", "-o", "args="])
@@ -348,6 +359,9 @@ fn same_file(left: &Path, right: &Path) -> bool {
     identity(left).is_some() && identity(left) == identity(right)
 }
 
+/// How many names the file at `path` has. Linux only, because the hard-link witness it serves relies
+/// on `link(2)` accepting a socket, which POSIX leaves implementation-defined for a non-regular file.
+#[cfg(target_os = "linux")]
 fn link_count(path: &Path) -> u64 {
     std::fs::metadata(path)
         .map(|meta| meta.nlink())
@@ -356,33 +370,77 @@ fn link_count(path: &Path) -> u64 {
 
 /// KT-30: a socket left behind by a dead daemon is unlinked and rebound, not mistaken for a live one.
 ///
-/// The stale condition is created for real rather than simulated: a socket is bound and then
-/// abandoned, so the file exists and connecting to it is refused. A hard link planted beside it
-/// witnesses the unlink, because an inode number cannot: the kernel reuses inode numbers, and this
-/// path was measured handing the freed number straight back to the new socket. The link keeps the
-/// dead socket alive as a separate name, so after the start the two paths naming one file becomes two
-/// paths naming two, the witness drops to a single link, and the witness still refuses a connection
-/// while the socket path accepts one.
+/// Runs on every platform, and proves the unlink by consequence rather than by observation. The stale
+/// condition is created for real rather than simulated: a socket is bound and then abandoned, so the
+/// file exists and connecting to it is refused. `bind` refuses a path that already exists, so a daemon
+/// answering on that same path afterwards cannot have got there without the file being removed first.
+/// `on_linux_the_stale_socket_unlink_is_witnessed_by_a_hard_link` observes the removal directly.
+///
+/// Liveness is read from the anchored message prefix, never the bare phrase: "no daemon running for"
+/// contains "daemon running for", so the negative is asserted beside the positive and neither message
+/// can satisfy both.
 #[test]
 fn a_stale_socket_is_unlinked_and_the_daemon_restarts_on_it() {
+    let lifecycle = Lifecycle::new();
+    let socket = lifecycle.socket();
+    drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind then abandon a socket"));
+    let planted = lifecycle.act("status");
+    let planted = (
+        socket.exists(),
+        refused(&socket),
+        planted.stdout.contains("is a stale leftover"),
+        planted.stdout.contains("ktsense: daemon running for"),
+    );
+
+    let started = lifecycle.act("start");
+    let live = lifecycle.act("status");
+
+    assert_eq!(
+        (
+            planted,
+            started.code,
+            (
+                live.code,
+                live.stdout.contains("ktsense: daemon running for"),
+                live.stdout.contains("no daemon running"),
+                live.stdout.contains("is a stale leftover"),
+            ),
+            (socket.exists(), refused(&socket)),
+        ),
+        (
+            (true, true, true, false),
+            Some(0),
+            (Some(0), true, false, false),
+            (true, false),
+        ),
+        "start said: {}{}",
+        started.stdout,
+        started.stderr
+    );
+}
+
+/// KT-30, Linux only: the unlink itself, observed rather than inferred.
+///
+/// An inode number cannot show it. The kernel reuses inode numbers, and this path was measured handing
+/// the freed number straight back to the replacement socket, so a before-and-after inode comparison
+/// passes whether or not the file was ever removed. A hard link planted beside the socket keeps the
+/// dead socket alive under a second name, which makes the removal directly observable: two paths naming
+/// one file become two paths naming two, the witness drops to a single link, and the witness still
+/// refuses a connection while the socket path accepts one.
+///
+/// Gated to Linux because `link(2)` on a socket is implementation-defined for non-regular files. It
+/// works here; it is not claimed for macOS, and no macOS run should be read as having made this proof.
+#[cfg(target_os = "linux")]
+#[test]
+fn on_linux_the_stale_socket_unlink_is_witnessed_by_a_hard_link() {
     let lifecycle = Lifecycle::new();
     let socket = lifecycle.socket();
     let witness = socket.with_extension("witness");
     drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind then abandon a socket"));
     std::fs::hard_link(&socket, &witness).expect("witness the planted socket");
-    let planted = (
-        socket.exists(),
-        refused(&socket),
-        same_file(&socket, &witness),
-        link_count(&witness),
-        lifecycle
-            .act("status")
-            .stdout
-            .contains("is a stale leftover"),
-    );
+    let planted = (same_file(&socket, &witness), link_count(&witness));
 
     let started = lifecycle.act("start");
-    let live = lifecycle.act("status");
 
     assert_eq!(
         (
@@ -395,16 +453,8 @@ fn a_stale_socket_is_unlinked_and_the_daemon_restarts_on_it() {
                 refused(&socket),
                 socket.exists(),
             ),
-            live.stdout.contains("daemon running for"),
-            lifecycle.population(),
         ),
-        (
-            (true, true, true, 2, true),
-            Some(0),
-            (false, 1, true, false, true),
-            true,
-            (1, 1),
-        ),
+        ((true, 2), Some(0), (false, 1, true, false, true),),
         "start said: {}{}",
         started.stdout,
         started.stderr
@@ -413,51 +463,45 @@ fn a_stale_socket_is_unlinked_and_the_daemon_restarts_on_it() {
 
 /// KT-30: a second start reuses the running daemon instead of racing a duplicate.
 ///
-/// A success code would not show that, so the outcome is pinned from four independent facts. The
-/// socket path still names the same file, and the daemon's served count carries on from where the
-/// first daemon left it rather than restarting at zero, which together rule out a second daemon
-/// having taken over. The process table holds exactly one daemon and one engine child, sampled both
-/// straight after the second start and after the next request, which rules out a duplicate that
-/// lingers. And the reported outcome is "already running" rather than "started", which is the fact
-/// that distinguishes a start the CLI recognised as unnecessary from one it attempted anyway: a
-/// duplicate spawn is also refused by the daemon's own bind, so without this the wasted spawn would
-/// leave no trace in the state the other three facts observe.
+/// Runs on every platform. A success code would not show reuse, so the outcome is pinned from three
+/// portable facts. The socket path still names the same file, by device and inode. The daemon's served
+/// count carries on from where the first daemon left it rather than restarting at zero, which a
+/// replacement daemon could not do. And the reported outcome is "already running" rather than
+/// "started", which is the fact that distinguishes a start the CLI recognised as unnecessary from one
+/// it attempted anyway: a duplicate spawn is also refused by the daemon's own bind, so without this the
+/// wasted spawn would leave no trace in the state the other two facts observe.
+///
+/// `on_linux_a_reused_start_adds_no_process_and_a_stop_empties_the_table` adds the process census that
+/// rules out a duplicate which lingers.
 #[test]
 fn a_second_start_reuses_the_running_daemon_rather_than_adding_one() {
     let lifecycle = Lifecycle::new();
     let started = lifecycle.act("start");
     let socket = lifecycle.socket();
     let first_served = lifecycle.serve_one_request();
-    let before = lifecycle.population();
 
     let again = lifecycle.act("start");
-    let immediately_after = lifecycle.population();
     let second_served = lifecycle.serve_one_request();
 
     assert_eq!(
         (
             started.code,
             first_served,
-            before,
             (
                 again.code,
                 again.stdout.contains("already running"),
+                again.stdout.contains("daemon started for"),
                 again.stderr.clone(),
             ),
-            immediately_after,
             same_file(&socket, &lifecycle.socket()),
             second_served,
-            lifecycle.population(),
         ),
         (
             Some(0),
             (Some(0), Some(1)),
-            (1, 1),
-            (Some(0), true, String::new()),
-            (1, 1),
+            (Some(0), true, false, String::new()),
             true,
             (Some(0), Some(2)),
-            (1, 1),
         ),
         "start said: {}{}\nsecond start said: {}{}",
         started.stdout,
@@ -467,26 +511,26 @@ fn a_second_start_reuses_the_running_daemon_rather_than_adding_one() {
     );
 }
 
-/// KT-30: stopping twice is quiet, and the first stop leaves nothing behind.
+/// KT-30: stopping twice is quiet, and the first stop leaves no socket behind.
 ///
-/// The negative is asserted with the positive. After the second stop the socket file is gone, status
-/// reports absence rather than the staleness a leaked socket would show, and neither the daemon nor
-/// its engine child is in the process table. Both stops are required to print nothing on stderr,
-/// which is what "quiet" means for a command an agent parses. The process count is polled to a
-/// deadline rather than slept on, because a loaded host takes longer to reap a child than an idle one.
+/// Runs on every platform. The name says socket rather than process deliberately: proving no process
+/// remains needs the process table, which is
+/// `on_linux_a_reused_start_adds_no_process_and_a_stop_empties_the_table`, so a green run of this test
+/// on a platform without that one has not made that proof. The negative is asserted with the positive:
+/// after the second stop the socket file is gone and status reports absence rather than the staleness a
+/// leaked socket would show. Both stops must print nothing on stderr, which is what "quiet" means for a
+/// command an agent parses. Socket absence is polled to a deadline rather than asserted outright,
+/// because `stop` bounds its own wait and gives up silently, so a loaded host can outlast it.
 #[test]
-fn stopping_twice_is_quiet_and_leaves_no_process_or_socket_behind() {
+fn stopping_twice_is_quiet_and_leaves_no_socket_behind() {
     let lifecycle = Lifecycle::new();
     let started = lifecycle.act("start");
     let socket = lifecycle.socket();
-    let running = (started.code, socket.exists(), lifecycle.population());
+    let running = (started.code, socket.exists());
 
     let stopped = lifecycle.act("stop");
     let again = lifecycle.act("stop");
-    let remaining = settle(
-        || lifecycle.population(),
-        |population| population == &(0, 0),
-    );
+    let gone = settle(|| !socket.exists(), |absent| *absent);
     let after = lifecycle.act("status");
 
     assert_eq!(
@@ -502,25 +546,73 @@ fn stopping_twice_is_quiet_and_leaves_no_process_or_socket_behind() {
                 again.stdout.contains("no daemon was running"),
                 again.stderr.clone(),
             ),
-            remaining,
-            socket.exists(),
+            gone,
             (
                 after.stdout.contains("does not exist"),
-                after.stdout.contains("stale leftover"),
+                after.stdout.contains("is a stale leftover"),
+                after.stdout.contains("ktsense: daemon running for"),
             ),
         ),
         (
-            (Some(0), true, (1, 1)),
+            (Some(0), true),
             (Some(0), true, String::new()),
             (Some(0), true, String::new()),
-            (0, 0),
-            false,
-            (true, false),
+            true,
+            (true, false, false),
         ),
         "start said: {}{}\nfirst stop said: {}\nsecond stop said: {}",
         started.stdout,
         started.stderr,
         stopped.stdout,
+        again.stdout
+    );
+}
+
+/// KT-30, Linux only: the process table, which is the only place "no second daemon" and "no lingering
+/// child" can actually be read.
+///
+/// Both halves live in one test because both need the same census. A second start must add neither a
+/// daemon nor an engine child, sampled straight after it returns and again after the next request; a
+/// stop must empty the table of both. The census is polled to a deadline rather than slept on, because
+/// a loaded host takes longer to reap a child than an idle one.
+///
+/// Gated to Linux because the census shells out to `ps -e -ww -o args=` and the behaviour of those
+/// flags is not verified on macOS. No macOS run should be read as having made this proof.
+#[cfg(target_os = "linux")]
+#[test]
+fn on_linux_a_reused_start_adds_no_process_and_a_stop_empties_the_table() {
+    let lifecycle = Lifecycle::new();
+    let started = lifecycle.act("start");
+    let before = lifecycle.population();
+
+    let again = lifecycle.act("start");
+    let immediately_after = lifecycle.population();
+    let served = lifecycle.serve_one_request();
+    let after_request = lifecycle.population();
+
+    let stopped = lifecycle.act("stop");
+    let remaining = settle(|| lifecycle.population(), |census| census == &(0, 0));
+
+    assert_eq!(
+        (
+            started.code,
+            before,
+            (again.code, immediately_after),
+            (served.0, after_request),
+            stopped.code,
+            remaining,
+        ),
+        (
+            Some(0),
+            (1, 1),
+            (Some(0), (1, 1)),
+            (Some(0), (1, 1)),
+            Some(0),
+            (0, 0),
+        ),
+        "start said: {}{}\nsecond start said: {}",
+        started.stdout,
+        started.stderr,
         again.stdout
     );
 }
