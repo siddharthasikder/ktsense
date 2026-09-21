@@ -19,6 +19,7 @@ use assert_cmd::cargo::CommandCargoExt;
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const FIXTURE: &str = "fixtures/multi-module";
 const SYMBOL: &str = "save";
+#[cfg(feature = "real-lsp")]
 const PICK: &str = "shop.order.OrderRepository.save";
 
 struct Run {
@@ -27,6 +28,7 @@ struct Run {
     stderr: String,
 }
 
+#[cfg(feature = "real-lsp")]
 fn daemon(runtime_dir: &Path, args: &[&str]) -> Run {
     let output = Command::cargo_bin("ktsense")
         .expect("binary builds")
@@ -65,6 +67,7 @@ fn routed(runtime_dir: &Path, root: &str, knob: &str, args: &[&str]) -> Run {
 /// One command's parity between the two paths: whether the answers are byte-identical, the exit each
 /// path reported, whether both stayed silent on stderr, and whether the daemon path produced output
 /// at all. Composed so a case asserts the whole record once.
+#[cfg(feature = "real-lsp")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Parity {
     identical: bool,
@@ -74,6 +77,7 @@ struct Parity {
     produced_output: bool,
 }
 
+#[cfg(feature = "real-lsp")]
 fn parity(runtime_dir: &Path, root: &str, args: &[&str]) -> Parity {
     let via_daemon = routed(runtime_dir, root, "KTSENSE_REQUIRE_DAEMON", args);
     let in_process = routed(runtime_dir, root, "KTSENSE_NO_DAEMON", args);
