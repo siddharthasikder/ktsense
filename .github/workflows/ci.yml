@@ -54,6 +54,25 @@ jobs:
       - name: Package layout, sidecar policy and reproducibility
         run: bash scripts/tests/package-release.test.sh
 
+  # A compile-time env cannot be checked from a unit test, so the KTSENSE_BUILD_VERSION contract is
+  # proven by building the binary in an isolated target dir and reading `--version`: dev fallback,
+  # explicit override, and recompilation when the override changes.
+  build-version:
+    name: build version injection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fallback, override and cache correctness
+        run: bash scripts/tests/build-version.test.sh
+
   # Gate 2 (KT-25): the same suite with the engine-gated tests compiled in, against the pinned
   # upstream binary, plus the publishable compression gate over the real corpora. A separate job so
   # the install-free suite above stays fast and never depends on the network.

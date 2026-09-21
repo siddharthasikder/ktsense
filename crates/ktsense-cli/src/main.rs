@@ -32,7 +32,7 @@ use ktsense_lsp::{CheckReport, DiagnoseReport, LspError, PassthroughError, Sever
 #[derive(Debug, Parser)]
 #[command(
     name = "ktsense",
-    version,
+    version = ktsense_lsp::KTSENSE_VERSION,
     about = "Agent-first Kotlin code understanding: compressed outlines, symbol tracing, and an MCP server",
     long_about = None
 )]

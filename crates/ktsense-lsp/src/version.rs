@@ -16,6 +16,20 @@ use tokio::time::timeout;
 /// Upstream version this build of ktsense was developed and tested against.
 pub const PINNED_UPSTREAM_VERSION: &str = "0.26.0";
 
+/// The ktsense version reported by `ktsense --version` and by the MCP server's `serverInfo`, held
+/// here so both front-ends read one string. Distinct from [`PINNED_UPSTREAM_VERSION`], which is the
+/// engine's version, not ktsense's.
+///
+/// A development build falls back to the workspace manifest version (`0.0.0`), which is never edited
+/// to cut a release. A release build exports `KTSENSE_BUILD_VERSION` at compile time and this reports
+/// that value instead, so no source is mutated per tag. Cargo records environment variables read
+/// through `option_env!` in its dep-info, so changing `KTSENSE_BUILD_VERSION` between builds forces a
+/// recompile rather than serving a stale string from cache.
+pub const KTSENSE_VERSION: &str = match option_env!("KTSENSE_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How a reported upstream version compares to [`PINNED_UPSTREAM_VERSION`], on major.minor alone.
@@ -218,6 +232,14 @@ mod tests {
 
     fn verdict(probe: VersionProbe) -> VersionCheck {
         assess(&probe)
+    }
+
+    #[test]
+    fn ktsense_version_falls_back_to_the_cargo_version_without_a_build_override() {
+        assert_eq!(
+            (KTSENSE_VERSION, option_env!("KTSENSE_BUILD_VERSION")),
+            (env!("CARGO_PKG_VERSION"), None)
+        );
     }
 
     #[test]

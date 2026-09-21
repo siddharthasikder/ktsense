@@ -730,7 +730,7 @@ const INSTRUCTIONS: &str = "Kotlin code understanding for agents.\n\n\
 impl ServerHandler for KtsenseServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("ktsense", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new("ktsense", ktsense_lsp::KTSENSE_VERSION))
             .with_instructions(INSTRUCTIONS)
     }
 
