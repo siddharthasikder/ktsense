@@ -1,0 +1,18 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "declaration-then-callable-reference.gap.kt",
+  "declarations": [
+    {
+      "kind": "function",
+      "name": "call",
+      "line": 1
+    }
+  ],
+  "partial": true
+}

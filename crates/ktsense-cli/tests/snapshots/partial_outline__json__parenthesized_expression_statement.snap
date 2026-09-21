@@ -1,0 +1,24 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "parenthesized-expression-statement.gap.kt",
+  "declarations": [
+    {
+      "kind": "function",
+      "name": "call",
+      "line": 1,
+      "parameters": [
+        {
+          "name": "action",
+          "type_name": "() -> Unit"
+        }
+      ]
+    }
+  ],
+  "partial": true
+}

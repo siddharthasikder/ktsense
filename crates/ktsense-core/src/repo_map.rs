@@ -260,6 +260,7 @@ fn signature_of(file: &FileSkeleton, declaration: &Declaration) -> Option<String
             ..declaration.clone()
         }],
         truncated: false,
+        partial: false,
     };
     let rendered = render_skeleton(&lone, &RenderOptions::default());
     let line = rendered.lines().next()?.trim().to_string();
@@ -332,6 +333,7 @@ mod tests {
                 .map(|(name, line)| Declaration::class(*name, *line))
                 .collect(),
             truncated: false,
+            partial: false,
         }
     }
 

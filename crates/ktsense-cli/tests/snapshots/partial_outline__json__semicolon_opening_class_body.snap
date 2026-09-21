@@ -1,0 +1,25 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "semicolon-opening-class-body.gap.kt",
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "Holder",
+      "line": 1,
+      "children": [
+        {
+          "kind": "function",
+          "name": "member",
+          "line": 2
+        }
+      ]
+    }
+  ],
+  "partial": true
+}

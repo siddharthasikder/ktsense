@@ -1,0 +1,19 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "nullable-callable-reference.gap.kt",
+  "declarations": [
+    {
+      "kind": "val",
+      "name": "reference",
+      "line": 1,
+      "type_inferred": true
+    }
+  ],
+  "partial": true
+}

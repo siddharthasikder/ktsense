@@ -41,15 +41,24 @@
 # the reported totals do not depend on file iteration order. Outline runs with
 # paths relative to <root> so the report is identical on any machine.
 #
-# Rejected files      A file `ktsense outline` refuses (a syntax error as the
-#                   parser sees it) is excluded from BOTH totals, the same
-#                   symmetric treatment .kts files get, and every such file is
-#                   listed in the report with the reason, so nothing is dropped
-#                   silently and the percent is honest about what it covers.
-#                   Rejections do not fail the run: the exit status is reserved
-#                   for the --max-percent gate, so the gate can be demonstrated on
-#                   a corpus with a handful of files the grammar cannot yet parse
-#                   (tracked as KT-52).
+# Rejected files      A file `ktsense outline` refuses (a syntax error the parser
+#                   cannot recover any declaration from) is excluded from BOTH
+#                   totals, the same symmetric treatment .kts files get, and every
+#                   such file is listed in the report with the reason, so nothing
+#                   is dropped silently and the percent is honest about what it
+#                   covers. Rejections do not fail the run: the exit status is
+#                   reserved for the --max-percent gate, so the gate can be
+#                   demonstrated on a corpus with a handful of files the grammar
+#                   cannot yet parse (tracked as KT-52).
+#
+# Recovered files     A file with a LOCALIZED parse error is no longer rejected:
+#                   `ktsense outline` recovers the declarations that parsed around
+#                   the error and marks the output partial (KT-52a). Such a file
+#                   exits 0, so it enters BOTH the raw and skeleton totals like any
+#                   measured file, and is additionally tallied and listed as
+#                   "recovered (partial)" with its raw byte count, so the report
+#                   states how many of the measured bytes came from partial
+#                   recovery rather than a complete parse.
 #
 # Exit status: 0 on a report, or a gate that passes; 1 when the gate fails or no
 # file could be measured; 2 on a usage error.
@@ -114,10 +123,13 @@ skel_total=0
 file_count=0
 rejected_count=0
 rejected_raw=0
+recovered_count=0
+recovered_raw=0
 skel_tmp=$(mktemp)
 err_tmp=$(mktemp)
 rejected_tmp=$(mktemp)
-trap 'rm -f "$skel_tmp" "$err_tmp" "$rejected_tmp"' EXIT
+recovered_tmp=$(mktemp)
+trap 'rm -f "$skel_tmp" "$err_tmp" "$rejected_tmp" "$recovered_tmp"' EXIT
 
 cd "$root_abs"
 while IFS= read -r -d '' file; do
@@ -134,6 +146,11 @@ while IFS= read -r -d '' file; do
     raw_total=$((raw_total + raw))
     skel_total=$((skel_total + skel))
     file_count=$((file_count + 1))
+    if grep -q '^// partial:' "$skel_tmp"; then
+        printf '  %s: %d raw bytes\n' "$file" "$raw" >> "$recovered_tmp"
+        recovered_count=$((recovered_count + 1))
+        recovered_raw=$((recovered_raw + raw))
+    fi
 done < <(find . \
     \( -type d \( -name .git -o -name .gradle -o -name .idea -o -name .settings \
         -o -name build -o -name bin -o -name target -o -name out \
@@ -160,12 +177,18 @@ EOF
 
 printf 'ktsense compression report\n'
 printf 'root:              %s\n' "$root"
-printf 'files (.kt):       %d measured, %d rejected\n' "$file_count" "$rejected_count"
+printf 'files (.kt):       %d measured (%d partial), %d rejected\n' \
+    "$file_count" "$recovered_count" "$rejected_count"
 printf 'raw bytes:         %d  (measured files only)\n' "$raw_total"
 printf 'skeleton bytes:    %d\n' "$skel_total"
 printf 'estimated tokens:  %d  (skeleton, ceil(bytes/3.6), estimate)\n' "$est_tokens"
 printf 'skeleton is %s%% of raw source\n' "$skel_pct"
 printf 'reduction:         %s%%\n' "$reduction_pct"
+if [ "$recovered_count" -gt 0 ]; then
+    printf 'recovered (partial, %d files, %d raw bytes, counted in both totals):\n' \
+        "$recovered_count" "$recovered_raw"
+    cat "$recovered_tmp"
+fi
 if [ "$rejected_count" -gt 0 ]; then
     printf 'rejected by outline (%d files, %d raw bytes, excluded from both totals):\n' \
         "$rejected_count" "$rejected_raw"

@@ -1,0 +1,16 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## malformed-signature.partial.kt
+
+```kotlin
+// partial: recovered around a parse error; some declarations may be missing and shown signatures may be incomplete or malformed
+class A {
+    val x: Map<String,
+    fun ok(): Int
+}
+```
