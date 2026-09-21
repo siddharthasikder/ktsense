@@ -108,8 +108,9 @@ impl From<WireFormat> for Format {
     }
 }
 
-/// Runs a routed command in-process against `root`. Both the daemon and the fallback call this, so
-/// the two paths cannot drift apart.
+/// Runs a routed command in-process against `root`. Both the daemon fallback and the client
+/// fallback call this, so the two paths cannot drift apart. A live daemon answers the same commands
+/// through [`CommandEngine::run_cached`], which reuses parsed skeletons but renders identically.
 pub(crate) fn run_in_process(
     root: &Path,
     command: &RoutedCommand,
@@ -120,23 +121,27 @@ pub(crate) fn run_in_process(
             file,
             private,
             kdoc,
-        } => {
-            let mut options = RenderOptions::default();
-            if *private {
-                options = options.with_private();
-            }
-            if *kdoc {
-                options = options.with_doc();
-            }
-            crate::outline(
-                root,
-                &crate::resolve_root(Some(root), file),
-                format,
-                &options,
-            )
-        }
+        } => crate::outline(
+            root,
+            &crate::resolve_root(Some(root), file),
+            format,
+            &render_options(*private, *kdoc),
+        ),
         RoutedCommand::Deps { level } => crate::deps(root, DepLevel::from(*level), format),
     }
+}
+
+/// The render options a routed `outline` carries, shared by the fresh and cached paths so a knob
+/// added to one cannot be forgotten by the other.
+fn render_options(private: bool, kdoc: bool) -> RenderOptions {
+    let mut options = RenderOptions::default();
+    if private {
+        options = options.with_private();
+    }
+    if kdoc {
+        options = options.with_doc();
+    }
+    options
 }
 
 /// Answers the command through the root's daemon when one is live and routing is enabled, and
@@ -196,6 +201,7 @@ async fn ask_daemon(socket: &Path, command: &RoutedCommand, format: Format) -> D
 pub(crate) struct CommandEngine {
     root: PathBuf,
     engine: WarmEngine,
+    cache: crate::cache::SkeletonCache,
     started: Instant,
     served: AtomicU64,
 }
@@ -205,6 +211,7 @@ impl CommandEngine {
         Self {
             root,
             engine,
+            cache: crate::cache::SkeletonCache::default(),
             started: Instant::now(),
             served: AtomicU64::new(0),
         }
@@ -227,9 +234,30 @@ impl CommandEngine {
                 return HandlerOutcome::Error(format!("malformed command request: {error}"))
             }
         };
-        match run_in_process(&self.root, &routed.command, routed.format.into()) {
+        match self.run_cached(&routed.command, routed.format.into()) {
             Ok(text) => HandlerOutcome::Reply(Value::String(text)),
             Err(error) => HandlerOutcome::Error(error.message),
+        }
+    }
+
+    /// Answers a routed command from the warm skeleton cache. Byte-identical to
+    /// [`run_in_process`] by construction: it renders through the same functions and differs only in
+    /// reusing a parsed skeleton whose file has not changed since it was parsed.
+    fn run_cached(&self, command: &RoutedCommand, format: Format) -> Result<String, CommandError> {
+        match command {
+            RoutedCommand::Outline {
+                file,
+                private,
+                kdoc,
+            } => self.cache.outline(
+                &self.root,
+                &crate::resolve_root(Some(&self.root), file),
+                format,
+                &render_options(*private, *kdoc),
+            ),
+            RoutedCommand::Deps { level } => {
+                self.cache.deps(&self.root, DepLevel::from(*level), format)
+            }
         }
     }
 }
