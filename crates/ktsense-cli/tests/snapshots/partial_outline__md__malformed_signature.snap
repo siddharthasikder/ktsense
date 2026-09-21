@@ -5,9 +5,12 @@ expression: record
 exit: 0
 stderr: (empty)
 --- stdout ---
-## semicolon-opening-class-body.gap.kt
+## malformed-signature.partial.kt
 
 ```kotlin
 // partial: recovered around a parse error; some declarations may be missing and shown signatures may be incomplete or malformed
-class Holder { fun member() }
+class A {
+    val x: Map<String,
+    fun ok(): Int
+}
 ```

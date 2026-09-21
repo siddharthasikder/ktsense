@@ -1,0 +1,32 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+{
+  "path": "malformed-signature.partial.kt",
+  "declarations": [
+    {
+      "kind": "class",
+      "name": "A",
+      "line": 1,
+      "children": [
+        {
+          "kind": "val",
+          "name": "x",
+          "line": 2,
+          "return_type": "Map<String,"
+        },
+        {
+          "kind": "function",
+          "name": "ok",
+          "line": 3,
+          "return_type": "Int"
+        }
+      ]
+    }
+  ],
+  "partial": true
+}

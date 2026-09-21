@@ -90,3 +90,49 @@ fn partial_outline_goldens_are_pinned_in_both_formats() {
         }
     }
 }
+
+const MALFORMED_SIGNATURE: &str = "malformed-signature.partial.kt";
+
+/// A localized error can fall inside a signature rather than in an elided body, so a recovered
+/// declaration can carry malformed signature text. Recovery still succeeds and is marked partial,
+/// and the broadened notice warns that a shown signature may itself be malformed: the truncated
+/// `val x: Map<String,` here is exactly that case, standing beside the cleanly recovered
+/// `fun ok(): Int`. JSON carries the same truncated span in `return_type`.
+#[test]
+fn a_malformed_signature_is_recovered_partial_and_the_notice_qualifies_the_shown_signature() {
+    let md = outline(MALFORMED_SIGNATURE, "md");
+    let json = outline(MALFORMED_SIGNATURE, "json");
+    let document: serde_json::Value =
+        serde_json::from_str(&json.stdout).expect("partial outline is valid JSON");
+
+    let observed = (
+        md.code == Some(0) && md.stderr.is_empty(),
+        md.stdout
+            .contains("// partial: recovered around a parse error; some declarations may be missing and shown signatures may be incomplete or malformed"),
+        md.stdout.contains("val x: Map<String,"),
+        md.stdout.contains("fun ok(): Int"),
+        document["partial"].as_bool() == Some(true),
+        document["declarations"][0]["children"][0]["return_type"].as_str() == Some("Map<String,"),
+    );
+
+    assert_eq!(observed, (true, true, true, true, true, true));
+}
+
+#[test]
+fn malformed_signature_goldens_are_pinned_in_both_formats() {
+    for format in ["md", "json"] {
+        let run = outline(MALFORMED_SIGNATURE, format);
+        let record = format!(
+            "exit: {}\nstderr: {}\n--- stdout ---\n{}",
+            run.code
+                .map_or_else(|| "signal".to_string(), |c| c.to_string()),
+            if run.stderr.is_empty() {
+                "(empty)".to_string()
+            } else {
+                run.stderr
+            },
+            run.stdout
+        );
+        insta::assert_snapshot!(format!("{format}__malformed_signature"), record);
+    }
+}

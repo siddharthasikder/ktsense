@@ -40,8 +40,10 @@ pub struct FileSkeleton {
     /// True when the source held one or more localized parse errors and this skeleton is a
     /// best-effort recovery of the declarations that parsed around them, not a complete extraction.
     /// Set so recovered declarations are never read as the file's full API: the accuracy-honesty
-    /// rule forbids presenting a partial answer as a confident one. A complete extraction leaves it
-    /// false, and it is then absent from JSON, so complete output is unchanged.
+    /// rule forbids presenting a partial answer as a confident one. It carries two caveats, not one:
+    /// declarations may be missing, and a shown signature may itself be incomplete or malformed when
+    /// an error fell inside it. A complete extraction leaves it false, and it is then absent from
+    /// JSON, so complete output is unchanged.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
 }
@@ -80,7 +82,8 @@ impl FileSkeleton {
     }
 
     /// Marks the outline as partial: it recovers the declarations that parsed around a localized
-    /// error, and is not a complete extraction.
+    /// error, is not a complete extraction, and may show a signature that is itself incomplete or
+    /// malformed where an error fell inside it.
     pub fn marked_partial(mut self) -> Self {
         self.partial = true;
         self

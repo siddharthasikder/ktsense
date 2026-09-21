@@ -8,6 +8,6 @@ stderr: (empty)
 ## nullable-callable-reference.gap.kt
 
 ```kotlin
-// partial: recovered around a parse error; some declarations may be missing
+// partial: recovered around a parse error; some declarations may be missing and shown signatures may be incomplete or malformed
 val reference /* inferred */
 ```

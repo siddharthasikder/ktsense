@@ -41,11 +41,17 @@ const TYPE_KINDS: &[&str] = &[
 /// tree-sitter is error tolerant and returns a tree for broken input. When that tree carries a
 /// localized ERROR node the surrounding declarations still parse, so the result is a best-effort
 /// recovery marked [`FileSkeleton::partial`] rather than a whole-file rejection (KT-52a). The
-/// declarations skeletons keep are signatures, and every gap KT-52 isolated puts its ERROR node in
-/// a region the extractor already discards (a function or property body, an initializer) or skips
-/// (a stray token between members), so the recovered signatures are trustworthy. A file whose every
-/// token is garbage collapses to a single top-level ERROR node with no declaration beneath it, so
-/// nothing is recovered; that case returns an error rather than an empty confident skeleton.
+/// declarations skeletons keep are signatures whose fields are copied verbatim from source spans.
+/// For each of the four grammar gaps KT-52 isolated, and for every file measured in the two pinned
+/// corpora, the ERROR node sits in a region the extractor already discards (a function or property
+/// body, an initializer) or skips (a stray token between members), so those recovered signatures
+/// come out complete. That does not generalize: `partial` is set for ANY file carrying an error, and
+/// an ERROR that lands inside a signature itself (a truncated type, a garbled default) leaks that
+/// malformed span into the shown signature. The recovery is therefore best-effort, not verified; the
+/// partial notice warns that shown signatures may be incomplete or malformed, and no caller may read
+/// a recovered signature as trustworthy. A file whose every token is garbage collapses to a single
+/// top-level ERROR node with no declaration beneath it, so nothing is recovered; that case returns an
+/// error rather than an empty confident skeleton.
 pub fn extract(path: impl Into<String>, source: &str) -> Result<FileSkeleton> {
     let tree = crate::parse(source).context("parsing Kotlin source")?;
     let root = tree.root_node();

@@ -60,7 +60,7 @@ const TRUNCATION_NOTICE: &str = "// truncated: nesting depth limit reached";
 /// declarations that follow are never read as the file's complete API. `bench/compress.sh` also
 /// keys the "recovered (partial)" tally on this exact prefix, so the two must stay in lockstep.
 const PARTIAL_NOTICE: &str =
-    "// partial: recovered around a parse error; some declarations may be missing";
+    "// partial: recovered around a parse error; some declarations may be missing and shown signatures may be incomplete or malformed";
 
 /// Width past which a single-member container opens braces instead of collapsing onto one line.
 /// Narrower than Kotlin's own 120-column guidance, because this output is read inside an agent's
@@ -1005,7 +1005,7 @@ mod tests {
         assert_eq!(
             render_skeleton(&file, &RenderOptions::default()),
             concat!(
-                "// partial: recovered around a parse error; some declarations may be missing\n",
+                "// partial: recovered around a parse error; some declarations may be missing and shown signatures may be incomplete or malformed\n",
                 "fun survivor()"
             )
         );
