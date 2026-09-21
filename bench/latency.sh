@@ -45,13 +45,13 @@
 #                 (KTSENSE_REQUIRE_DAEMON=1), so a silent fallback can never be
 #                 reported as a daemon number.
 #
-#                 Only `outline` and `deps` have a daemon path at all. `symbols`
-#                 is exempt by design: its backend is the engine's command-mode
-#                 `find`, and `workspace/symbol` is fuzzy and not root-scoped on
-#                 this engine, so a warm session has nothing better to offer.
-#                 `trace` and `map` are simply not routed yet. Their daemon rows
-#                 report `na` with the reason in `note` rather than repeating the
-#                 in-process number under a second name.
+#                 `outline`, `deps`, `trace` and `map` each have a daemon path.
+#                 `symbols` is exempt by design: its backend is the engine's
+#                 command-mode `find`, and `workspace/symbol` is fuzzy and not
+#                 root-scoped on this engine, so a warm session has nothing better
+#                 to offer. `trace` still pays that same command-mode `find` to
+#                 resolve its symbol even on the daemon path, so its daemon row is
+#                 not purely warm-session time; the `find` cost dominates it.
 #
 # Corpus integrity
 #                 Running kmp-lsp over a Gradle project triggers an Eclipse
@@ -323,9 +323,9 @@ measure outline daemon "" outline "$outline_file"
 measure symbols in_process "$corpus_note" symbols "$symbol"
 absent symbols exempt_fork_a
 measure trace in_process "$corpus_note" trace "$symbol"
-absent trace not_routed
+measure trace daemon "$corpus_note" trace "$symbol"
 measure map in_process "$corpus_note" map
-absent map not_routed
+measure map daemon "$corpus_note" map
 measure deps in_process "$corpus_note" deps
 measure deps daemon "$corpus_note" deps
 

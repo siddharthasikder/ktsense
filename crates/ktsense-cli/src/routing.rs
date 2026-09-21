@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::status::{DaemonSnapshot, STATUS_METHOD};
-use crate::{block_on, CommandError, Format};
+use crate::trace::{IndexWaitPolicy, TraceRequest};
+use crate::{block_on, CommandError, CommandOutcome, Exit, Format};
 
 pub(crate) const NO_DAEMON_ENV: &str = "KTSENSE_NO_DAEMON";
 pub(crate) const REQUIRE_DAEMON_ENV: &str = "KTSENSE_REQUIRE_DAEMON";
@@ -43,6 +44,16 @@ pub(crate) enum RoutedCommand {
     },
     Deps {
         level: RoutedLevel,
+    },
+    Trace {
+        symbol: String,
+        pick: Option<String>,
+        depth: u8,
+        limit: Option<usize>,
+        wait_index: bool,
+    },
+    Map {
+        budget: usize,
     },
 }
 
@@ -110,12 +121,12 @@ impl From<WireFormat> for Format {
 
 /// Runs a routed command in-process against `root`. Both the daemon fallback and the client
 /// fallback call this, so the two paths cannot drift apart. A live daemon answers the same commands
-/// through [`CommandEngine::run_cached`], which reuses parsed skeletons but renders identically.
+/// through [`CommandEngine::run_command`], which reuses parsed skeletons but renders identically.
 pub(crate) fn run_in_process(
     root: &Path,
     command: &RoutedCommand,
     format: Format,
-) -> Result<String, CommandError> {
+) -> Result<CommandOutcome, CommandError> {
     match command {
         RoutedCommand::Outline {
             file,
@@ -126,8 +137,51 @@ pub(crate) fn run_in_process(
             &crate::resolve_root(Some(root), file),
             format,
             &render_options(*private, *kdoc),
-        ),
-        RoutedCommand::Deps { level } => crate::deps(root, DepLevel::from(*level), format),
+        )
+        .map(CommandOutcome::success),
+        RoutedCommand::Deps { level } => {
+            crate::deps(root, DepLevel::from(*level), format).map(CommandOutcome::success)
+        }
+        RoutedCommand::Trace {
+            symbol,
+            pick,
+            depth,
+            limit,
+            wait_index,
+        } => crate::trace::trace(trace_request(
+            root,
+            symbol,
+            pick,
+            *depth,
+            *limit,
+            *wait_index,
+            format,
+        )),
+        RoutedCommand::Map { budget } => {
+            crate::repository_map(root, *budget, format).map(CommandOutcome::success)
+        }
+    }
+}
+
+/// Rebuilds a [`TraceRequest`] from the wire fields, borrowing `root` and the owned strings the
+/// routed command carries, so the fresh and warm paths construct an identical request.
+fn trace_request<'a>(
+    root: &'a Path,
+    symbol: &'a str,
+    pick: &'a Option<String>,
+    depth: u8,
+    limit: Option<usize>,
+    wait_index: bool,
+    format: Format,
+) -> TraceRequest<'a> {
+    TraceRequest {
+        root,
+        symbol,
+        pick: pick.as_deref(),
+        depth: usize::from(depth),
+        limit,
+        wait: IndexWaitPolicy::from_flag(wait_index),
+        format,
     }
 }
 
@@ -153,12 +207,12 @@ pub(crate) fn route(
     socket: &Path,
     command: RoutedCommand,
     format: Format,
-) -> Result<String, CommandError> {
+) -> Result<CommandOutcome, CommandError> {
     if flag_set(NO_DAEMON_ENV) {
         return run_in_process(root, &command, format);
     }
     match block_on(ask_daemon(socket, &command, format)) {
-        DaemonAnswer::Text(text) => Ok(text),
+        DaemonAnswer::Answered(outcome) => Ok(outcome),
         DaemonAnswer::CommandFailed(message) => Err(CommandError::routed_failure(message)),
         DaemonAnswer::Unreachable if flag_set(REQUIRE_DAEMON_ENV) => {
             Err(CommandError::no_daemon(root))
@@ -172,9 +226,52 @@ fn flag_set(name: &str) -> bool {
 }
 
 enum DaemonAnswer {
-    Text(String),
+    Answered(CommandOutcome),
     CommandFailed(String),
     Unreachable,
+}
+
+/// The wire shape of a routed answer: the rendered text plus the exit status it should end with, so
+/// a routed `trace` that lists ambiguous candidates ends 3 exactly as the in-process one does rather
+/// than being flattened to success. An answer whose exit is not carried defaults to success, which
+/// is what `outline`, `deps` and `map` always report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoutedReply {
+    text: String,
+    #[serde(default)]
+    exit: WireExit,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireExit {
+    #[default]
+    Success,
+    Ambiguous,
+}
+
+impl RoutedReply {
+    fn of(outcome: CommandOutcome) -> Self {
+        let exit = match outcome.exit {
+            Exit::Ambiguous => WireExit::Ambiguous,
+            _ => WireExit::Success,
+        };
+        Self {
+            text: outcome.text,
+            exit,
+        }
+    }
+
+    fn into_outcome(self) -> CommandOutcome {
+        let exit = match self.exit {
+            WireExit::Success => Exit::Success,
+            WireExit::Ambiguous => Exit::Ambiguous,
+        };
+        CommandOutcome {
+            text: self.text,
+            exit,
+        }
+    }
 }
 
 async fn ask_daemon(socket: &Path, command: &RoutedCommand, format: Format) -> DaemonAnswer {
@@ -188,8 +285,10 @@ async fn ask_daemon(socket: &Path, command: &RoutedCommand, format: Format) -> D
         return DaemonAnswer::Unreachable;
     };
     match client.request(COMMAND_METHOD, params).await {
-        Ok(Value::String(text)) => DaemonAnswer::Text(text),
-        Ok(_other_shape) => DaemonAnswer::Unreachable,
+        Ok(value) => match serde_json::from_value::<RoutedReply>(value) {
+            Ok(reply) => DaemonAnswer::Answered(reply.into_outcome()),
+            Err(_unexpected_shape) => DaemonAnswer::Unreachable,
+        },
         Err(ClientError::Engine { message }) => DaemonAnswer::CommandFailed(message),
         Err(_transport) => DaemonAnswer::Unreachable,
     }
@@ -227,36 +326,77 @@ impl CommandEngine {
         }
     }
 
-    fn answer(&self, params: Value) -> HandlerOutcome {
+    async fn answer(&self, params: Value) -> HandlerOutcome {
         let routed: RoutedParams = match serde_json::from_value(params) {
             Ok(routed) => routed,
             Err(error) => {
                 return HandlerOutcome::Error(format!("malformed command request: {error}"))
             }
         };
-        match self.run_cached(&routed.command, routed.format.into()) {
-            Ok(text) => HandlerOutcome::Reply(Value::String(text)),
+        match self
+            .run_command(&routed.command, routed.format.into())
+            .await
+        {
+            Ok(outcome) => match serde_json::to_value(RoutedReply::of(outcome)) {
+                Ok(value) => HandlerOutcome::Reply(value),
+                Err(error) => HandlerOutcome::Error(error.to_string()),
+            },
             Err(error) => HandlerOutcome::Error(error.message),
         }
     }
 
-    /// Answers a routed command from the warm skeleton cache. Byte-identical to
-    /// [`run_in_process`] by construction: it renders through the same functions and differs only in
-    /// reusing a parsed skeleton whose file has not changed since it was parsed.
-    fn run_cached(&self, command: &RoutedCommand, format: Format) -> Result<String, CommandError> {
+    /// Answers a routed command on the daemon's warm session. `outline` and `deps` reuse the parsed
+    /// skeleton cache; `map` is pure tree-sitter run by the same function the fresh path calls; and
+    /// `trace` drives the daemon's own warm LSP session rather than launching a second engine child.
+    /// Every branch renders through the same code the in-process path uses, so a routed answer equals
+    /// the in-process one byte for byte. No sync guard is held across an await: the cache locks only
+    /// within its own synchronous calls, and the index phase is read by value.
+    async fn run_command(
+        &self,
+        command: &RoutedCommand,
+        format: Format,
+    ) -> Result<CommandOutcome, CommandError> {
         match command {
             RoutedCommand::Outline {
                 file,
                 private,
                 kdoc,
-            } => self.cache.outline(
-                &self.root,
-                &crate::resolve_root(Some(&self.root), file),
-                format,
-                &render_options(*private, *kdoc),
-            ),
-            RoutedCommand::Deps { level } => {
-                self.cache.deps(&self.root, DepLevel::from(*level), format)
+            } => self
+                .cache
+                .outline(
+                    &self.root,
+                    &crate::resolve_root(Some(&self.root), file),
+                    format,
+                    &render_options(*private, *kdoc),
+                )
+                .map(CommandOutcome::success),
+            RoutedCommand::Deps { level } => self
+                .cache
+                .deps(&self.root, DepLevel::from(*level), format)
+                .map(CommandOutcome::success),
+            RoutedCommand::Trace {
+                symbol,
+                pick,
+                depth,
+                limit,
+                wait_index,
+            } => {
+                crate::trace::trace_warm(
+                    &self.engine,
+                    trace_request(
+                        &self.root,
+                        symbol,
+                        pick,
+                        *depth,
+                        *limit,
+                        *wait_index,
+                        format,
+                    ),
+                )
+                .await
+            }
+            RoutedCommand::Map { budget } => {
+                crate::repository_map(&self.root, *budget, format).map(CommandOutcome::success)
             }
         }
     }
@@ -272,7 +412,7 @@ impl Engine for CommandEngine {
         }
         self.served.fetch_add(1, Ordering::Relaxed);
         if request.method == COMMAND_METHOD {
-            return self.answer(request.params);
+            return self.answer(request.params).await;
         }
         self.engine.handle(request).await
     }
@@ -312,6 +452,62 @@ mod tests {
                 }),
                 params.command,
                 true
+            )
+        );
+    }
+
+    #[test]
+    fn trace_and_map_carry_their_arguments_across_the_wire() {
+        let trace = RoutedParams {
+            command: RoutedCommand::Trace {
+                symbol: "save".to_string(),
+                pick: Some("shop.order.OrderRepository.save".to_string()),
+                depth: 2,
+                limit: Some(5),
+                wait_index: true,
+            },
+            format: WireFormat::Md,
+        };
+        let map = RoutedParams {
+            command: RoutedCommand::Map { budget: 4000 },
+            format: WireFormat::Json,
+        };
+
+        let trace_back: RoutedParams =
+            serde_json::from_value(serde_json::to_value(&trace).expect("serializes"))
+                .expect("deserializes");
+        let map_value = serde_json::to_value(&map).expect("serializes");
+
+        assert_eq!(
+            (trace_back.command, map_value),
+            (
+                trace.command,
+                serde_json::json!({ "command": "map", "budget": 4000, "format": "json" })
+            )
+        );
+    }
+
+    #[test]
+    fn a_reply_preserves_the_exit_and_defaults_a_missing_one_to_success() {
+        let ambiguous = RoutedReply::of(CommandOutcome {
+            text: "candidates".to_string(),
+            exit: Exit::Ambiguous,
+        });
+        let wire = serde_json::to_value(&ambiguous).expect("serializes");
+        let round_tripped = ambiguous.clone().into_outcome();
+        let legacy_text_only: RoutedReply =
+            serde_json::from_value(serde_json::json!({ "text": "ok" })).expect("deserializes");
+
+        assert_eq!(
+            (
+                wire,
+                (round_tripped.text, round_tripped.exit),
+                (legacy_text_only.text, legacy_text_only.exit),
+            ),
+            (
+                serde_json::json!({ "text": "candidates", "exit": "ambiguous" }),
+                ("candidates".to_string(), Exit::Ambiguous),
+                ("ok".to_string(), WireExit::Success),
             )
         );
     }
