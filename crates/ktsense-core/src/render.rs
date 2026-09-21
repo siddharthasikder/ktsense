@@ -210,8 +210,10 @@ pub fn render_map_markdown(map: &RepoMap) -> String {
     }
 
     out.push_str(
-        "\nRanking is syntactic: files are ordered by import centrality and declarations by how \
-         many files import them by name, not by type-checked references.\n",
+        "\nRanking is syntactic: files are ordered by import centrality, then by how often their \
+         declarations are referenced by name across the corpus, with import counts breaking ties. A \
+         reference is an identifier occurrence outside an import, counted by name and not \
+         type-checked, so declarations sharing a simple name across packages share a count.\n",
     );
     out
 }

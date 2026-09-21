@@ -9,6 +9,7 @@
 mod cache;
 mod context;
 mod daemon;
+mod identifiers;
 mod routing;
 mod status;
 mod symbols;
@@ -24,7 +25,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ktsense_core::{
     build_import_graph, build_repo_map, render_deps_dot, render_deps_markdown, render_map_markdown,
     render_markdown, ByteRatioEstimator, DepLevel, FileSkeleton, ImportGraph, RenderOptions,
-    RepoMap,
+    RepoMap, RepoMapInput,
 };
 use ktsense_lsp::{CheckReport, DiagnoseReport, LspError, PassthroughError, Severity};
 
@@ -736,14 +737,30 @@ fn deps(root: &Path, level: DepLevel, format: Format) -> Result<String, CommandE
 /// answer "what is this repository", and test scaffolding is the wrong answer to that question.
 /// `deps` deliberately keeps whole-repository semantics, because a dependency graph that hid half
 /// the edges would be a different kind of lie.
+///
+/// Reference counts are gathered over the same file set that is mapped, production sources only, so
+/// the ranking has one universe of discourse: a declaration's count means "referenced this often by
+/// the code this map describes". Counting test references too would reintroduce the bias that
+/// excluding test sources removed, by promoting whatever the test suite exercises hardest.
 fn repository_map(root: &Path, budget: usize, format: Format) -> Result<String, CommandError> {
     let files = collect_kotlin_files(root)?;
-    let skeletons: Vec<FileSkeleton> = files
-        .iter()
+    let mapped: Vec<PathBuf> = files
+        .into_iter()
         .filter(|path| !is_test_source(root, path))
+        .collect();
+    let skeletons: Vec<FileSkeleton> = mapped
+        .iter()
         .filter_map(|path| skeleton_for_deps(root, path))
         .collect();
-    let map = build_repo_map(&skeletons, budget, &ByteRatioEstimator);
+    let references = identifiers::count_identifiers(&mapped);
+    let map = build_repo_map(
+        RepoMapInput {
+            files: &skeletons,
+            references: &references,
+            budget,
+        },
+        &ByteRatioEstimator,
+    );
     present_map(&map, format)
 }
 

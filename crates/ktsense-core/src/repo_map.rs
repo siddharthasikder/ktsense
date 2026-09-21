@@ -1,14 +1,25 @@
 //! Token-budgeted repository map.
 //!
 //! The map answers "what is this repository, in as few tokens as you can spare". Files are ordered
-//! by how central their package is in the import graph, declarations within a file by how many other
-//! files import them by name, and signatures are emitted until the budget is spent.
+//! by how central their package is in the import graph, then by how often their declarations are
+//! referenced; declarations within a file are ordered by their own reference count, and signatures
+//! are emitted until the budget is spent.
 //!
-//! Centrality is derived from imports alone, which is the only cross-file evidence a syntactic pass
-//! has: bodies are elided by the compressor, so a call site inside a function is invisible here. A
-//! wildcard import names no declaration, so it contributes to its package's rank but never to an
-//! individual declaration's. Both limits are deliberate, and the output says so rather than implying
-//! a reference count it cannot compute.
+//! Two different signals, deliberately not conflated:
+//!
+//! 1. **The import graph gives file-level centrality.** A package everything depends on outranks a
+//!    leaf, which is a question about architecture and is exactly what imports answer.
+//! 2. **Reference counts rank declarations.** Imports alone cannot: files in one package never
+//!    import each other, so a declaration used mainly by its neighbours is credited nothing. On a
+//!    largely single-package repository such as kotlinx.coroutines that is most of the real usage,
+//!    which is why the import proxy put an alphabetically early file at the top instead of a central
+//!    one (KT-22a).
+//!
+//! A [`ReferenceCounts`] is keyed by a declaration's *simple name*, because that is what an
+//! occurrence in source spells; two declarations sharing a simple name across packages therefore
+//! share a count. Import counts stay as the tiebreak, since they are fully qualified and so
+//! discriminate exactly where reference counts cannot. Both limits are stated in the rendered
+//! footer rather than implying a type-checked reference count neither can compute.
 
 use std::collections::BTreeMap;
 
@@ -20,6 +31,41 @@ use crate::rank::{page_rank, Graph, PageRankOptions};
 use crate::render::{render_skeleton, RenderOptions};
 use crate::skeleton::{Declaration, FileSkeleton};
 use crate::TokenEstimator;
+
+/// How many times each declaration name is referenced across the corpus.
+///
+/// Keyed by simple name, not by fully-qualified name: an occurrence in source is `OrderRepository`,
+/// never `shop.order.OrderRepository`, and resolving one to the other is the engine's job, not a
+/// syntactic pass's. A caller builds this by counting identifier occurrences; what counts as one is
+/// the caller's decision and is documented where it is built.
+///
+/// A distinct type rather than a bare map because the other ranking signal, importer counts, is a
+/// `BTreeMap<String, usize>` too, keyed by fully-qualified name. Two same-shaped maps with different
+/// keys are transposable in a call, and silently so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReferenceCounts {
+    by_name: BTreeMap<String, usize>,
+}
+
+impl ReferenceCounts {
+    pub fn from_counts(by_name: BTreeMap<String, usize>) -> Self {
+        Self { by_name }
+    }
+
+    pub fn for_name(&self, name: &str) -> usize {
+        self.by_name.get(name).copied().unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    /// Distinct names carrying at least one reference, which a caller reports as evidence that the
+    /// count was actually gathered rather than silently defaulted.
+    pub fn distinct_names(&self) -> usize {
+        self.by_name.len()
+    }
+}
 
 /// One file in the map, with the signatures that fit the budget in emission order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -43,17 +89,27 @@ pub struct RepoMap {
     pub files_omitted: usize,
 }
 
-/// Builds a budgeted map from parsed skeletons.
+/// Everything the map is built from. A parameter object rather than four arguments, and it keeps the
+/// two ranking signals named at the call site instead of positional.
+pub struct RepoMapInput<'a> {
+    pub files: &'a [FileSkeleton],
+    pub references: &'a ReferenceCounts,
+    pub budget: usize,
+}
+
+/// Builds a budgeted map from parsed skeletons and the corpus reference counts.
 ///
-/// Ordering is total and deterministic: package rank descending, then path ascending, so the same
-/// repository maps identically on every machine regardless of traversal order.
-pub fn build_repo_map<E: TokenEstimator>(
-    files: &[FileSkeleton],
-    budget: usize,
-    estimator: &E,
-) -> RepoMap {
+/// Ordering is total and deterministic: package rank descending, then the file's own reference
+/// count, then its importer count, then path ascending, so the same repository maps identically on
+/// every machine regardless of traversal order.
+pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E) -> RepoMap {
+    let files = input.files;
     let package_scores = package_scores(files);
     let importers = importer_counts(files);
+    let ranking = Ranking {
+        references: input.references,
+        importers: &importers,
+    };
 
     let mut ordered: Vec<&FileSkeleton> = files.iter().collect();
     ordered.sort_by(|left, right| {
@@ -62,14 +118,14 @@ pub fn build_repo_map<E: TokenEstimator>(
         right_score
             .partial_cmp(&left_score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| file_importers(right, &importers).cmp(&file_importers(left, &importers)))
+            .then_with(|| ranking.file_weight(right).cmp(&ranking.file_weight(left)))
             .then_with(|| left.path.cmp(&right.path))
     });
 
     let mut units = Vec::new();
     let mut candidate_files = 0usize;
     for file in ordered {
-        let signatures = signatures_in_reference_order(file, &importers);
+        let signatures = signatures_in_reference_order(file, &ranking);
         if signatures.is_empty() {
             continue;
         }
@@ -80,13 +136,58 @@ pub fn build_repo_map<E: TokenEstimator>(
         }
     }
 
-    let emission = emit_within_budget(units, budget, estimator);
+    let emission = emit_within_budget(units, input.budget, estimator);
     let files_shown = regroup(&emission.items);
     RepoMap {
         files_omitted: candidate_files.saturating_sub(files_shown.len()),
         files: files_shown,
-        budget,
+        budget: input.budget,
         token_upper_bound: emission.token_upper_bound,
+    }
+}
+
+/// The two cross-file signals a declaration is ranked by, so every comparison reads them the same
+/// way and no call site can pass them in the wrong order.
+struct Ranking<'a> {
+    references: &'a ReferenceCounts,
+    importers: &'a BTreeMap<String, usize>,
+}
+
+impl Ranking<'_> {
+    /// How much a declaration is used: its reference count, then how many files import it by name.
+    /// The second term only ever breaks a tie in the first, and is fully qualified, so it separates
+    /// two same-named declarations that the reference count necessarily pools.
+    fn weight_of(&self, file: &FileSkeleton, declaration: &Declaration) -> (usize, usize) {
+        (
+            self.references.for_name(&declaration.name),
+            self.importers
+                .get(&qualified_name(file, declaration))
+                .copied()
+                .unwrap_or(0),
+        )
+    }
+
+    /// How much a file is used: its declarations' weights summed term by term.
+    ///
+    /// Package rank cannot order files inside one package, and alphabetical order there is
+    /// arbitrary: on kotlinx.coroutines it put `AbstractCoroutine.kt` ahead of the file declaring
+    /// `launch` and `async`. Summing reference counts makes the file order earned rather than
+    /// incidental, and unlike summed importer counts it is not uniformly zero in a single-package
+    /// repository.
+    fn file_weight(&self, file: &FileSkeleton) -> (usize, usize) {
+        file.declarations
+            .iter()
+            .map(|declaration| self.weight_of(file, declaration))
+            .fold((0, 0), |(references, importers), (next, also)| {
+                (references + next, importers + also)
+            })
+    }
+}
+
+fn qualified_name(file: &FileSkeleton, declaration: &Declaration) -> String {
+    match file.package.as_deref() {
+        Some(package) => format!("{package}.{}", declaration.name),
+        None => declaration.name.clone(),
     }
 }
 
@@ -126,41 +227,15 @@ fn score_of(scores: &BTreeMap<String, f64>, file: &FileSkeleton) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// How many times this file's own declarations are imported by name across the corpus.
-///
-/// Package rank alone cannot order files inside one package, and alphabetical order there is
-/// arbitrary: on kotlinx.coroutines it put `AbstractCoroutine.kt` ahead of the file declaring
-/// `launch` and `async`. Summing per-declaration importers makes the file order earned rather than
-/// incidental.
-fn file_importers(file: &FileSkeleton, importers: &BTreeMap<String, usize>) -> usize {
-    file.declarations
-        .iter()
-        .map(|declaration| {
-            let key = match file.package.as_deref() {
-                Some(package) => format!("{package}.{}", declaration.name),
-                None => declaration.name.clone(),
-            };
-            importers.get(&key).copied().unwrap_or(0)
-        })
-        .sum()
-}
-
-/// The file's top-level declarations rendered one signature per line, most imported first, ties
+/// The file's top-level declarations rendered one signature per line, most referenced first, ties
 /// broken by source order so the result is stable.
-fn signatures_in_reference_order(
-    file: &FileSkeleton,
-    importers: &BTreeMap<String, usize>,
-) -> Vec<String> {
-    let mut ranked: Vec<(usize, u32, &Declaration)> = file
+fn signatures_in_reference_order(file: &FileSkeleton, ranking: &Ranking<'_>) -> Vec<String> {
+    let mut ranked: Vec<((usize, usize), u32, &Declaration)> = file
         .declarations
         .iter()
         .map(|declaration| {
-            let key = match file.package.as_deref() {
-                Some(package) => format!("{package}.{}", declaration.name),
-                None => declaration.name.clone(),
-            };
             (
-                importers.get(&key).copied().unwrap_or(0),
+                ranking.weight_of(file, declaration),
                 declaration.line,
                 declaration,
             )
@@ -260,6 +335,28 @@ mod tests {
         }
     }
 
+    fn counts(pairs: &[(&str, usize)]) -> ReferenceCounts {
+        ReferenceCounts::from_counts(
+            pairs
+                .iter()
+                .map(|(name, count)| (name.to_string(), *count))
+                .collect(),
+        )
+    }
+
+    /// The map as built before KT-22a: ranked on imports alone, with no reference evidence at all.
+    /// Several tests use it to prove a behaviour that does not depend on the new signal.
+    fn map_without_references(files: &[FileSkeleton], budget: usize) -> RepoMap {
+        build_repo_map(
+            RepoMapInput {
+                files,
+                references: &ReferenceCounts::default(),
+                budget,
+            },
+            &ByteRatioEstimator,
+        )
+    }
+
     /// Two leaf packages both import `core`, so `core` outranks them and its file leads the map.
     fn corpus() -> Vec<FileSkeleton> {
         vec![
@@ -285,8 +382,15 @@ mod tests {
     }
 
     #[test]
-    fn the_most_imported_package_leads_and_its_most_imported_declaration_leads_within_it() {
-        let map = build_repo_map(&corpus(), 10_000, &ByteRatioEstimator);
+    fn the_most_imported_package_leads_and_its_most_referenced_declaration_leads_within_it() {
+        let map = build_repo_map(
+            RepoMapInput {
+                files: &corpus(),
+                references: &counts(&[("Engine", 7), ("Helper", 2), ("Server", 1), ("Main", 0)]),
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
 
         let observed: Vec<(&str, Vec<&str>)> = map
             .files
@@ -304,8 +408,8 @@ mod tests {
             (
                 vec![
                     ("core/Core.kt", vec!["class Engine", "class Helper"]),
-                    ("cli/Cli.kt", vec!["class Main"]),
                     ("web/Web.kt", vec!["class Server"]),
+                    ("cli/Cli.kt", vec!["class Main"]),
                 ],
                 0,
                 true
@@ -313,13 +417,96 @@ mod tests {
         );
     }
 
+    /// The whole point of KT-22a. Every file sits in one package, so no file imports another and
+    /// every importer count is zero: the old ranking had nothing left but the alphabet, which put
+    /// `Abstract.kt` first. Reference counts see the usage the imports cannot, and the order
+    /// inverts. Both rankings are computed here so the diff between them is the assertion.
+    #[test]
+    fn inside_one_package_reference_counts_order_what_imports_cannot_see() {
+        let single_package = vec![
+            file("k/Abstract.kt", "k.core", &[], &[("AbstractThing", 1)]),
+            file(
+                "k/Builders.kt",
+                "k.core",
+                &[],
+                &[("launch", 1), ("async", 2)],
+            ),
+        ];
+        let paths = |map: &RepoMap| -> Vec<String> {
+            map.files.iter().map(|file| file.path.clone()).collect()
+        };
+
+        let on_imports_alone = map_without_references(&single_package, 10_000);
+        let on_references = build_repo_map(
+            RepoMapInput {
+                files: &single_package,
+                references: &counts(&[("launch", 900), ("async", 400), ("AbstractThing", 12)]),
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+
+        assert_eq!(
+            (
+                paths(&on_imports_alone),
+                paths(&on_references),
+                on_references
+                    .files
+                    .first()
+                    .map(|file| file.declarations.clone()),
+            ),
+            (
+                vec!["k/Abstract.kt".to_string(), "k/Builders.kt".to_string()],
+                vec!["k/Builders.kt".to_string(), "k/Abstract.kt".to_string()],
+                Some(vec!["class launch".to_string(), "class async".to_string()]),
+            )
+        );
+    }
+
+    /// Reference counts are keyed by simple name, so two declarations sharing one share its count.
+    /// The fully-qualified importer count is what separates them, and it may only break a tie.
+    /// Isolated within a single file, where package rank cannot interfere: `Alpha` and `Beta` are
+    /// referenced equally often, `Beta` is the one imported by name, and it leads despite `Alpha`
+    /// coming first in source.
+    #[test]
+    fn an_equal_reference_count_is_separated_by_the_fully_qualified_importer_count() {
+        let files = vec![
+            file(
+                "core/Pair.kt",
+                "app.core",
+                &[],
+                &[("Alpha", 1), ("Beta", 2)],
+            ),
+            file("web/Use.kt", "app.web", &["app.core.Beta"], &[("User", 1)]),
+        ];
+
+        let map = build_repo_map(
+            RepoMapInput {
+                files: &files,
+                references: &counts(&[("Alpha", 5), ("Beta", 5), ("User", 1)]),
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+
+        let ranked_by_source_order_alone = map
+            .files
+            .iter()
+            .find(|mapped| mapped.path == "core/Pair.kt")
+            .map(|mapped| mapped.declarations.clone());
+        assert_eq!(
+            ranked_by_source_order_alone,
+            Some(vec!["class Beta".to_string(), "class Alpha".to_string()])
+        );
+    }
+
     #[test]
     fn a_budget_that_fits_one_file_partially_reports_the_files_it_dropped() {
-        let generous = build_repo_map(&corpus(), 10_000, &ByteRatioEstimator);
+        let generous = map_without_references(&corpus(), 10_000);
         let first_file_cost = ByteRatioEstimator.estimate("## core/Core.kt")
             + ByteRatioEstimator.estimate("class Engine");
 
-        let tight = build_repo_map(&corpus(), first_file_cost, &ByteRatioEstimator);
+        let tight = map_without_references(&corpus(), first_file_cost);
 
         assert_eq!(
             (
@@ -335,7 +522,7 @@ mod tests {
 
     #[test]
     fn a_zero_budget_emits_nothing_and_admits_what_it_dropped() {
-        let map = build_repo_map(&corpus(), 0, &ByteRatioEstimator);
+        let map = map_without_references(&corpus(), 0);
 
         assert_eq!(
             (map.files.len(), map.files_omitted, map.token_upper_bound),
@@ -355,10 +542,10 @@ mod tests {
             file("web/Web.kt", "app.web", &["app.core.*"], &[("Server", 1)]),
         ];
 
-        let map = build_repo_map(&files, 10_000, &ByteRatioEstimator);
+        let map = map_without_references(&files, 10_000);
 
-        // Both core declarations have zero explicit importers, so source order decides, proving the
-        // wildcard did not silently credit either one.
+        // Both core declarations have zero explicit importers and no references were supplied, so
+        // source order decides, proving the wildcard did not silently credit either one.
         assert_eq!(
             map.files.first().map(|file| (
                 file.path.as_str(),
@@ -378,7 +565,7 @@ mod tests {
             file("core/Empty.kt", "app.core", &[], &[]),
         ];
 
-        let map = build_repo_map(&files, 10_000, &ByteRatioEstimator);
+        let map = map_without_references(&files, 10_000);
 
         assert_eq!(
             map.files

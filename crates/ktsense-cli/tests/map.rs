@@ -88,3 +88,64 @@ fn dot_is_refused_because_only_deps_produces_a_graph() {
 
     insta::assert_snapshot!(record(&run));
 }
+
+/// KT-22a end to end, on the shape the committed fixtures cannot express.
+///
+/// Every file here sits in one package, so no file imports another and every importer count is
+/// zero. Ranking on imports alone therefore had nothing left but the path, and `Abstract.kt` led
+/// the map by alphabet. `Central` is referenced by each of the three users while `AbstractThing` is
+/// referenced once, so ranking on references puts `Central.kt` first instead.
+///
+/// The `multi-module` fixture cannot show this: it is properly multi-package with explicit imports,
+/// so its import counts and its reference counts agree and its committed snapshot changes only in
+/// the footer. This is why the acceptance corpus is a single-package one.
+#[test]
+fn inside_one_package_the_most_referenced_file_leads_where_imports_saw_nothing() {
+    let corpus = tempfile::tempdir().expect("temp dir");
+    let write = |name: &str, body: &str| {
+        std::fs::write(corpus.path().join(name), body).expect("write source");
+    };
+    write(
+        "Abstract.kt",
+        "package one\n\nabstract class AbstractThing\n",
+    );
+    write("Central.kt", "package one\n\nclass Central\n");
+    for user in ["UserA.kt", "UserB.kt", "UserC.kt"] {
+        write(
+            user,
+            concat!(
+                "package one\n",
+                "\n",
+                "class User {\n",
+                "    fun build(): Central = Central()\n",
+                "    fun also(c: Central): Central = c\n",
+                "}\n",
+            ),
+        );
+    }
+    write(
+        "Solo.kt",
+        "package one\n\nclass Solo {\n    fun thing(): AbstractThing? = null\n}\n",
+    );
+
+    let run = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        &corpus.path().display().to_string(),
+    ]);
+
+    let ranked: Vec<String> = run
+        .stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        (run.code, ranked.first().map(String::as_str), run.stderr),
+        (Some(0), Some("Central.kt"), String::new()),
+        "full map was: {}",
+        run.stdout
+    );
+}
