@@ -17,11 +17,19 @@
 #   tag      <release tag the assets hang off>
 #   manifest <sha256 of upstream's own sha256sums.txt> <its asset name>
 #   asset    <rust target> <asset name> <sha256> <bytes>
+#   engine-license <sha256 of the vendored LICENSE.kmp-lsp> <where the text came from>
+#
+# engine-license pins the engine's own license. Upstream ships it in the published crate (MIT), not
+# in the release tarball, so ktsense vendors it at LICENSE.kmp-lsp rather than fetching it per
+# target, and the sha256 here lets a check catch a drift or a wrong-license swap. A version bump must
+# refresh this hash from the crate of the new pin. The text is target-independent, so there is one
+# record, not one per target, and it is kept distinct from the project's own LICENSE.
 
 version  0.26.0
 repo     Hessesian/kmp-lsp
 tag      v0.26.0
 manifest 7b924567bc0159edb4db3284615c815880be9ba960e1176ccd99f2f503e230e6 sha256sums.txt
+engine-license f37d6386bb71399629be79efca0d9fe85fcc3014bc2ae69b400b3e66ae5b8bcf kmp-lsp-0.26.0.crate:LICENSE
 
 asset x86_64-unknown-linux-musl  kmp-lsp-linux-x86_64.tar.gz    13d60b44712ba7919a9469c6b4d82615ba7a22946746af0345bdf5afee66cf4c 11083783
 asset aarch64-unknown-linux-musl kmp-lsp-linux-aarch64.tar.gz   bf965cca63667dbf72fd7b5260421005a661bd6093f76110d734ed20b749f647 10677852

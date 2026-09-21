@@ -44,10 +44,12 @@ jobs:
             runner: macos-15
             builder: cargo
             runnable: true
+            sign: adhoc
           - target: x86_64-apple-darwin
             runner: macos-15-intel
             builder: cargo
             runnable: true
+            sign: adhoc
     steps:
       - uses: actions/checkout@v7
 
@@ -93,40 +95,44 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$TARGET" -p ktsense-cli
 
-      - name: Stage the artifact
+      - name: Acquire the pinned upstream engine
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          scripts/fetch-upstream-engine.sh --target "$TARGET" --dest engine
+          test -x engine/kmp-lsp
+          ls -l engine
+
+      - name: Package the artifact
         id: stage
         env:
           TARGET: ${{ matrix.target }}
           VERSION: ${{ steps.version.outputs.version }}
+          SIGN: ${{ matrix.sign || 'none' }}
         run: |
           name="ktsense-$VERSION-$TARGET"
-          mkdir -p "dist/$name"
-          cp "target/$TARGET/release/ktsense" "dist/$name/ktsense"
-          file "dist/$name/ktsense"
-          ls -l "dist/$name/ktsense"
+          scripts/package-release.sh \
+            --target "$TARGET" --version "$VERSION" \
+            --bin "target/$TARGET/release/ktsense" \
+            --engine engine \
+            --skill contrib/agent-skill/SKILL.md \
+            --license LICENSE \
+            --license-upstream LICENSE.kmp-lsp \
+            --dest dist --sign "$SIGN"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Musl binary is statically linked
         if: matrix.builder == 'zigbuild'
         env:
           NAME: ${{ steps.stage.outputs.name }}
-        run: file "dist/$NAME/ktsense" | grep -F 'statically linked'
+        run: file "dist/$NAME/bin/ktsense" | grep -F 'statically linked'
 
-      - name: Binary runs
+      - name: Binary runs and finds its bundled engine
         if: matrix.runnable
         env:
           NAME: ${{ steps.stage.outputs.name }}
         run: |
-          "dist/$NAME/ktsense" --version
-
-      - name: Acquire the pinned upstream engine
-        env:
-          TARGET: ${{ matrix.target }}
-          NAME: ${{ steps.stage.outputs.name }}
-        run: |
-          scripts/fetch-upstream-engine.sh --target "$TARGET" --dest "dist/$NAME/libexec"
-          test -x "dist/$NAME/libexec/kmp-lsp"
-          ls -l "dist/$NAME/libexec"
+          "dist/$NAME/bin/ktsense" --version
 
       - name: Engine reports the pinned version
         if: matrix.runnable
@@ -137,9 +143,19 @@ jobs:
           "dist/$NAME/libexec/kmp-lsp" --version
           "dist/$NAME/libexec/kmp-lsp" --version | grep -Fx "kmp-lsp $pin"
 
+      - name: Darwin binaries carry an ad-hoc signature
+        if: matrix.sign == 'adhoc'
+        env:
+          NAME: ${{ steps.stage.outputs.name }}
+        run: |
+          codesign -dv "dist/$NAME/bin/ktsense"
+          codesign -dv "dist/$NAME/libexec/kmp-lsp"
+
       - name: Upload the artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.stage.outputs.name }}
-          path: dist/${{ steps.stage.outputs.name }}
+          path: |
+            dist/${{ steps.stage.outputs.name }}.tar.gz
+            dist/${{ steps.stage.outputs.name }}.tar.gz.sha256
           if-no-files-found: error
