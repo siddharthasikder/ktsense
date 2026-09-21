@@ -6,6 +6,7 @@
 //! point of the daemon, and it decides what happens when that client faults.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ktsense_lsp::{IndexPhase, InitializeConfig, LspClient, LspError, Notification};
@@ -45,10 +46,12 @@ pub struct WarmEngine {
 
 /// Follows the engine's indexing lifecycle from its progress notifications on a background task,
 /// so a status request can read the current phase without anyone having to drain the stream at
-/// that moment. Once the stream closes the last observed phase stays readable.
+/// that moment. Once the stream closes the last observed phase stays readable, and `closed` flips
+/// true so a waiter can stop waiting for a `Ready` that can no longer arrive.
 #[derive(Clone)]
 pub struct IndexTracker {
     phase: Arc<Mutex<IndexPhase>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl IndexTracker {
@@ -58,6 +61,7 @@ impl IndexTracker {
     pub fn spawn(notifications: Option<UnboundedReceiver<Notification>>) -> Self {
         let tracker = Self {
             phase: Arc::new(Mutex::new(IndexPhase::Pending)),
+            closed: Arc::new(AtomicBool::new(false)),
         };
         if let Some(stream) = notifications {
             tokio::spawn(tracker.clone().follow(stream));
@@ -72,6 +76,12 @@ impl IndexTracker {
             .expect("index phase lock is never poisoned")
     }
 
+    /// Whether the notification stream has ended. False until the following task observes the stream
+    /// close; once true the phase read alongside it is the final observed phase.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     async fn follow(self, mut stream: UnboundedReceiver<Notification>) {
         while let Some(notification) = stream.recv().await {
             let mut phase = self
@@ -80,6 +90,7 @@ impl IndexTracker {
                 .expect("index phase lock is never poisoned");
             *phase = phase.observe(&notification);
         }
+        self.closed.store(true, Ordering::Release);
     }
 }
 
@@ -101,6 +112,12 @@ impl WarmEngine {
     /// Where the engine's indexing stands, as last reported through its progress notifications.
     pub fn index_phase(&self) -> IndexPhase {
         self.index.phase()
+    }
+
+    /// Whether the engine's progress stream has ended. Once true no further phase change can arrive,
+    /// so a waiter watching for `Ready` can stop rather than wait out its cap.
+    pub fn index_closed(&self) -> bool {
+        self.index.is_closed()
     }
 
     /// The warm session itself, so CLI orchestration that a warm daemon serves can drive the very
@@ -159,6 +176,16 @@ mod tests {
         tracker.phase()
     }
 
+    async fn settled_closed(tracker: &IndexTracker) -> bool {
+        for _ in 0..200 {
+            if tracker.is_closed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tracker.is_closed()
+    }
+
     #[tokio::test]
     async fn the_tracker_follows_begin_and_end_and_keeps_the_last_phase_after_the_stream_closes() {
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -181,6 +208,36 @@ mod tests {
                 IndexPhase::Ready,
                 IndexPhase::Ready,
                 IndexPhase::Pending
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stream_closing_marks_the_tracker_closed_while_the_last_phase_is_preserved() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let tracker = IndexTracker::spawn(Some(receiver));
+
+        let closed_initially = tracker.is_closed();
+        sender.send(progress("begin")).expect("open");
+        let phase_indexing = settled(&tracker, IndexPhase::Indexing).await;
+        let closed_while_indexing = tracker.is_closed();
+        drop(sender);
+        let closed_after_drop = settled_closed(&tracker).await;
+
+        assert_eq!(
+            (
+                closed_initially,
+                phase_indexing,
+                closed_while_indexing,
+                closed_after_drop,
+                tracker.phase(),
+            ),
+            (
+                false,
+                IndexPhase::Indexing,
+                false,
+                true,
+                IndexPhase::Indexing
             )
         );
     }

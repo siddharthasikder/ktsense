@@ -209,20 +209,44 @@ async fn collect_fresh(
 }
 
 /// The index completeness the daemon's warm session can honestly claim, waiting under the same
-/// policy a fresh session would: until the tracked phase is ready, or until the cap elapses, after
-/// which the phase reached is reported as the lower bound it is. The phase is polled from the
-/// tracker rather than drained from the notification stream, which the daemon already consumes.
-async fn await_warm_index(engine: &WarmEngine, wait: IndexWaitPolicy) -> IndexCompleteness {
+/// policy a fresh session would: until the tracked phase is ready, until the engine's progress
+/// stream closes, or until the cap elapses, whichever comes first. A stream that closes before
+/// `Ready` ends the wait at once with the phase reached, so an `--wait-index` request whose engine
+/// notifications stop cannot spin for the day-long cap; a `Ready` already observed is reported
+/// complete even if the stream then closes. The phase is polled from the tracker rather than
+/// drained from the notification stream, which the daemon already consumes.
+async fn await_warm_index(index: &impl IndexLifecycle, wait: IndexWaitPolicy) -> IndexCompleteness {
     let deadline = tokio::time::Instant::now() + wait.cap();
     loop {
-        let phase = engine.index_phase();
+        let phase = index.phase();
         if phase.is_ready() {
             return IndexCompleteness::Complete;
+        }
+        if index.closed() {
+            return completeness(index.phase());
         }
         if tokio::time::Instant::now() >= deadline {
             return completeness(phase);
         }
         tokio::time::sleep(WARM_INDEX_POLL).await;
+    }
+}
+
+/// The narrow view of the daemon's index lifecycle [`await_warm_index`] needs: the phase last
+/// observed and whether the progress stream has closed. Naming it lets the wait be exercised
+/// against a hand-built lifecycle without launching an engine.
+trait IndexLifecycle {
+    fn phase(&self) -> IndexPhase;
+    fn closed(&self) -> bool;
+}
+
+impl IndexLifecycle for WarmEngine {
+    fn phase(&self) -> IndexPhase {
+        self.index_phase()
+    }
+
+    fn closed(&self) -> bool {
+        self.index_closed()
     }
 }
 
@@ -446,5 +470,53 @@ fn present(report: &TraceReport, format: Format) -> Result<String, CommandError>
         Format::Md => Ok(render_trace_markdown(report)),
         Format::Json => serde_json::to_string_pretty(report).map_err(CommandError::serialization),
         Format::Dot => Err(CommandError::unsupported_format("trace")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hand-built index lifecycle, so the wait can be exercised without launching an engine.
+    struct ClosedLifecycle {
+        phase: IndexPhase,
+    }
+
+    impl IndexLifecycle for ClosedLifecycle {
+        fn phase(&self) -> IndexPhase {
+            self.phase
+        }
+
+        fn closed(&self) -> bool {
+            true
+        }
+    }
+
+    /// The wait must never approach [`UNBOUNDED_WAIT`]; a few seconds is generous for a poll that
+    /// should return on its first iteration.
+    const TEST_DEADLINE: Duration = Duration::from_secs(5);
+
+    async fn await_closed(
+        phase: IndexPhase,
+    ) -> Result<IndexCompleteness, tokio::time::error::Elapsed> {
+        tokio::time::timeout(
+            TEST_DEADLINE,
+            await_warm_index(&ClosedLifecycle { phase }, IndexWaitPolicy::UntilReady),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_closed_stream_ends_the_unbounded_wait_promptly_at_the_final_phase() {
+        let still_indexing = await_closed(IndexPhase::Indexing).await;
+        let already_ready = await_closed(IndexPhase::Ready).await;
+
+        assert_eq!(
+            (still_indexing, already_ready),
+            (
+                Ok(IndexCompleteness::Partial),
+                Ok(IndexCompleteness::Complete)
+            )
+        );
     }
 }

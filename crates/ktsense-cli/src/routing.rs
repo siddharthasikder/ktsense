@@ -121,7 +121,7 @@ impl From<WireFormat> for Format {
 
 /// Runs a routed command in-process against `root`. Both the daemon fallback and the client
 /// fallback call this, so the two paths cannot drift apart. A live daemon answers the same commands
-/// through [`CommandEngine::run_cached`], which reuses parsed skeletons but renders identically.
+/// through [`CommandEngine::run_command`], which reuses parsed skeletons but renders identically.
 pub(crate) fn run_in_process(
     root: &Path,
     command: &RoutedCommand,
