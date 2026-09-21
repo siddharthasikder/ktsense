@@ -119,6 +119,24 @@ jobs:
         run: |
           "dist/$NAME/ktsense" --version
 
+      - name: Acquire the pinned upstream engine
+        env:
+          TARGET: ${{ matrix.target }}
+          NAME: ${{ steps.stage.outputs.name }}
+        run: |
+          scripts/fetch-upstream-engine.sh --target "$TARGET" --dest "dist/$NAME/libexec"
+          test -x "dist/$NAME/libexec/kmp-lsp"
+          ls -l "dist/$NAME/libexec"
+
+      - name: Engine reports the pinned version
+        if: matrix.runnable
+        env:
+          NAME: ${{ steps.stage.outputs.name }}
+        run: |
+          pin="$(awk '$1 == "version" { print $2; exit }' upstream.lock)"
+          "dist/$NAME/libexec/kmp-lsp" --version
+          "dist/$NAME/libexec/kmp-lsp" --version | grep -Fx "kmp-lsp $pin"
+
       - name: Upload the artifact
         uses: actions/upload-artifact@v7
         with:

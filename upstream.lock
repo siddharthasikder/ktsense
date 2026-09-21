@@ -1,0 +1,29 @@
+# upstream.lock: the pinned kmp-lsp release assets ktsense ships under libexec/.
+#
+# The pin itself lives in ktsense-lsp::PINNED_UPSTREAM_VERSION and is authoritative. The `version`
+# record below must agree with it; scripts/fetch-upstream-engine.sh does not read the Rust source, so
+# a bump has to touch both.
+#
+# Upstream names its release assets <os>-<arch>, not by Rust target triple, and publishes the same
+# linux asset for gnu and musl consumers. The mapping from target to asset is therefore recorded here
+# rather than derived.
+#
+# Each tarball carries both `kmp-lsp` and `kmp-jar-indexer` at its root with no leading directory, so
+# the separate kmp-jar-indexer-<os>-<arch>.gz assets are redundant and are not fetched.
+#
+# Format, whitespace separated, `#` begins a comment:
+#   version  <pinned upstream version>
+#   repo     <github owner/name>
+#   tag      <release tag the assets hang off>
+#   manifest <sha256 of upstream's own sha256sums.txt> <its asset name>
+#   asset    <rust target> <asset name> <sha256> <bytes>
+
+version  0.26.0
+repo     Hessesian/kmp-lsp
+tag      v0.26.0
+manifest 7b924567bc0159edb4db3284615c815880be9ba960e1176ccd99f2f503e230e6 sha256sums.txt
+
+asset x86_64-unknown-linux-musl  kmp-lsp-linux-x86_64.tar.gz    13d60b44712ba7919a9469c6b4d82615ba7a22946746af0345bdf5afee66cf4c 11083783
+asset aarch64-unknown-linux-musl kmp-lsp-linux-aarch64.tar.gz   bf965cca63667dbf72fd7b5260421005a661bd6093f76110d734ed20b749f647 10677852
+asset aarch64-apple-darwin       kmp-lsp-darwin-aarch64.tar.gz  887a355d9fbfbd92cbc11f60a210cf944080f715e4ad772245bd8cffd3a779dc 10293120
+asset x86_64-apple-darwin        kmp-lsp-darwin-x86_64.tar.gz   9492dc12096339c60128dce8d9a77f7ff5cc8b6dbb5e3f46428cb930fac1e16f 10571902
