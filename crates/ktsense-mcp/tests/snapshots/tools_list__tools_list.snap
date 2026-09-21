@@ -93,8 +93,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -138,7 +154,7 @@ expression: listed
     },
     {
       "name": "check_kotlin_syntax",
-      "description": "Answers whether a file or a directory parses, reporting every syntax error with its position. Run it after each edit. It is syntax only: type errors are the compiler's job and are not reported, and a file with errors comes back as an error result carrying the report. requires: kmp-lsp, which has to be installed even though no index is waited for. cost: about 145 ms for one 54 KB file (ktor 3.0.1, median of 9, KT-32).",
+      "description": "Answers whether a file or a directory parses, reporting every syntax error with its position. Run it after each edit. It is syntax only: type errors are the compiler's job and are not reported. A file with syntax errors is a successful result whose report lists each error and its position, not a tool error; only a failure to run the engine (missing, timed out) is an error result, so branch on the structured outcome rather than on isError alone. requires: kmp-lsp, which has to be installed even though no index is waited for. cost: about 145 ms for one 54 KB file (ktor 3.0.1, median of 9, KT-32).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -225,8 +241,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -373,8 +405,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -528,8 +576,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -670,8 +734,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -804,8 +884,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -929,8 +1025,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"
@@ -1087,8 +1199,24 @@ expression: listed
             },
             "type": "array"
           },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "index": {
             "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
             "type": [
               "string",
               "null"

@@ -1,16 +1,19 @@
 //! KT-34: scripted stdio sessions that drive `initialize`, `tools/list` and a `tools/call` for every
 //! tool the server lists, with the results pinned as golden snapshots.
 //!
-//! The engine is the `fake_lsp` replay binary, so the default suite needs no `kmp-lsp` install. Three
-//! sessions rather than one, because the fake is scripted by environment and one script serves one
-//! conversation: `find` and `check` both read `FAKE_CMD_STDOUT` and want different shapes in it, and
-//! a traced command's LSP session is a different conversation from a warm client's. Every tool is
-//! called, and the record below names which session called it.
+//! The engine is the `fake_lsp` replay binary, so the default suite needs no `kmp-lsp` install. One
+//! session per conversation rather than one overall, because the fake is scripted by environment and
+//! one script serves one conversation: `find` and `check` both read `FAKE_CMD_STDOUT` and want
+//! different shapes in it, a traced command's LSP session is a different conversation from a warm
+//! client's, and `check`'s clean, findings and execution-failure outcomes each need their own
+//! scripted engine. Every tool is called, and the record below names which session called it.
 //!
 //! `explain_kotlin_symbol` is covered for real, not as a stub: KT-35 landed the `context` command,
 //! so it drives the same depth-1 engine session a trace does and is pinned alongside it. Ambiguity is
 //! pinned too, in all three tools that share the resolver: a name that resolves to several
-//! declarations is an answer, the candidate list under exit 3, not a failure.
+//! declarations is an answer, the candidate list under exit 3, not a failure. KT-57 pins the three
+//! `check` outcomes: a finding and a clean file are answers, a failure to run the engine is a tool
+//! error.
 
 mod session;
 
@@ -297,6 +300,27 @@ fn a_session_traces_and_explains_a_symbol_and_checks_syntax_through_a_scripted_e
                 })
                 .to_string(),
             ),
+        &[("check_kotlin_syntax", json!({ "path": "app" }))],
+    );
+    // A clean file: the CLI exits 0 and the outcome is `clean`, an answer with no findings.
+    pin(
+        "syntax_check_clean",
+        Launch::rooted(FIXTURE)
+            .with_engine(fake_lsp())
+            .answering_commands_with(
+                &json!({ "errors": [], "files_ok": 9, "files_with_errors": 0 }).to_string(),
+            ),
+        &[("check_kotlin_syntax", json!({ "path": "app" }))],
+    );
+    // An engine that answers with nothing parseable stands in for a broken transport: the CLI
+    // reports the failure on stderr under exit 1, and the server keeps that a tool error rather
+    // than mistaking an empty stdout for a clean file. A missing engine is proved at the `present`
+    // boundary, where a spawn failure can be scripted without depending on `kmp-lsp` being off PATH.
+    pin(
+        "syntax_check_failure",
+        Launch::rooted(FIXTURE)
+            .with_engine(fake_lsp())
+            .answering_commands_with(""),
         &[("check_kotlin_syntax", json!({ "path": "app" }))],
     );
 }

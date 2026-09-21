@@ -87,6 +87,18 @@ pub struct Answer {
     /// duplicated-looking result and to call `ktsense_status`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warmth: Option<String>,
+    /// Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`
+    /// or `findings` for a `check` that ran, `execution_failure` for one that could not reach the
+    /// engine. Set only where the exit status alone cannot separate an answer from a failure, which
+    /// today is `check_kotlin_syntax`: its exit 1 means both "found a syntax error" and "the engine
+    /// is missing", and an agent branching on `isError` has to be able to tell them apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// How many distinct error sites a `check` answer cites: `0` when the file is clean, the count
+    /// of cited positions when it is not, and absent when the check failed to run. It indexes the
+    /// answer the agent already reads rather than re-invoking the engine to count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub findings: Option<usize>,
     /// Files the answer is about, in the order it introduced them.
     pub files: Vec<String>,
     /// Every path and line the answer cites, deduplicated, in the order they appear.
@@ -108,6 +120,8 @@ pub fn index_answer(call: Call<'_>, text: &str) -> Answer {
         exit: call.exit,
         index: scan.index,
         warmth: call.warmth.map(str::to_string),
+        outcome: None,
+        findings: None,
         files: scan.files,
         citations: scan.citations,
         citations_omitted: scan.omitted,

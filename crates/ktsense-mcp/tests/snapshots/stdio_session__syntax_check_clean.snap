@@ -8,21 +8,13 @@ tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_sym
 isError: false
 structuredContent:
 {
-  "citations": [
-    {
-      "column": 5,
-      "line": 12,
-      "path": "app/src/main/kotlin/shop/app/Broken.kt"
-    }
-  ],
+  "citations": [],
   "citations_omitted": 0,
   "command": "check",
-  "exit": 1,
-  "files": [
-    "app/src/main/kotlin/shop/app/Broken.kt"
-  ],
-  "findings": 1,
-  "outcome": "findings",
+  "exit": 0,
+  "files": [],
+  "findings": 0,
+  "outcome": "clean",
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
   "tool": "check_kotlin_syntax"
@@ -30,11 +22,7 @@ structuredContent:
 ---
 ## Syntax check
 
-8 OK, 1 with errors.
-
-```text
-app/src/main/kotlin/shop/app/Broken.kt:12:5: unexpected `fun`
-```
+9 OK, 0 with errors.
 
 server exit: Some(0)
 server stderr: empty

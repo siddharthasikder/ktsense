@@ -450,6 +450,87 @@ fn present(tool: &Tool, invocation: Invocation, warmth: Option<Warmth>) -> CallT
     result
 }
 
+/// What a `check` invocation actually was, which its exit status alone cannot say: the CLI exits 1
+/// both on a file with syntax errors and on a failure to run the engine, so KT-31's map of "exit 1
+/// is a tool error" hid a real answer behind the same status as a missing engine.
+///
+/// The distinction is read from the CLI's own stream discipline, enforced by its `main`: an answer
+/// is written to stdout and any diagnostic to stderr. A syntax finding therefore arrives as a
+/// report on stdout with an empty stderr under exit 1, while every `PassthroughError` (a missing,
+/// timed-out, or unparseable engine) arrives as a message on stderr with an empty stdout under the
+/// same exit. This keys on which stream carried the output, not on matching words in it, and it
+/// leaves the CLI's exit codes untouched so a shell caller still branches on them as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckOutcome {
+    Clean,
+    Findings,
+    ExecutionFailure,
+}
+
+impl CheckOutcome {
+    fn classify(invocation: &Invocation) -> Self {
+        match invocation.code {
+            Some(0) => CheckOutcome::Clean,
+            Some(1)
+                if !invocation.stdout.trim().is_empty() && invocation.stderr.trim().is_empty() =>
+            {
+                CheckOutcome::Findings
+            }
+            _ => CheckOutcome::ExecutionFailure,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            CheckOutcome::Clean => "clean",
+            CheckOutcome::Findings => "findings",
+            CheckOutcome::ExecutionFailure => "execution_failure",
+        }
+    }
+
+    fn is_answer(self) -> bool {
+        !matches!(self, CheckOutcome::ExecutionFailure)
+    }
+}
+
+/// Presents a `check` invocation, which unlike every other tool can exit non-zero and still have
+/// answered. A finding or a clean file is a successful result carrying the report; only a failure
+/// to run the engine is a tool error. The structured half names the outcome and counts the cited
+/// error sites so an agent branches on a field rather than on `isError` alone.
+fn present_check(invocation: Invocation) -> CallToolResult {
+    let outcome = CheckOutcome::classify(&invocation);
+    let text = if outcome.is_answer() {
+        invocation.stdout
+    } else if invocation.stderr.trim().is_empty() {
+        invocation.stdout.trim().to_string()
+    } else {
+        invocation.stderr.trim().to_string()
+    };
+    let mut answer = index_answer(
+        Call {
+            tool: &crate::CHECK,
+            root: &invocation.root,
+            exit: invocation.code,
+            warmth: None,
+        },
+        &text,
+    );
+    answer.outcome = Some(outcome.label().to_string());
+    answer.findings = match outcome {
+        CheckOutcome::Clean => Some(0),
+        CheckOutcome::Findings => Some(answer.citations.len() + answer.citations_omitted),
+        CheckOutcome::ExecutionFailure => None,
+    };
+    let content = vec![ContentBlock::text(text)];
+    let mut result = if outcome.is_answer() {
+        CallToolResult::success(content)
+    } else {
+        CallToolResult::error(content)
+    };
+    result.structured_content = serde_json::to_value(&answer).ok();
+    result
+}
+
 /// Builds the `<command> <args...>` part of a request for one catalogued tool.
 struct Args(Request);
 
@@ -573,7 +654,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "check_kotlin_syntax",
-        description = "Answers whether a file or a directory parses, reporting every syntax error with its position. Run it after each edit. It is syntax only: type errors are the compiler's job and are not reported, and a file with errors comes back as an error result carrying the report. requires: kmp-lsp, which has to be installed even though no index is waited for. cost: about 145 ms for one 54 KB file (ktor 3.0.1, median of 9, KT-32).",
+        description = "Answers whether a file or a directory parses, reporting every syntax error with its position. Run it after each edit. It is syntax only: type errors are the compiler's job and are not reported. A file with syntax errors is a successful result whose report lists each error and its position, not a tool error; only a failure to run the engine (missing, timed out) is an error result, so branch on the structured outcome rather than on isError alone. requires: kmp-lsp, which has to be installed even though no index is waited for. cost: about 145 ms for one 54 KB file (ktor 3.0.1, median of 9, KT-32).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -583,7 +664,12 @@ impl KtsenseServer {
     ) -> Result<CallToolResult, ErrorData> {
         let root = self.root_for(params.root, Some(&params.path)).await;
         let args = Args::for_tool(&crate::CHECK, root).positional(params.path);
-        self.invoke(&crate::CHECK, args.0).await
+        let invocation = self
+            .runner
+            .run(args.0)
+            .await
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        Ok(present_check(invocation))
     }
 
     #[tool(
@@ -921,6 +1007,82 @@ mod tests {
             )
         );
     }
+
+    /// The KT-57 distinction, proven at the `present` boundary the runner feeds: a `check` that ran
+    /// is an answer whether the file was clean or broken, and a `check` that could not reach the
+    /// engine is a tool error, even though the CLI exits 1 for a broken file and for a missing
+    /// engine alike. Each case is the exact stream shape the CLI's `main` produces: a report on
+    /// stdout for an answer, a `PassthroughError` on stderr for a failure.
+    #[test]
+    fn check_findings_and_a_clean_file_are_answers_while_a_failure_to_run_the_engine_is_an_error() {
+        let clean = Invocation {
+            code: Some(0),
+            stdout: "## Syntax check\n\n1 OK, 0 with errors.\n".to_string(),
+            stderr: String::new(),
+            root: "/repo".to_string(),
+        };
+        let findings = Invocation {
+            code: Some(1),
+            stdout: "## Syntax check\n\n0 OK, 1 with errors.\n\n```text\nsrc/Broken.kt:12:5: unexpected `fun`\n```\n".to_string(),
+            stderr: String::new(),
+            root: "/repo".to_string(),
+        };
+        let missing_engine = Invocation {
+            code: Some(1),
+            stdout: String::new(),
+            stderr:
+                "ktsense: failed to spawn engine `kmp-lsp`: No such file or directory (os error 2)"
+                    .to_string(),
+            root: "/repo".to_string(),
+        };
+        let timed_out = Invocation {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "ktsense: engine `check` did not respond within 60s".to_string(),
+            root: "/repo".to_string(),
+        };
+
+        let observed: Vec<(Option<bool>, Value, Value, Value)> =
+            [clean, findings, missing_engine, timed_out]
+                .into_iter()
+                .map(|invocation| {
+                    let result = present_check(invocation);
+                    let structured = result.structured_content.clone().unwrap_or(Value::Null);
+                    (
+                        result.is_error,
+                        structured["outcome"].clone(),
+                        structured["findings"].clone(),
+                        structured["citations"].clone(),
+                    )
+                })
+                .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                (Some(false), json!("clean"), json!(0), json!([])),
+                (
+                    Some(false),
+                    json!("findings"),
+                    json!(1),
+                    json!([{ "path": "src/Broken.kt", "line": 12, "column": 5 }]),
+                ),
+                (
+                    Some(true),
+                    json!("execution_failure"),
+                    Value::Null,
+                    json!([])
+                ),
+                (
+                    Some(true),
+                    json!("execution_failure"),
+                    Value::Null,
+                    json!([])
+                ),
+            ]
+        );
+    }
+
     /// Charges a fixed cost the first time a root is warmed, standing in for an engine launch and
     /// its index build. A real engine cannot be assumed present in the default suite, and an
     /// injected cost is what makes the bound below a fact rather than a race.
