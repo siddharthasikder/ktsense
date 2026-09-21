@@ -1,5 +1,6 @@
 ---
 source: crates/ktsense-mcp/tests/stdio_session.rs
+assertion_line: 184
 expression: report
 ---
 tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
@@ -237,7 +238,7 @@ class ReportBackfill(private val repository: OrderRepository)
 class JdbcOrderRepository(private val url: String = "jdbc:h2:mem:orders") : OrderRepository
 ```
 
-Ranking is syntactic: files are ordered by import centrality and declarations by how many files import them by name, not by type-checked references.
+Ranking is syntactic: files are ordered by import centrality, then by how often their declarations are referenced by name across the corpus, with import counts breaking ties. A reference is an identifier occurrence outside an import, counted by name and not type-checked, so declarations sharing a simple name across packages share a count.
 
 === ktsense_status ===
 isError: false
