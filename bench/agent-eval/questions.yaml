@@ -1,0 +1,217 @@
+# Ten questions about kotlinx.coroutines with answers established by reading the corpus.
+#
+# Every `ground_truth` was derived from `established_by`, run against the corpus directly. No answer
+# here came from a ktsense tool or from an agent session, because an answer produced by one of the
+# arms cannot then grade that arm.
+#
+# `expect` is a list of case-insensitive regular expressions, all of which must match the arm's
+# answer for the row to be scored correct. `forbid` patterns must not match. Patterns are matched
+# against the answer text with ANSI escapes stripped.
+#
+# `corpus.bin_duplicates` is the count of `.kt` files under a `bin/` directory: byte-identical copies
+# of the sources written by an Eclipse Buildship import that `kmp-lsp` triggers on a Gradle project.
+# Both arms are told to ignore them, because the two arms do not see them alike. ktsense's own
+# tree-sitter traversal prunes `bin`, but the engine-backed tools index it, so the exclusion has to be
+# asked for in the prompt rather than assumed from either tool.
+
+corpus:
+  name: kotlinx.coroutines
+  commit: d8d6f8f
+  commit_date: 2024-09-13
+  kotlin_files: 1025
+  kotlin_files_including_bin: 1239
+  bin_duplicates: 214
+
+# Prepended to every question, identically for both arms, so neither arm is told anything the other
+# is not. `{root}` is substituted with the absolute corpus path.
+preamble: |
+  You are answering one question about the Kotlin repository at {root}.
+
+  Ignore any directory named `bin`: those are Eclipse Buildship build artifacts holding duplicate
+  copies of the sources, and they are not part of the answer. Directories named `build`, `target`,
+  `.gradle` and `node_modules` are likewise out of scope.
+
+  Investigate before answering. Do not answer from prior knowledge of this library: the answer must
+  describe this checkout.
+
+  Finish with a single final line in exactly this form, and put nothing after it:
+  ANSWER: <your answer on one line>
+
+questions:
+  - id: Q01
+    kind: locate-declaration
+    ask: |
+      Which file declares `public interface CoroutineScope`, and on which line does that declaration
+      begin? Give the path relative to the repository root, and the line number.
+    ground_truth: kotlinx-coroutines-core/common/src/CoroutineScope.kt line 75
+    established_by: |
+      grep -rn --include=*.kt 'public interface CoroutineScope' . | grep -v /bin/
+        -> ./kotlinx-coroutines-core/common/src/CoroutineScope.kt:75:public interface CoroutineScope {
+      Confirmed by reading lines 70-80 of that file.
+    expect:
+      - 'CoroutineScope\.kt'
+      - '\b75\b'
+
+  - id: Q02
+    kind: locate-implementor
+    ask: |
+      Exactly one class in this repository directly implements the `Mutex` interface. Name that class
+      and give the file and line where it is declared.
+    ground_truth: MutexImpl, kotlinx-coroutines-core/common/src/sync/Mutex.kt line 130
+    established_by: |
+      An independent walk of all 1025 non-bin .kt files, parsing each declaration's supertype list,
+      reported one implementor of Mutex: MutexImpl at
+      kotlinx-coroutines-core/common/src/sync/Mutex.kt:130. Confirmed by reading lines 128-132:
+      `internal open class MutexImpl(locked: Boolean) : SemaphoreAndMutexImpl(...), Mutex {`
+    expect:
+      - 'MutexImpl'
+      - 'Mutex\.kt'
+      - '\b130\b'
+
+  - id: Q03
+    kind: supertypes
+    ask: |
+      What supertypes does the class `JobSupport` declare? List them.
+    ground_truth: Job, ChildJob, ParentJob
+    established_by: |
+      grep -rn --include=*.kt 'class JobSupport' . | grep -v /bin/
+        -> kotlinx-coroutines-core/common/src/JobSupport.kt:24:
+           public open class JobSupport constructor(active: Boolean) : Job, ChildJob, ParentJob {
+    expect:
+      - '\bJob\b'
+      - 'ChildJob'
+      - 'ParentJob'
+
+  - id: Q04
+    kind: member-type
+    ask: |
+      The `CoroutineScope` interface declares a single property. What is that property called and what
+      is its declared type?
+    ground_truth: coroutineContext, of type CoroutineContext
+    established_by: |
+      Lines 81-84 of kotlinx-coroutines-core/common/src/CoroutineScope.kt read
+      `public val coroutineContext: CoroutineContext` followed by the closing brace of the interface,
+      so it is the only member.
+    expect:
+      - 'coroutineContext'
+      - 'CoroutineContext'
+
+  - id: Q05
+    kind: locate-declaration
+    ask: |
+      Where is the public `launch` coroutine builder declared: the extension function on
+      `CoroutineScope` that returns a `Job`? Give the file and the line where the declaration begins.
+    ground_truth: kotlinx-coroutines-core/common/src/Builders.common.kt line 43
+    established_by: |
+      grep -rn --include=*.kt 'fun CoroutineScope.launch' . | grep -v /bin/
+        -> ./kotlinx-coroutines-core/common/src/Builders.common.kt:43:public fun CoroutineScope.launch(
+      Every other match is a differently named private test helper (launchSendReceive,
+      launchProcessor and so on), so the public builder is unique.
+    expect:
+      - 'Builders\.common\.kt'
+      - '\b43\b'
+
+  - id: Q06
+    kind: overloads
+    graded: false
+    ungraded_because: |
+      The ground truth first recorded here was wrong, and the question is ambiguous as asked.
+
+      The original answer of two came from searching for `fun <T> Flow<T>.buffer`, a pattern that
+      requires the type parameter and so cannot match a monomorphic receiver. Both arms answered four
+      and named two declarations the pattern had missed. Re-checked with a pattern that does not
+      presuppose the type parameter, they were right and this file was wrong, so the corrected ground
+      truth below was established from the corpus rather than taken from either arm.
+
+      It stays ungraded rather than being rescored, for two reasons. The wording "count only real
+      declarations" does not say whether a function declared inside a test function body is one, so no
+      single number is defensible. And the grading patterns as written would have scored both arms
+      correct by coincidence, because each mentioned "2 in Context.kt" on the way to saying four: a
+      row that passes for the wrong reason is not evidence, whichever way it falls.
+    ask: |
+      How many declarations of the `buffer` extension function on `Flow` does this repository contain,
+      and at which file and line numbers? Count only real declarations.
+    ground_truth: |
+      Four declarations exist outside `bin`. Two are the public operator, in
+      kotlinx-coroutines-core/common/src/flow/operators/Context.kt at lines 121 and 143. Two are
+      test-local, in kotlinx-coroutines-core/common/test/flow/FlowInvariantsTest.kt: a local function
+      inside a test body at line 159, and a private member at line 174. A fifth textual match, at
+      Context.kt line 95, is inside a KDoc block and is not a declaration.
+    established_by: |
+      grep -rn --include=*.kt -E '\bfun +(<[^>]*> +)?Flow<[^>]*>\.buffer\b' . | grep -v /bin/
+      returns all five matches: Context.kt 95, 121 and 143, and FlowInvariantsTest.kt 159 and 174.
+      Reading Context.kt shows line 95 prefixed with ` * ` inside the KDoc that documents the
+      operator. Reading FlowInvariantsTest.kt lines 155-178 shows 159 as `fun Flow<Int>.buffer()`
+      declared inside `testScopedCoroutineNoViolation`, and 174 as a private member of the test class.
+
+  - id: Q07
+    kind: multiplatform
+    ask: |
+      This is a Kotlin multiplatform project. How many declarations of `object Dispatchers` exist, and
+      which one is the `expect` declaration? Give the file for each.
+    ground_truth: |
+      Four. The expect declaration is kotlinx-coroutines-core/common/src/Dispatchers.common.kt line 8.
+      The three actual declarations are kotlinx-coroutines-core/jvm/src/Dispatchers.kt line 15,
+      kotlinx-coroutines-core/native/src/Dispatchers.kt line 7 and
+      kotlinx-coroutines-core/jsAndWasmShared/src/Dispatchers.kt line 7.
+    established_by: |
+      grep -rn --include=*.kt 'object Dispatchers' . | grep -v /bin/ returned exactly four hits: one
+      `public expect object Dispatchers` in common/src/Dispatchers.common.kt:8 and three
+      `public actual object Dispatchers` in jsAndWasmShared/src/Dispatchers.kt:7,
+      native/src/Dispatchers.kt:7 and jvm/src/Dispatchers.kt:15.
+    expect:
+      - '\bfour\b|\b4\b'
+      - 'Dispatchers\.common\.kt'
+      - 'expect'
+
+  - id: Q08
+    kind: module-dependencies
+    ask: |
+      Look only at the module under `reactive/kotlinx-coroutines-rx2`. Which third-party library
+      package does its Kotlin source import most often? Exclude the Kotlin standard library,
+      `kotlinx.*`, the JDK, and test frameworks.
+    ground_truth: io.reactivex
+    established_by: |
+      Every import line in the module's non-bin, non-build .kt files, grouped by the first two path
+      segments. Over `src` alone: io.reactivex 17, java.util 2, org.reactivestreams 1. Over `src` and
+      `test` together: io.reactivex 58, org.junit 35, java.util 16, org.reactivestreams 4, java.lang 1,
+      java.io 1. Either way, excluding the JDK and the test framework leaves io.reactivex as the most
+      imported third-party package by a wide margin, so the answer does not depend on that choice. The
+      question asks which package rather than how many times, so the differing counts the two arms
+      reported are not graded.
+    expect:
+      - 'io\.reactivex|io reactivex'
+
+  - id: Q09
+    kind: two-hop
+    ask: |
+      Start from the class that implements `Mutex`. That class extends another class. Where is that
+      other class declared? Give its name, file and line.
+    ground_truth: SemaphoreAndMutexImpl, kotlinx-coroutines-core/common/src/sync/Semaphore.kt line 90
+    established_by: |
+      MutexImpl's declaration (Mutex.kt:130) names `SemaphoreAndMutexImpl(1, ...)` as its superclass.
+      grep -rn --include=*.kt 'class SemaphoreAndMutexImpl' . | grep -v /bin/
+        -> ./kotlinx-coroutines-core/common/src/sync/Semaphore.kt:90:
+           internal open class SemaphoreAndMutexImpl(private val permits: Int, acquiredPermits: Int) {
+      Two hops, and the second target's name is not given in the question, so the answer cannot be
+      reached by a single search for a name the asker supplied.
+    expect:
+      - 'SemaphoreAndMutexImpl'
+      - 'Semaphore\.kt'
+      - '\b90\b'
+
+  - id: Q10
+    kind: locate-internal
+    ask: |
+      Where is the class `LimitedDispatcher` declared? Give the file, the line, and its visibility
+      modifier.
+    ground_truth: |
+      kotlinx-coroutines-core/common/src/internal/LimitedDispatcher.kt line 22, declared `internal`.
+    established_by: |
+      grep -rn --include=*.kt 'class LimitedDispatcher' . | grep -v /bin/
+        -> ./kotlinx-coroutines-core/common/src/internal/LimitedDispatcher.kt:22:
+           internal class LimitedDispatcher(
+    expect:
+      - 'LimitedDispatcher\.kt'
+      - '\b22\b'
+      - 'internal'
