@@ -283,7 +283,7 @@ sessions set `KTSENSE_MCP_NO_WARM_ENGINE=1`, because a warm client and a traced 
 different conversations and one script cannot serve both; the warm path is proved by its own test and
 by the measurements above instead.
 
-## A known gap, described without a card id
+## A known gap, tracked as KT-57
 
 `check_kotlin_syntax` maps a file with syntax errors onto `isError: true`, because the CLI exits 1 and
 KT-31 mapped every non-answer exit to a tool error. That is defensible as "the tool's news is bad" but
@@ -292,11 +292,10 @@ perfectly. An agent branching on `isError` cannot tell "the engine is missing" f
 typo on line 12", and both are exit 1.
 
 Changing it would change the KT-31 contract the exit-code mapping documents, so it is recorded here
-rather than altered inside a card about descriptions. No card id is quoted on purpose: ids are the
-board owner's to allocate, and an earlier draft of this page committed one that was already
-provisionally in use for something else. The shape of the work, for whoever gets the id:
+rather than altered inside a card about descriptions. The board owner has since allocated **KT-57
+Distinguish MCP syntax findings from execution failures** for it. The shape of the work:
 
-    ### KT-?? Let `check` report errors as an answer rather than a tool error
+    ### KT-57 Distinguish MCP syntax findings from execution failures
     - Phase: 3 | Size: S | Blocked by: KT-32
     - `ANSWER_EXITS` is `[0, 3]`, so `check` exiting 1 on a file with syntax errors becomes
       `isError: true` carrying the report. Either add a distinct exit for "checked, found errors" or
