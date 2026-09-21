@@ -5,36 +5,21 @@ expression: report
 tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
 
 === check_kotlin_syntax ===
-isError: false
+isError: true
 structuredContent:
 {
-  "citations": [
-    {
-      "column": 5,
-      "line": 12,
-      "path": "app/src/main/kotlin/shop/app/Broken.kt"
-    }
-  ],
+  "citations": [],
   "citations_omitted": 0,
   "command": "check",
   "exit": 1,
-  "files": [
-    "app/src/main/kotlin/shop/app/Broken.kt"
-  ],
-  "findings": 1,
-  "outcome": "findings",
+  "files": [],
+  "outcome": "execution_failure",
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
   "tool": "check_kotlin_syntax"
 }
 ---
-## Syntax check
-
-8 OK, 1 with errors.
-
-```text
-app/src/main/kotlin/shop/app/Broken.kt:12:5: unexpected `fun`
-```
+ktsense: could not parse engine `check` output: EOF while parsing a value at line 1 column 0; engine stderr: no stderr
 
 server exit: Some(0)
 server stderr: empty

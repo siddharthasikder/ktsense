@@ -9,7 +9,10 @@
 //!
 //! Exit codes map onto MCP results like this: `0` and `3` are answers (an ambiguous name is a real
 //! answer, the candidate list, and the text says to pick one); every other status is a tool error
-//! carrying whatever the command wrote to stderr.
+//! carrying whatever the command wrote to stderr. `check_kotlin_syntax` is the one exception: it
+//! exits 1 both on a file with syntax errors and on a missing engine, so its result is decided by
+//! the outcome the server reads from the command's streams rather than by the exit alone, and a
+//! syntax finding comes back as an answer while only a failure to run the engine is a tool error.
 //!
 //! Every answer carries the command's Markdown as its text content and an [`Answer`] as its
 //! `structuredContent`, so an agent can open the files a result cites without parsing prose.

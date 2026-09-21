@@ -162,6 +162,8 @@ Every result carries the command's Markdown as its text content and an `Answer` 
 | `exit` | The command's exit status: `0` an answer, `3` a name that resolved to several candidates, `1` a failure on the input, `2` a malformed invocation. |
 | `index` | `complete` or `partial`, when the answer carried an index marker. |
 | `warmth` | What the server did about keeping an engine warm for this root, when the tool is one an index shapes. |
+| `outcome` | `clean`, `findings` or `execution_failure`, set where an exit code alone cannot separate an answer from a failure to run. Today that is `check_kotlin_syntax`. |
+| `findings` | How many error sites a `check` answer cites: `0` when clean, the cited count when not, absent when the check failed to run. |
 | `files` | Files the answer is about, in the order it introduced them. |
 | `citations` | Every `path`, `line` and optional `column` the answer cites. |
 | `citations_omitted` | How many further citations the text has and this index does not. |
@@ -194,8 +196,9 @@ positions the index carries none:
 - The index stops at 500 citations and says how many it dropped.
 
 An error result carries its citation index too. The files a failure names are as worth following as
-the ones an answer names, and `check_kotlin_syntax` reports a file with syntax errors as an error
-result whose text is the report.
+the ones an answer names. A file with syntax errors is not such a failure: `check_kotlin_syntax`
+returns it as a successful result whose text is the report and whose `outcome` is `findings`,
+reserving an error result for a failure to run the engine.
 
 ## Review checklist
 
@@ -252,15 +255,15 @@ together in `stdio_session__ambiguous_name.snap` so they cannot drift apart.
 
 `crates/ktsense-mcp/tests/stdio_session.rs` drives real `ktsense mcp` processes over
 newline-delimited JSON-RPC and pins `initialize`, `tools/list` and a `tools/call` for every tool the
-server lists, as five golden snapshots. Each record carries the result's `isError`, its
+server lists, as seven golden snapshots. Each record carries the result's `isError`, its
 `structuredContent` and its text, with absolute paths replaced by placeholders so the goldens do not
 change with the checkout location.
 
 The engine is the `fake_lsp` replay binary rather than a real `kmp-lsp`, so the default `cargo test`
-needs no upstream install. Five sessions rather than one, because the fake is scripted by environment
-and one script serves one conversation: `find` and `check` both read `FAKE_CMD_STDOUT` and want
-different shapes in it, and a traced command's LSP session is a different conversation from a warm
-client's.
+needs no upstream install. Seven sessions rather than one, because the fake is scripted by
+environment and one script serves one conversation: `find` and `check` both read `FAKE_CMD_STDOUT`
+and want different shapes in it, a traced command's LSP session is a different conversation from a
+warm client's, and the three `check` outcomes each need their own scripted engine.
 
 | Snapshot | Covers |
 |---|---|
@@ -268,9 +271,11 @@ client's.
 | `symbol_lookup` | `find_kotlin_symbol` unique, limited, picked and unmatched |
 | `trace_and_context` | `trace_kotlin_symbol`, and `explain_kotlin_symbol` at the default budget and at one small enough to drop items |
 | `ambiguous_name` | the shared ambiguity contract across `trace_kotlin_symbol`, `explain_kotlin_symbol` and `find_kotlin_symbol` |
-| `syntax_check` | `check_kotlin_syntax` over a directory with one broken file |
+| `syntax_check` | `check_kotlin_syntax` over a directory with one broken file: an answer with `outcome: findings` |
+| `syntax_check_clean` | `check_kotlin_syntax` over a clean directory: an answer with `outcome: clean` |
+| `syntax_check_failure` | `check_kotlin_syntax` when the engine returns nothing parseable: a tool error with `outcome: execution_failure` |
 
-A sixth test asserts that the catalogue contains nothing the five sessions do not call, so a tool
+An eighth test asserts that the catalogue contains nothing the seven sessions do not call, so a tool
 added later fails the suite until it is covered rather than quietly going unexercised.
 
 Two things a reader should know about the harness. It locates `ktsense` through `assert_cmd`, which
@@ -283,23 +288,25 @@ sessions set `KTSENSE_MCP_NO_WARM_ENGINE=1`, because a warm client and a traced 
 different conversations and one script cannot serve both; the warm path is proved by its own test and
 by the measurements above instead.
 
-## A known gap, tracked as KT-57
+## KT-57: `check` findings are answers, execution failures are errors
 
-`check_kotlin_syntax` maps a file with syntax errors onto `isError: true`, because the CLI exits 1 and
-KT-31 mapped every non-answer exit to a tool error. That is defensible as "the tool's news is bad" but
-arguable: MCP's `isError` means the tool failed to run, and a syntax check that found errors ran
-perfectly. An agent branching on `isError` cannot tell "the engine is missing" from "your file has a
-typo on line 12", and both are exit 1.
+`check_kotlin_syntax` exits 1 both on a file with syntax errors and on a failure to run the engine,
+so KT-31's rule that every non-answer exit is a tool error hid a real answer behind the same status
+as a missing engine. An agent branching on `isError` could not tell "your file has a typo on line
+12" from "the engine is not installed", and both were exit 1.
 
-Changing it would change the KT-31 contract the exit-code mapping documents, so it is recorded here
-rather than altered inside a card about descriptions. The board owner has since allocated **KT-57
-Distinguish MCP syntax findings from execution failures** for it. The shape of the work:
+The server now decides a check result from the outcome it reads at the CLI/runner boundary rather
+than from the exit alone. The CLI writes its answer to stdout and any diagnostic to stderr, so a
+syntax finding arrives as a report on stdout with an empty stderr, while a `PassthroughError` (a
+missing, timed-out, or unparseable engine) arrives as a message on stderr. A finding or a clean file
+is `isError: false` carrying the report; only a failure to run the engine is `isError: true`. The
+distinction keys on which stream carried the output, not on matching words in it.
 
-    ### KT-57 Distinguish MCP syntax findings from execution failures
-    - Phase: 3 | Size: S | Blocked by: KT-32
-    - `ANSWER_EXITS` is `[0, 3]`, so `check` exiting 1 on a file with syntax errors becomes
-      `isError: true` carrying the report. Either add a distinct exit for "checked, found errors" or
-      let the MCP layer treat the check report as the answer it is.
-    - Acceptance: a file with a syntax error returns `isError: false` with the report and its
-      citations; a missing engine still returns `isError: true`; the CLI's own exit codes are
-      unchanged, because a shell caller branches on them.
+The CLI's own exit codes are unchanged: `check` still exits 1 on a broken file and 0 on a clean one,
+so a shell caller branches on them exactly as before. This is not an engine-free path: `check` still
+needs `kmp-lsp` installed, it just waits for no index (KT-37), and the version-compatibility probe
+does not cover command mode, so an incompatible engine is not refused here.
+
+The structured half names the machine-readable distinction: `outcome` is `clean`, `findings` or
+`execution_failure`, and `findings` counts the cited error sites for a check answer. Path and line
+travel in `citations` as before, and check is still the only tool whose citations carry a column.

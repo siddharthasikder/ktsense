@@ -154,3 +154,65 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
         "outline text was: {outline_text}"
     );
 }
+
+/// KT-57 against the real engine: a broken file is an answer whose `outcome` is `findings`, and a
+/// clean file is an answer whose `outcome` is `clean`. Neither is a tool error, even though the CLI
+/// exits 1 on the broken one. Gated behind `real-lsp` so the default install-free suite skips it.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn check_over_the_real_engine_reports_a_finding_and_a_clean_file_as_answers_not_tool_errors() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let broken = dir.path().join("Broken.kt");
+    std::fs::write(&broken, "package p\nfun broken( {\n").expect("write broken");
+    let clean = dir.path().join("Clean.kt");
+    std::fs::write(&clean, "package p\nfun ok() {}\n").expect("write clean");
+    let root = dir.path().display().to_string();
+    let check = |session: &mut Session, id: u64, path: &std::path::Path| {
+        session.request(
+            id,
+            "tools/call",
+            json!({ "name": "check_kotlin_syntax",
+                    "arguments": { "path": path.display().to_string(), "root": root } }),
+        )
+    };
+
+    let mut session = Session::start();
+    session.request(
+        1,
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0" } }),
+    );
+    session.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    let broken_result = check(&mut session, 2, &broken);
+    let clean_result = check(&mut session, 3, &clean);
+    let (exit, stderr) = session.finish();
+
+    let structured = |result: &Value| result["result"]["structuredContent"].clone();
+    let observed = (
+        broken_result["result"]["isError"].clone(),
+        structured(&broken_result)["outcome"].clone(),
+        structured(&broken_result)["findings"]
+            .as_u64()
+            .is_some_and(|count| count >= 1),
+        clean_result["result"]["isError"].clone(),
+        structured(&clean_result)["outcome"].clone(),
+        structured(&clean_result)["findings"].clone(),
+        exit,
+        stderr.is_empty(),
+    );
+    assert_eq!(
+        observed,
+        (
+            json!(false),
+            json!("findings"),
+            true,
+            json!(false),
+            json!("clean"),
+            json!(0),
+            Some(0),
+            true,
+        ),
+        "broken={broken_result} clean={clean_result}"
+    );
+}
