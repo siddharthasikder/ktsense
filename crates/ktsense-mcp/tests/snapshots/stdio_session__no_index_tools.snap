@@ -1,0 +1,264 @@
+---
+source: crates/ktsense-mcp/tests/stdio_session.rs
+expression: report
+---
+tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
+
+=== get_kotlin_outline ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "outline",
+  "exit": 0,
+  "files": [
+    "core/src/main/kotlin/shop/order/OrderRepository.kt"
+  ],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "get_kotlin_outline"
+}
+---
+## core/src/main/kotlin/shop/order/OrderRepository.kt
+
+package shop.order
+
+```kotlin
+interface OrderRepository {
+    fun save(order: Order): OrderId
+    fun findById(id: OrderId): Order?
+}
+```
+
+=== get_kotlin_outline ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "outline",
+  "exit": 0,
+  "files": [
+    "app/src/main/kotlin/shop/app/reporting/AuditTrail.kt"
+  ],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "get_kotlin_outline"
+}
+---
+## app/src/main/kotlin/shop/app/reporting/AuditTrail.kt
+
+package shop.app.reporting
+
+```kotlin
+class AuditTrail {
+    private val entries /* inferred */
+    fun record(message: String)
+    fun all(): List<String>
+}
+```
+
+=== get_kotlin_outline ===
+isError: true
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "outline",
+  "exit": 1,
+  "files": [],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "get_kotlin_outline"
+}
+---
+ktsense: no such file: <FIXTURE>/core/src/main/kotlin/shop/order/Nope.kt
+
+=== analyze_kotlin_dependencies ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "deps",
+  "exit": 0,
+  "files": [],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "analyze_kotlin_dependencies"
+}
+---
+# Dependencies
+
+Level: package. 4 packages, 6 edges, 3 external imports, 1 cycle.
+
+## Edges
+- shop.app.checkout -> shop.app.reporting
+- shop.app.checkout -> shop.db
+- shop.app.checkout -> shop.order
+- shop.app.reporting -> shop.app.checkout
+- shop.app.reporting -> shop.order
+- shop.db -> shop.order
+
+## Cycles
+- { shop.app.checkout, shop.app.reporting }
+
+## External imports
+- shop.app.reporting -> java.time.Instant
+- shop.db -> java.util.concurrent.ConcurrentHashMap
+- shop.db -> java.util.concurrent.atomic.AtomicLong
+
+Resolution is syntactic: edges are import statements, not type-checked references.
+
+=== analyze_kotlin_dependencies ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "deps",
+  "exit": 0,
+  "files": [],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "analyze_kotlin_dependencies"
+}
+---
+# Dependencies
+
+Level: file. 9 files, 13 edges, 3 external imports, 0 cycles.
+
+## Edges
+- app/src/main/kotlin/shop/app/checkout/CheckoutService.kt -> app/src/main/kotlin/shop/app/reporting/AuditTrail.kt
+- app/src/main/kotlin/shop/app/checkout/CheckoutService.kt -> core/src/main/kotlin/shop/order/Order.kt
+- app/src/main/kotlin/shop/app/checkout/CheckoutService.kt -> core/src/main/kotlin/shop/order/OrderRepository.kt
+- app/src/main/kotlin/shop/app/checkout/OrderImporter.kt -> core/src/main/kotlin/shop/order/Order.kt
+- app/src/main/kotlin/shop/app/checkout/OrderImporter.kt -> core/src/main/kotlin/shop/order/OrderRepository.kt
+- app/src/main/kotlin/shop/app/checkout/OrderImporter.kt -> db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
+- app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt -> app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt
+- app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt -> core/src/main/kotlin/shop/order/Order.kt
+- app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt -> core/src/main/kotlin/shop/order/OrderRepository.kt
+- db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt -> core/src/main/kotlin/shop/order/Order.kt
+- db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt -> core/src/main/kotlin/shop/order/OrderRepository.kt
+- db/src/main/kotlin/shop/db/JdbcOrderRepository.kt -> core/src/main/kotlin/shop/order/Order.kt
+- db/src/main/kotlin/shop/db/JdbcOrderRepository.kt -> core/src/main/kotlin/shop/order/OrderRepository.kt
+
+## Cycles
+- none
+
+## External imports
+- app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt -> java.time.Instant
+- db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt -> java.util.concurrent.ConcurrentHashMap
+- db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt -> java.util.concurrent.atomic.AtomicLong
+
+Resolution is syntactic: edges are import statements, not type-checked references.
+
+=== get_kotlin_repo_map ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "map",
+  "exit": 0,
+  "files": [
+    "core/src/main/kotlin/shop/order/Order.kt",
+    "core/src/main/kotlin/shop/order/OrderRepository.kt",
+    "app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt",
+    "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+    "app/src/main/kotlin/shop/app/checkout/OrderImporter.kt",
+    "app/src/main/kotlin/shop/app/reporting/AuditTrail.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+  ],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "get_kotlin_repo_map"
+}
+---
+# Repository map
+
+Budget 400 tokens, content bound 302. 9 files shown, 0 omitted.
+
+## core/src/main/kotlin/shop/order/Order.kt
+
+```kotlin
+data class Order(val id: OrderId, val customerEmail: String, val totalCents: Long)
+data class OrderId(val value: Long)
+```
+
+## core/src/main/kotlin/shop/order/OrderRepository.kt
+
+```kotlin
+interface OrderRepository
+```
+
+## app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt
+
+```kotlin
+object CheckoutConfig
+```
+
+## app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
+
+```kotlin
+class CheckoutService(private val repository: OrderRepository, private val auditTrail: AuditTrail)
+```
+
+## app/src/main/kotlin/shop/app/checkout/OrderImporter.kt
+
+```kotlin
+class OrderImporter(private val repository: OrderRepository = InMemoryOrderRepository())
+```
+
+## app/src/main/kotlin/shop/app/reporting/AuditTrail.kt
+
+```kotlin
+class AuditTrail
+```
+
+## db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
+
+```kotlin
+class InMemoryOrderRepository : OrderRepository
+```
+
+## app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt
+
+```kotlin
+class ReportBackfill(private val repository: OrderRepository)
+```
+
+## db/src/main/kotlin/shop/db/JdbcOrderRepository.kt
+
+```kotlin
+class JdbcOrderRepository(private val url: String = "jdbc:h2:mem:orders") : OrderRepository
+```
+
+Ranking is syntactic: files are ordered by import centrality and declarations by how many files import them by name, not by type-checked references.
+
+=== ktsense_status ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "status",
+  "exit": 0,
+  "files": [],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "ktsense_status"
+}
+---
+# Status: <FIXTURE>
+
+kotlin files: 14
+engine: kmp-lsp 0.26.0 at <TARGET>/fake_lsp (pinned 0.26.0, supported)
+daemon: not running
+socket: <SOCKET>
+
+server exit: Some(0)
+server stderr: empty

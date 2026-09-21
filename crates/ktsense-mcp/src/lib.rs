@@ -25,7 +25,7 @@ pub use citations::{index_answer, Answer, Citation, MAX_CITATIONS};
 pub use roots::ClientRoots;
 pub use server::{
     serve, ExecutableRunner, Format, Invocation, KtsenseServer, Request, Runner, RunnerError,
-    ServerConfig,
+    ServerConfig, NO_WARM_ENGINE_ENV,
 };
 pub use warm::{EngineWarmer, WarmEngines, Warmer, Warmth, DEFAULT_WARM_UP_BOUND};
 
@@ -66,10 +66,6 @@ pub struct Tool {
     pub name: &'static str,
     pub cli_command: &'static str,
     pub requires: Requirement,
-    /// The card that will make this tool answer, while its backing command still returns the CLI's
-    /// not-implemented error. Held as data so the description, the documentation and the session
-    /// test read the same fact from one place.
-    pub pending_card: Option<&'static str>,
     /// Whether a settled index changes what this tool answers, rather than only how fast.
     ///
     /// Not the same question as [`Tool::requires`], and measured rather than assumed. On ktor with an
@@ -86,7 +82,6 @@ pub const OUTLINE: Tool = Tool {
     name: "get_kotlin_outline",
     cli_command: "outline",
     requires: Requirement::Nothing,
-    pending_card: None,
     index_shapes_answer: false,
 };
 
@@ -94,7 +89,6 @@ pub const SYMBOLS: Tool = Tool {
     name: "find_kotlin_symbol",
     cli_command: "symbols",
     requires: Requirement::Engine,
-    pending_card: None,
     index_shapes_answer: true,
 };
 
@@ -102,7 +96,6 @@ pub const TRACE: Tool = Tool {
     name: "trace_kotlin_symbol",
     cli_command: "trace",
     requires: Requirement::EngineIndex,
-    pending_card: None,
     index_shapes_answer: true,
 };
 
@@ -110,7 +103,6 @@ pub const DEPS: Tool = Tool {
     name: "analyze_kotlin_dependencies",
     cli_command: "deps",
     requires: Requirement::Nothing,
-    pending_card: None,
     index_shapes_answer: false,
 };
 
@@ -118,7 +110,6 @@ pub const MAP: Tool = Tool {
     name: "get_kotlin_repo_map",
     cli_command: "map",
     requires: Requirement::Nothing,
-    pending_card: None,
     index_shapes_answer: false,
 };
 
@@ -126,7 +117,6 @@ pub const CHECK: Tool = Tool {
     name: "check_kotlin_syntax",
     cli_command: "check",
     requires: Requirement::Engine,
-    pending_card: None,
     index_shapes_answer: false,
 };
 
@@ -134,7 +124,6 @@ pub const CONTEXT: Tool = Tool {
     name: "explain_kotlin_symbol",
     cli_command: "context",
     requires: Requirement::EngineIndex,
-    pending_card: Some("KT-35"),
     index_shapes_answer: true,
 };
 
@@ -142,7 +131,6 @@ pub const STATUS: Tool = Tool {
     name: "ktsense_status",
     cli_command: "status",
     requires: Requirement::Nothing,
-    pending_card: None,
     index_shapes_answer: false,
 };
 

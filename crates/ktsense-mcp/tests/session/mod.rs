@@ -15,7 +15,7 @@
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 
 use assert_cmd::cargo::CommandCargoExt;
@@ -31,19 +31,93 @@ pub struct Session {
     roots_requests: usize,
 }
 
+/// How to start a server: where it runs, what root it answers about, and which engine it finds.
+///
+/// The engine is the `fake_lsp` replay binary rather than a real `kmp-lsp`, so the default suite
+/// needs no upstream install. It plays two roles: a one-shot command mode driven by
+/// `FAKE_CMD_STDOUT`, which is what `find` and `check` use, and a scripted LSP session driven by
+/// `FAKE_LSP_SCRIPT`, which is what `trace` uses.
+#[derive(Default)]
+pub struct Launch {
+    root: String,
+    engine: Option<PathBuf>,
+    command_stdout: Option<String>,
+    script: Option<String>,
+    warm: bool,
+    index_cap_ms: Option<String>,
+}
+
+impl Launch {
+    /// A server rooted at `root`, holding a warm engine as the product does.
+    pub fn rooted(root: &str) -> Self {
+        Self {
+            root: root.to_string(),
+            warm: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_engine(mut self, engine: PathBuf) -> Self {
+        self.engine = Some(engine);
+        self
+    }
+
+    /// What the engine writes in command mode, which is how `find` and `check` are scripted.
+    pub fn answering_commands_with(mut self, stdout: &str) -> Self {
+        self.command_stdout = Some(stdout.to_string());
+        self
+    }
+
+    /// The LSP session the engine replays, and the index cap the traced command runs under.
+    pub fn replaying(mut self, script: &str, index_cap_ms: &str) -> Self {
+        self.script = Some(script.to_string());
+        self.index_cap_ms = Some(index_cap_ms.to_string());
+        self
+    }
+
+    /// Stops the server holding a warm engine of its own.
+    ///
+    /// A scripted session can serve one conversation, and a warm session and a traced command are
+    /// two different ones: the warm client stops at the index and then says `shutdown`, where the
+    /// script expects the traced command's next request. So a test that pins a `trace` answer turns
+    /// warming off, and the warm path is proved by its own test instead.
+    pub fn without_a_warm_engine(mut self) -> Self {
+        self.warm = false;
+        self
+    }
+
+    pub fn start(self, directory: &Path) -> Session {
+        let mut command = Command::cargo_bin("ktsense")
+            .expect("the ktsense binary must be built; run `cargo test --workspace`");
+        command
+            .current_dir(directory)
+            .args(["--root", &self.root, "mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(engine) = &self.engine {
+            command.env("KTSENSE_LSP_PATH", engine);
+        }
+        if let Some(stdout) = &self.command_stdout {
+            command.env("FAKE_CMD_STDOUT", stdout);
+        }
+        if let Some(script) = &self.script {
+            command.env("FAKE_LSP_SCRIPT", script);
+        }
+        if let Some(cap) = &self.index_cap_ms {
+            command.env("KTSENSE_INDEX_CAP_MS", cap);
+        }
+        if !self.warm {
+            command.env(ktsense_mcp::NO_WARM_ENGINE_ENV, "1");
+        }
+        Session::around(command.spawn().expect("server starts"))
+    }
+}
+
 impl Session {
     /// Starts a server rooted at `root`, from `directory` as its working directory.
     pub fn rooted(directory: &Path, root: &str) -> Self {
-        let child = Command::cargo_bin("ktsense")
-            .expect("the ktsense binary must be built; run `cargo test --workspace`")
-            .current_dir(directory)
-            .args(["--root", root, "mcp"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("server starts");
-        Self::around(child)
+        Launch::rooted(root).start(directory)
     }
 
     fn around(mut child: Child) -> Self {
@@ -177,4 +251,28 @@ pub fn text(result: &Value) -> &str {
 /// The structured half of a tool result.
 pub fn structured(result: &Value) -> &Value {
     &result["result"]["structuredContent"]
+}
+
+/// The `fake_lsp` replay binary, built alongside `ktsense` into the same target directory. A
+/// workspace-wide `cargo test` has already built it; a package-scoped run has not, so it is built
+/// here on first use rather than letting the suite fail on a missing helper.
+pub fn fake_lsp() -> PathBuf {
+    static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FAKE.get_or_init(|| {
+        let path = Command::cargo_bin("ktsense")
+            .expect("the ktsense binary must be built; run `cargo test --workspace`")
+            .get_program()
+            .to_os_string();
+        let path = PathBuf::from(path).with_file_name("fake_lsp");
+        if !path.exists() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let built = Command::new(cargo)
+                .args(["build", "-p", "ktsense-lsp", "--bin", "fake_lsp"])
+                .status()
+                .expect("cargo runs");
+            assert!(built.success(), "building fake_lsp failed");
+        }
+        path
+    })
+    .clone()
 }

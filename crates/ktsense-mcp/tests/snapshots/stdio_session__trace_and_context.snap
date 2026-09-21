@@ -1,0 +1,220 @@
+---
+source: crates/ktsense-mcp/tests/stdio_session.rs
+expression: report
+---
+tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
+
+=== trace_kotlin_symbol ===
+isError: false
+structuredContent:
+{
+  "citations": [
+    {
+      "line": 3,
+      "path": "core/src/main/kotlin/shop/order/OrderRepository.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    },
+    {
+      "line": 8,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    },
+    {
+      "line": 8,
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    }
+  ],
+  "citations_omitted": 0,
+  "command": "trace",
+  "exit": 0,
+  "files": [
+    "core/src/main/kotlin/shop/order/OrderRepository.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+    "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt"
+  ],
+  "index": "complete",
+  "requires": "kmp-lsp and a settled index",
+  "root": "<FIXTURE>",
+  "tool": "trace_kotlin_symbol"
+}
+---
+# Trace: shop.order.OrderRepository
+
+index: complete
+
+## Definition
+
+core/src/main/kotlin/shop/order/OrderRepository.kt:3
+
+```kotlin
+interface OrderRepository
+```
+
+## Implementors (2)
+- shop.db.InMemoryOrderRepository  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:9
+- shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
+
+## Callers (1)
+- shop.app.checkout.CheckoutService  app/src/main/kotlin/shop/app/checkout/CheckoutService.kt:8
+
+## Usages (4 sites in 4 files)
+
+app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
+- 8 in CheckoutService
+
+core/src/main/kotlin/shop/order/OrderRepository.kt
+- 3 in OrderRepository
+
+db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
+- 9 in InMemoryOrderRepository
+
+db/src/main/kotlin/shop/db/JdbcOrderRepository.kt
+- 9 in JdbcOrderRepository.save
+
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked.
+
+=== explain_kotlin_symbol ===
+isError: false
+structuredContent:
+{
+  "citations": [
+    {
+      "line": 3,
+      "path": "core/src/main/kotlin/shop/order/OrderRepository.kt"
+    },
+    {
+      "line": 8,
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    },
+    {
+      "line": 8,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    }
+  ],
+  "citations_omitted": 0,
+  "command": "context",
+  "exit": 0,
+  "files": [
+    "core/src/main/kotlin/shop/order/OrderRepository.kt",
+    "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+  ],
+  "index": "complete",
+  "requires": "kmp-lsp and a settled index",
+  "root": "<FIXTURE>",
+  "tool": "explain_kotlin_symbol"
+}
+---
+# Context: shop.order.OrderRepository
+
+index: complete
+Budget 2000 tokens, content bound 113. 0 items omitted for budget.
+
+## Declaration
+
+core/src/main/kotlin/shop/order/OrderRepository.kt:3
+
+```kotlin
+interface OrderRepository
+```
+
+## File outline: core/src/main/kotlin/shop/order/OrderRepository.kt
+
+```kotlin
+interface OrderRepository {
+    fun save(order: Order): OrderId
+    fun findById(id: OrderId): Order?
+}
+```
+
+## Callers (1)
+- shop.app.checkout.CheckoutService  app/src/main/kotlin/shop/app/checkout/CheckoutService.kt:8
+
+## Implementors (2)
+- shop.db.InMemoryOrderRepository  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:9
+- shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
+
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, outline, caller and implementor lines the budget gated, not the headings around them.
+
+=== explain_kotlin_symbol ===
+isError: false
+structuredContent:
+{
+  "citations": [
+    {
+      "line": 3,
+      "path": "core/src/main/kotlin/shop/order/OrderRepository.kt"
+    },
+    {
+      "line": 8,
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    },
+    {
+      "line": 8,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    }
+  ],
+  "citations_omitted": 0,
+  "command": "context",
+  "exit": 0,
+  "files": [
+    "core/src/main/kotlin/shop/order/OrderRepository.kt",
+    "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+  ],
+  "index": "complete",
+  "requires": "kmp-lsp and a settled index",
+  "root": "<FIXTURE>",
+  "tool": "explain_kotlin_symbol"
+}
+---
+# Context: shop.order.OrderRepository
+
+index: complete
+Budget 120 tokens, content bound 113. 0 items omitted for budget.
+
+## Declaration
+
+core/src/main/kotlin/shop/order/OrderRepository.kt:3
+
+```kotlin
+interface OrderRepository
+```
+
+## File outline: core/src/main/kotlin/shop/order/OrderRepository.kt
+
+```kotlin
+interface OrderRepository {
+    fun save(order: Order): OrderId
+    fun findById(id: OrderId): Order?
+}
+```
+
+## Callers (1)
+- shop.app.checkout.CheckoutService  app/src/main/kotlin/shop/app/checkout/CheckoutService.kt:8
+
+## Implementors (2)
+- shop.db.InMemoryOrderRepository  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:9
+- shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
+
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, outline, caller and implementor lines the budget gated, not the headings around them.
+
+server exit: Some(0)
+server stderr: empty

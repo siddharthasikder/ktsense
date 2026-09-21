@@ -79,7 +79,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -204,7 +204,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -256,7 +256,7 @@ expression: listed
     },
     {
       "name": "explain_kotlin_symbol",
-      "description": "Will answer with a budgeted bundle for one symbol: its declaration, the files it depends on and the callers that matter. Not implemented yet (KT-35), so every call returns ktsense's not-implemented message as an error; reach for find_kotlin_symbol and trace_kotlin_symbol instead. requires: kmp-lsp and a settled index. cost: unmeasured.",
+      "description": "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -266,6 +266,13 @@ expression: listed
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "pick": {
+            "description": "Select the single candidate with this fully-qualified name when the name is ambiguous.",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -338,7 +345,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -486,7 +493,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -621,7 +628,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -748,7 +755,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -866,7 +873,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",
@@ -1017,7 +1024,7 @@ expression: listed
             "type": "string"
           },
           "exit": {
-            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
             "format": "int32",
             "type": [
               "integer",

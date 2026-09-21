@@ -151,18 +151,35 @@ pub struct ServerConfig {
     pub root: PathBuf,
 }
 
+/// Set to `1` to stop the server holding a warm engine of its own.
+///
+/// Warming pays for itself on a repository large enough that the engine's text-search fallback is
+/// wrong, and costs about half a second for nothing on a tree small enough that it is right: KT-33
+/// measured 530 ms of pure cost on a nine-file fixture. This is the switch for that case, and for an
+/// operator who wants the MCP server to spawn no engine but the ones its commands spawn themselves.
+pub const NO_WARM_ENGINE_ENV: &str = "KTSENSE_MCP_NO_WARM_ENGINE";
+
 /// Serves the tools over stdio until the client disconnects, holding a warm engine for any root
-/// whose index-dependent tools get used and that no daemon is already keeping warm.
+/// whose index-shaped tools get used and that no daemon is already keeping warm.
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
     let runner = ExecutableRunner::new(config.binary, config.root);
-    let engines = Arc::new(WarmEngines::new(Arc::new(EngineWarmer::default())));
-    let running = KtsenseServer::warming(Arc::new(runner), engines.clone())
-        .serve(rmcp::transport::stdio())
-        .await?;
+    let engines =
+        warming_enabled().then(|| Arc::new(WarmEngines::new(Arc::new(EngineWarmer::default()))));
+    let server = match &engines {
+        Some(engines) => KtsenseServer::warming(Arc::new(runner), engines.clone()),
+        None => KtsenseServer::new(Arc::new(runner)),
+    };
+    let running = server.serve(rmcp::transport::stdio()).await?;
     let outcome = running.waiting().await;
-    engines.close().await;
+    if let Some(engines) = engines {
+        engines.close().await;
+    }
     outcome?;
     Ok(())
+}
+
+fn warming_enabled() -> bool {
+    std::env::var_os(NO_WARM_ENGINE_ENV).is_none_or(|value| value != "1")
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,6 +253,8 @@ pub struct CheckParams {
 pub struct ContextParams {
     /// Declaration name to explain.
     pub symbol: String,
+    /// Select the single candidate with this fully-qualified name when the name is ambiguous.
+    pub pick: Option<String>,
     /// Token budget for the bundle; defaults to 2000.
     pub budget: Option<usize>,
     /// Workspace root to answer about; defaults to the server's configured root.
@@ -562,7 +581,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "explain_kotlin_symbol",
-        description = "Will answer with a budgeted bundle for one symbol: its declaration, the files it depends on and the callers that matter. Not implemented yet (KT-35), so every call returns ktsense's not-implemented message as an error; reach for find_kotlin_symbol and trace_kotlin_symbol instead. requires: kmp-lsp and a settled index. cost: unmeasured.",
+        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -573,6 +592,7 @@ impl KtsenseServer {
         let root = self.root_for(params.root, None).await;
         let args = Args::for_tool(&crate::CONTEXT, root)
             .positional(params.symbol)
+            .option("pick", params.pick)
             .option("budget", params.budget);
         self.invoke(&crate::CONTEXT, args.0).await
     }
@@ -706,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn every_listed_tool_is_catalogued_read_only_and_states_its_requirement_and_pending_card() {
+    fn every_listed_tool_is_catalogued_read_only_and_states_its_requirement_and_its_cost() {
         let server = KtsenseServer::new(Recorded::replying(0, "", ""));
         let listed = server.listed_tools();
 
@@ -726,9 +746,7 @@ mod tests {
             let description = tool.description.as_deref().unwrap_or_default();
             let entry = catalogued(&tool.name);
             description.contains(&format!("requires: {}", entry.requires.label()))
-                && entry
-                    .pending_card
-                    .is_none_or(|card| description.contains(card))
+                && description.contains("cost: ")
         });
         let read_only = listed.iter().all(|tool| {
             tool.annotations

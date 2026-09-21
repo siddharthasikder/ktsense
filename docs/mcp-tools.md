@@ -44,14 +44,14 @@ and settled, in three states; `cost:` carries a measured number or admits there 
 | `analyze_kotlin_dependencies` | `deps` | nothing | ~1.7 s, 1861 files | KT-38 |
 | `get_kotlin_repo_map` | `map` | nothing | ~1.1 s, 1861 files | KT-38 |
 | `check_kotlin_syntax` | `check` | kmp-lsp | ~145 ms, 54 KB file | KT-32 |
-| `explain_kotlin_symbol` | `context` | kmp-lsp and a settled index | unmeasured | not implemented, KT-35 |
+| `explain_kotlin_symbol` | `context` | kmp-lsp and a settled index | ~1.1 s, 1861 files | KT-34 |
 | `ktsense_status` | `status` | nothing | ~100 ms, 1990 files | KT-32 |
 
 Every KT-38 figure is a median of nine timed repetitions on ktor 3.0.1 from
-`.agents/scratchpad/ktsense/KT-38.md`, in-process rather than through a daemon. The two KT-32 figures
-were taken the same way, from a release binary, with the exit status checked so a failing command
-cannot be reported as a latency. No figure appears in a description that is not in one of those two
-files.
+`.agents/scratchpad/ktsense/KT-38.md`, in-process rather than through a daemon. The KT-32 and KT-34
+figures were taken the same way, from a release binary, with the exit status checked so a failing
+command cannot be reported as a latency. No figure appears in a description that is not in one of
+those evidence files.
 
 The corpus is the same repository in both cases, counted two ways. KT-38 counted 1861 `.kt` files.
 `ktsense_status` reports 1990, because its traversal accepts `.kts` too and ktor holds 129 Gradle
@@ -139,6 +139,8 @@ repository, which is the case an agent meeting an unfamiliar codebase is actuall
 Warming never fails a call. A launch that fails or exceeds its 30 second bound is logged and the call
 is delegated anyway, from a cold index. Every held session is shut down when the server stops
 serving, which was checked by counting `kmp-lsp` processes before and after: none is left behind.
+`KTSENSE_MCP_NO_WARM_ENGINE=1` turns warming off, for the small-tree case above and for an operator
+who wants the server to spawn no engine but the ones its commands spawn themselves.
 
 `check_kotlin_syntax` deliberately does not warm anything. It is the tool an agent calls after every
 edit, its answer does not depend on an index, and making the first check after a change pay a session
@@ -154,7 +156,7 @@ Every result carries the command's Markdown as its text content and an `Answer` 
 | `tool`, `command` | Which tool answered and the `ktsense` subcommand it delegated to. |
 | `requires` | The same three-state marker as the description. |
 | `root` | The workspace root the answer is about, which the cited paths are relative to. |
-| `exit` | The command's exit status: `0` an answer, `3` an ambiguous name, `70` not implemented. |
+| `exit` | The command's exit status: `0` an answer, `3` a name that resolved to several candidates, `1` a failure on the input, `2` a malformed invocation. |
 | `index` | `complete` or `partial`, when the answer carried an index marker. |
 | `files` | Files the answer is about, in the order it introduced them. |
 | `citations` | Every `path`, `line` and optional `column` the answer cites. |
@@ -203,18 +205,68 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
 - [x] Accuracy honesty: resolution is stated as syntactic in the server instructions, and
       `analyze_kotlin_dependencies` states that its edges are imports rather than type-checked
       references.
-- [x] `explain_kotlin_symbol` says it is not implemented and names KT-35, held in the catalogue as
-      `pending_card` so the description cannot drift from the fact.
+- [x] Every tool in the catalogue answers for real. `explain_kotlin_symbol` was a KT-35 stub when this
+      page was written and is not one now, so the `pending_card` field that recorded that state is
+      gone rather than left as an always-empty option.
 - [x] Version-check scope is stated where it is true, and not generalised.
 - [x] Every tool is annotated `readOnlyHint: true` and `openWorldHint: false`; none of them writes.
 - [x] Every tool declares an output schema, and all eight are identical.
 - [x] No em dashes.
 - [x] `tools/list` is pinned as a golden snapshot, so a description change is a reviewable diff.
+- [x] Every tool is called over a real stdio session and its result pinned, including the ambiguity
+      path of all three tools that resolve a name.
 
 The snapshot is about a thousand lines, of which roughly four fifths is the output schema repeated
 once per tool. That duplication is the protocol's, not the catalogue's: MCP gives each tool its own
 `outputSchema` field and has no way to share one. A unit test asserts the eight are identical, so a
 reviewer reads it once.
+
+## Ambiguity is an answer, in all three tools that resolve a name
+
+`find_kotlin_symbol`, `trace_kotlin_symbol` and `explain_kotlin_symbol` share one resolver, so they
+share one ambiguity contract: a name that matches several declarations comes back as the candidate
+list under exit 3, and `pick` with a fully-qualified name chooses one. Exit 3 rather than 2 because
+clap owns 2 for a malformed invocation, and an agent has to be able to tell "I called this wrong",
+which needs the call fixed, from "the name was ambiguous", which needs a candidate chosen.
+
+The MCP layer treats exit 3 as an answer, not a failure: `isError` is false and the candidate list is
+the content, because a list of candidates is what the question deserved. The three tools are pinned
+together in `stdio_session__ambiguous_name.snap` so they cannot drift apart.
+
+## Sessions pinned end to end
+
+`crates/ktsense-mcp/tests/stdio_session.rs` drives real `ktsense mcp` processes over
+newline-delimited JSON-RPC and pins `initialize`, `tools/list` and a `tools/call` for every tool the
+server lists, as five golden snapshots. Each record carries the result's `isError`, its
+`structuredContent` and its text, with absolute paths replaced by placeholders so the goldens do not
+change with the checkout location.
+
+The engine is the `fake_lsp` replay binary rather than a real `kmp-lsp`, so the default `cargo test`
+needs no upstream install. Five sessions rather than one, because the fake is scripted by environment
+and one script serves one conversation: `find` and `check` both read `FAKE_CMD_STDOUT` and want
+different shapes in it, and a traced command's LSP session is a different conversation from a warm
+client's.
+
+| Snapshot | Covers |
+|---|---|
+| `no_index_tools` | `get_kotlin_outline` (three ways, including a missing file), `analyze_kotlin_dependencies` at both levels, `get_kotlin_repo_map`, `ktsense_status`, all while a warm engine is held |
+| `symbol_lookup` | `find_kotlin_symbol` unique, limited, picked and unmatched |
+| `trace_and_context` | `trace_kotlin_symbol`, and `explain_kotlin_symbol` at the default budget and at one small enough to drop items |
+| `ambiguous_name` | the shared ambiguity contract across `trace_kotlin_symbol`, `explain_kotlin_symbol` and `find_kotlin_symbol` |
+| `syntax_check` | `check_kotlin_syntax` over a directory with one broken file |
+
+A sixth test asserts that the catalogue contains nothing the five sessions do not call, so a tool
+added later fails the suite until it is covered rather than quietly going unexercised.
+
+Two things a reader should know about the harness. It locates `ktsense` through `assert_cmd`, which
+resolves it out of the target directory rather than from a `CARGO_BIN_EXE_` variable, because it is a
+target of a different crate: `cargo test --workspace` builds every target first, so it is fresh, and a
+package-scoped `cargo test -p ktsense-mcp` can leave a stale one behind. That is not hypothetical, it
+happened while these tests were being written, and a stale binary made a passing snapshot record
+stderr noise from a feature the binary predated. And the `trace_and_context` and `ambiguous_name`
+sessions set `KTSENSE_MCP_NO_WARM_ENGINE=1`, because a warm client and a traced command drive
+different conversations and one script cannot serve both; the warm path is proved by its own test and
+by the measurements above instead.
 
 ## Known gap and a proposed card
 

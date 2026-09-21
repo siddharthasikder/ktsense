@@ -1,0 +1,107 @@
+---
+source: crates/ktsense-mcp/tests/stdio_session.rs
+expression: report
+---
+tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
+
+=== trace_kotlin_symbol ===
+isError: false
+structuredContent:
+{
+  "citations": [
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    },
+    {
+      "line": 13,
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    }
+  ],
+  "citations_omitted": 0,
+  "command": "trace",
+  "exit": 3,
+  "files": [
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+  ],
+  "requires": "kmp-lsp and a settled index",
+  "root": "<FIXTURE>",
+  "tool": "trace_kotlin_symbol"
+}
+---
+## Symbols: save
+
+```text
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
+shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+```
+
+=== explain_kotlin_symbol ===
+isError: false
+structuredContent:
+{
+  "citations": [
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    },
+    {
+      "line": 13,
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    }
+  ],
+  "citations_omitted": 0,
+  "command": "context",
+  "exit": 3,
+  "files": [
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+  ],
+  "requires": "kmp-lsp and a settled index",
+  "root": "<FIXTURE>",
+  "tool": "explain_kotlin_symbol"
+}
+---
+## Symbols: save
+
+```text
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
+shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+```
+
+=== find_kotlin_symbol ===
+isError: false
+structuredContent:
+{
+  "citations": [
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    },
+    {
+      "line": 13,
+      "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    }
+  ],
+  "citations_omitted": 0,
+  "command": "symbols",
+  "exit": 3,
+  "files": [
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+  ],
+  "requires": "kmp-lsp",
+  "root": "<FIXTURE>",
+  "tool": "find_kotlin_symbol"
+}
+---
+## Symbols: save
+
+```text
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
+shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+```
+
+server exit: Some(0)
+server stderr: empty

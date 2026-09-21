@@ -55,8 +55,9 @@ pub struct Answer {
     pub requires: String,
     /// The workspace root the answer is about, which is what the cited paths are relative to.
     pub root: String,
-    /// The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,
-    /// `70` a subcommand that has not shipped. Absent when the child was killed by a signal.
+    /// The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that
+    /// resolved to several candidates and which one to use is yours to pick, `1` a failure on the
+    /// input, `2` a malformed invocation. Absent when the child was killed by a signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit: Option<i32>,
     /// `complete` or `partial`, when the answer carried an index marker. `partial` means the list
