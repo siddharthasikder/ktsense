@@ -28,6 +28,13 @@ bin="$work/ktsense"
 printf '#!/bin/sh\necho stub\n' > "$bin"
 chmod +x "$bin"
 
+skill="$work/SKILL.md"
+printf 'stub skill\n' > "$skill"
+license="$work/LICENSE"
+printf 'stub project license\n' > "$license"
+license_upstream="$work/LICENSE.kmp-lsp"
+printf 'stub upstream license\n' > "$license_upstream"
+
 version="9.9.9"
 
 stage_and_list() {
@@ -35,20 +42,26 @@ stage_and_list() {
     dest="$work/dest-$target"
     rm -rf "$dest"
     bash "$script" --target "$target" --version "$version" \
-        --bin "$bin" --engine "$engine" --dest "$dest" > /dev/null
+        --bin "$bin" --engine "$engine" \
+        --skill "$skill" --license "$license" --license-upstream "$license_upstream" \
+        --dest "$dest" > /dev/null
     tar tzf "$dest/ktsense-$version-$target.tar.gz" | sed 's:/*$::' | LC_ALL=C sort | grep -v '^$'
 }
 
 expected_with_sidecar() {
     local target="$1" name="ktsense-$version-$1"
-    printf '%s\n' "$name" "$name/bin" "$name/bin/ktsense" \
+    printf '%s\n' "$name" \
+        "$name/LICENSE" "$name/LICENSE.kmp-lsp" "$name/SKILL.md" \
+        "$name/bin" "$name/bin/ktsense" \
         "$name/libexec" "$name/libexec/kmp-jar-indexer" "$name/libexec/kmp-lsp" \
         | LC_ALL=C sort
 }
 
 expected_without_sidecar() {
     local target="$1" name="ktsense-$version-$1"
-    printf '%s\n' "$name" "$name/bin" "$name/bin/ktsense" \
+    printf '%s\n' "$name" \
+        "$name/LICENSE" "$name/LICENSE.kmp-lsp" "$name/SKILL.md" \
+        "$name/bin" "$name/bin/ktsense" \
         "$name/libexec" "$name/libexec/kmp-lsp" \
         | LC_ALL=C sort
 }
@@ -75,9 +88,13 @@ name="ktsense-$version-$target"
 first="$work/repro-a"
 second="$work/repro-b"
 bash "$script" --target "$target" --version "$version" \
-    --bin "$bin" --engine "$engine" --dest "$first" > /dev/null
+    --bin "$bin" --engine "$engine" \
+    --skill "$skill" --license "$license" --license-upstream "$license_upstream" \
+    --dest "$first" > /dev/null
 bash "$script" --target "$target" --version "$version" \
-    --bin "$bin" --engine "$engine" --dest "$second" > /dev/null
+    --bin "$bin" --engine "$engine" \
+    --skill "$skill" --license "$license" --license-upstream "$license_upstream" \
+    --dest "$second" > /dev/null
 sum_a="$(sha256sum < "$first/$name.tar.gz")"
 sum_b="$(sha256sum < "$second/$name.tar.gz")"
 [ "$sum_a" = "$sum_b" ] || fail "tarball is not reproducible: $sum_a vs $sum_b"
@@ -86,5 +103,18 @@ pass "tarball is reproducible"
 # The manifest names the asset and records its checksum.
 grep -Fq "$name.tar.gz" "$first/$name.tar.gz.sha256" || fail "manifest does not name the asset"
 pass "manifest names the asset"
+
+# The vendored upstream engine license must match the sha256 pinned in upstream.lock, so a drift or
+# a wrong-license swap fails here rather than shipping in the tarball (KT-42).
+repo_root="$(CDPATH='' cd -- "$here/../.." && pwd)"
+lock="$repo_root/upstream.lock"
+license_file="$repo_root/LICENSE.kmp-lsp"
+[ -f "$license_file" ] || fail "no vendored upstream license at $license_file"
+want_sha="$(awk '$1 == "engine-license" { print $2; exit }' "$lock")"
+got_sha="$(sha256sum "$license_file" | awk '{ print $1 }')"
+[ -n "$want_sha" ] || fail "upstream.lock has no engine-license record"
+[ "$want_sha" = "$got_sha" ] \
+    || fail "LICENSE.kmp-lsp sha256 $got_sha does not match upstream.lock pin $want_sha"
+pass "vendored upstream license matches the upstream.lock pin"
 
 printf 'all package-release tests passed\n'

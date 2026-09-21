@@ -114,7 +114,11 @@ jobs:
           scripts/package-release.sh \
             --target "$TARGET" --version "$VERSION" \
             --bin "target/$TARGET/release/ktsense" \
-            --engine engine --dest dist --sign "$SIGN"
+            --engine engine \
+            --skill contrib/agent-skill/SKILL.md \
+            --license LICENSE \
+            --license-upstream LICENSE.kmp-lsp \
+            --dest dist --sign "$SIGN"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Musl binary is statically linked

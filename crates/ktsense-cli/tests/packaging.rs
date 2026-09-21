@@ -30,7 +30,8 @@ fn fake_lsp() -> PathBuf {
 }
 
 fn package(dest: &Path, engine_dir: &Path) {
-    let script = Path::new(WORKSPACE_ROOT).join("scripts/package-release.sh");
+    let root = Path::new(WORKSPACE_ROOT);
+    let script = root.join("scripts/package-release.sh");
     let status = Command::new("bash")
         .arg(&script)
         .args(["--target", TARGET, "--version", VERSION])
@@ -38,6 +39,12 @@ fn package(dest: &Path, engine_dir: &Path) {
         .arg(env!("CARGO_BIN_EXE_ktsense"))
         .arg("--engine")
         .arg(engine_dir)
+        .arg("--skill")
+        .arg(root.join("contrib/agent-skill/SKILL.md"))
+        .arg("--license")
+        .arg(root.join("LICENSE"))
+        .arg("--license-upstream")
+        .arg(root.join("LICENSE.kmp-lsp"))
         .arg("--dest")
         .arg(dest)
         .status()
@@ -116,6 +123,9 @@ fn a_packaged_archive_finds_its_bundled_engine_after_extraction() {
             Some(0),
             vec![
                 name.clone(),
+                format!("{name}/LICENSE"),
+                format!("{name}/LICENSE.kmp-lsp"),
+                format!("{name}/SKILL.md"),
                 format!("{name}/bin"),
                 format!("{name}/bin/ktsense"),
                 format!("{name}/libexec"),

@@ -4,12 +4,16 @@
 # deterministically, emit a sha256 manifest, and verify the tar listing matches what was staged.
 #
 #   scripts/package-release.sh --target <triple> --version <ver> \
-#       --bin <ktsense> --engine <dir> --dest <dir> [--sign adhoc|none]
+#       --bin <ktsense> --engine <dir> --skill <SKILL.md> --license <LICENSE> \
+#       --license-upstream <LICENSE.kmp-lsp> --dest <dir> [--sign adhoc|none]
 #
 # The staged tree is bin/ktsense beside libexec/kmp-lsp so that discovery's
 # <exe-dir>/../libexec/kmp-lsp rule resolves the bundled engine after extraction, with no
-# KTSENSE_LSP_PATH set. The engine directory is produced by scripts/fetch-upstream-engine.sh; this
-# script never touches the network.
+# KTSENSE_LSP_PATH set. SKILL.md, LICENSE and LICENSE.kmp-lsp sit at the archive root under those
+# exact names so the Homebrew formula can install them with pkgshare.install. Every input is an
+# explicit path the caller supplies; nothing is read relative to the current directory. The engine
+# directory is produced by scripts/fetch-upstream-engine.sh and the upstream license is vendored at
+# LICENSE.kmp-lsp; this script never touches the network.
 #
 # Exits non-zero on a missing input, a sidecar whose architecture does not match the target, a
 # requested Darwin signature without codesign, or a tar listing that diverges from the staged tree.
@@ -22,15 +26,19 @@ ok() { printf 'ok: %s\n' "$*"; }
 
 usage() {
     cat << 'USAGE'
-package-release.sh --target <triple> --version <ver> --bin <ktsense> --engine <dir> --dest <dir>
-                   [--sign adhoc|none]
+package-release.sh --target <triple> --version <ver> --bin <ktsense> --engine <dir>
+                   --skill <SKILL.md> --license <LICENSE> --license-upstream <LICENSE.kmp-lsp>
+                   --dest <dir> [--sign adhoc|none]
 
-  --target  Rust target triple the artifact is built for
-  --version release version, without the leading v
-  --bin     path to the built ktsense executable
-  --engine  directory holding kmp-lsp and, when the target keeps it, kmp-jar-indexer
-  --dest    output directory for the staged tree, the tarball and the sha256 manifest
-  --sign    adhoc ad-hoc signs the executables with codesign (Darwin only); none (default) skips
+  --target           Rust target triple the artifact is built for
+  --version          release version, without the leading v
+  --bin              path to the built ktsense executable
+  --engine           directory holding kmp-lsp and, when the target keeps it, kmp-jar-indexer
+  --skill            path to the agent skill file, staged at the archive root as SKILL.md
+  --license          path to the project license, staged at the archive root as LICENSE
+  --license-upstream path to the engine license, staged at the archive root as LICENSE.kmp-lsp
+  --dest             output directory for the staged tree, the tarball and the sha256 manifest
+  --sign             adhoc ad-hoc signs the executables with codesign (Darwin only); none (default) skips
 USAGE
 }
 
@@ -38,6 +46,9 @@ target=""
 version=""
 bin=""
 engine=""
+skill=""
+license=""
+license_upstream=""
 dest=""
 sign="none"
 
@@ -47,6 +58,9 @@ while [ $# -gt 0 ]; do
         --version) [ -n "${2:-}" ] || die "--version needs a value"; version="$2"; shift 2 ;;
         --bin) [ -n "${2:-}" ] || die "--bin needs a value"; bin="$2"; shift 2 ;;
         --engine) [ -n "${2:-}" ] || die "--engine needs a value"; engine="$2"; shift 2 ;;
+        --skill) [ -n "${2:-}" ] || die "--skill needs a value"; skill="$2"; shift 2 ;;
+        --license) [ -n "${2:-}" ] || die "--license needs a value"; license="$2"; shift 2 ;;
+        --license-upstream) [ -n "${2:-}" ] || die "--license-upstream needs a value"; license_upstream="$2"; shift 2 ;;
         --dest) [ -n "${2:-}" ] || die "--dest needs a value"; dest="$2"; shift 2 ;;
         --sign) [ -n "${2:-}" ] || die "--sign needs a value"; sign="$2"; shift 2 ;;
         -h | --help) usage; exit 0 ;;
@@ -58,9 +72,15 @@ done
 [ -n "$version" ] || { usage >&2; die "--version is required"; }
 [ -n "$bin" ] || { usage >&2; die "--bin is required"; }
 [ -n "$engine" ] || { usage >&2; die "--engine is required"; }
+[ -n "$skill" ] || { usage >&2; die "--skill is required"; }
+[ -n "$license" ] || { usage >&2; die "--license is required"; }
+[ -n "$license_upstream" ] || { usage >&2; die "--license-upstream is required"; }
 [ -n "$dest" ] || { usage >&2; die "--dest is required"; }
 [ -f "$bin" ] || die "no ktsense binary at $bin"
 [ -f "$engine/kmp-lsp" ] || die "no kmp-lsp in engine directory $engine"
+[ -f "$skill" ] || die "no skill file at $skill"
+[ -f "$license" ] || die "no project license at $license"
+[ -f "$license_upstream" ] || die "no upstream engine license at $license_upstream"
 
 case "$sign" in
     adhoc | none) ;;
@@ -172,6 +192,12 @@ ok "bin/ktsense"
 install -m 0755 "$engine/kmp-lsp" "$stage/libexec/kmp-lsp"
 ok "libexec/kmp-lsp"
 stage_sidecar
+install -m 0644 "$skill" "$stage/SKILL.md"
+ok "SKILL.md"
+install -m 0644 "$license" "$stage/LICENSE"
+ok "LICENSE"
+install -m 0644 "$license_upstream" "$stage/LICENSE.kmp-lsp"
+ok "LICENSE.kmp-lsp"
 
 if [ "$sign" = "adhoc" ]; then
     sign_adhoc
