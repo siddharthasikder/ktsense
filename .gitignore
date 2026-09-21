@@ -13,3 +13,11 @@
 # local engine cache and daemon sockets
 .ktsense/
 *.sock
+
+# Eclipse Buildship metadata: running the engine against a fixture triggers a Gradle import that
+# writes these into the fixture tree, including bin/ copies of the .kt sources. Generated, never source.
+/fixtures/**/.project
+/fixtures/**/.classpath
+/fixtures/**/.settings/
+/fixtures/**/.gradle/
+/fixtures/**/bin/

@@ -677,10 +677,16 @@ fn present(
 }
 
 /// Directory names never worth walking into: version control, build output, and editor state.
+///
+/// `bin` is here because running `kmp-lsp` against a Gradle project triggers an Eclipse Buildship
+/// import, and that import writes `bin/main/` containing verbatim copies of the `.kt` sources. A
+/// traversal that descends into it counts every source twice, which silently doubles file counts and
+/// puts the copy ahead of the original in centrality ranking, because `bin` sorts before `src`.
 const IGNORED_DIRS: &[&str] = &[
     ".git",
     "target",
     "build",
+    "bin",
     ".gradle",
     ".idea",
     "node_modules",
@@ -947,6 +953,31 @@ mod tests {
                 "already/relative.kt".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn a_buildship_bin_copy_of_a_source_is_not_walked_alongside_the_original() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("root");
+        let source = "package shop\n";
+        for relative in [
+            "core/src/main/kotlin/shop/A.kt",
+            "core/bin/main/shop/A.kt",
+            "core/build/classes/kotlin/shop/A.kt",
+            ".gradle/cached/shop/A.kt",
+        ] {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().expect("parent")).expect("create tree");
+            fs::write(&path, source).expect("write file");
+        }
+
+        let walked: Vec<String> = collect_kotlin_files(&root)
+            .expect("walks the tree")
+            .iter()
+            .map(|path| normalized_path(&root, path))
+            .collect();
+
+        assert_eq!(walked, ["core/src/main/kotlin/shop/A.kt"]);
     }
 
     #[test]
