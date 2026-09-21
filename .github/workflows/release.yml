@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to stage the artifacts under, without the leading v
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            builder: zigbuild
+            runnable: true
+          # ubuntu-latest is x64, so the aarch64 binary cannot be executed where it is built.
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            builder: zigbuild
+            runnable: false
+          # GitHub retired macos-13 on 2025-12-04 and macos-15-intel is the x86_64 label that
+          # replaced it; macos-14 is itself deprecated until 2026-11-02, so both darwin jobs sit on
+          # the macOS 15 images.
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            builder: cargo
+            runnable: true
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            builder: cargo
+            runnable: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustup show active-toolchain
+
+      - name: Install zig
+        if: matrix.builder == 'zigbuild'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache-key: ${{ matrix.target }}
+
+      - name: Install cargo-zigbuild
+        if: matrix.builder == 'zigbuild'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.23.4
+
+      - name: Cross-compile for musl
+        if: matrix.builder == 'zigbuild'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo zigbuild --release --locked --target "$TARGET" -p ktsense-cli
+
+      - name: Build natively for darwin
+        if: matrix.builder == 'cargo'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET" -p ktsense-cli
+
+      - name: Stage the artifact
+        id: stage
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="ktsense-$VERSION-$TARGET"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/ktsense" "dist/$name/ktsense"
+          file "dist/$name/ktsense"
+          ls -l "dist/$name/ktsense"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Musl binary is statically linked
+        if: matrix.builder == 'zigbuild'
+        env:
+          NAME: ${{ steps.stage.outputs.name }}
+        run: file "dist/$NAME/ktsense" | grep -F 'statically linked'
+
+      - name: Binary runs
+        if: matrix.runnable
+        env:
+          NAME: ${{ steps.stage.outputs.name }}
+        run: |
+          "dist/$NAME/ktsense" --version
+
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: dist/${{ steps.stage.outputs.name }}
+          if-no-files-found: error
