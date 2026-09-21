@@ -11,6 +11,8 @@
 
 use std::path::Path;
 use std::process::Command;
+#[cfg(feature = "real-lsp")]
+use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 
@@ -263,5 +265,118 @@ fn routed(runtime_dir: &Path, args: &[&str], knob: &str) -> Run {
         code: output.status.code(),
         stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
         stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+    }
+}
+
+/// KT-28: a warm daemon caches parsed skeletons, so it must still see a source edit. An edit to a
+/// file the daemon has already outlined is reflected in the next routed outline, and within the
+/// two-second budget the card fixes. `KTSENSE_REQUIRE_DAEMON=1` forbids the in-process fallback so
+/// the edit is proven to have travelled through the live socket, not around it. The fixture is
+/// copied to a scratch workspace first, so the edit never touches the checked-in tree.
+#[cfg(feature = "real-lsp")]
+const REFRESH_BUDGET: Duration = Duration::from_secs(2);
+
+#[cfg(feature = "real-lsp")]
+#[test]
+fn an_edited_fixture_is_reflected_in_the_daemon_outline_within_the_refresh_budget() {
+    let runtime = tempfile::tempdir().expect("runtime dir");
+    let workspace = tempfile::tempdir().expect("workspace copy");
+    copy_tree(Path::new(FIXTURE_ROOT), workspace.path());
+    let root = workspace.path();
+    let target = root.join("core/src/main/kotlin/shop/order/OrderRepository.kt");
+
+    let started = daemon_rooted(runtime.path(), root, &["daemon", "start"]);
+    let before = outline_via_daemon(runtime.path(), root, &target);
+
+    std::fs::write(&target, EDITED_ORDER_REPOSITORY).expect("edit the copied fixture");
+    let observed_at = Instant::now();
+    let after = outline_via_daemon(runtime.path(), root, &target);
+    let elapsed = observed_at.elapsed();
+
+    let stopped = daemon_rooted(runtime.path(), root, &["daemon", "stop"]);
+
+    assert_eq!(
+        (
+            started.code,
+            (before.code, before.stdout.contains("purge")),
+            (
+                after.code,
+                after.stdout.contains("purge"),
+                after.stderr.is_empty()
+            ),
+            elapsed <= REFRESH_BUDGET,
+            stopped.code,
+        ),
+        (
+            Some(0),
+            (Some(0), false),
+            (Some(0), true, true),
+            true,
+            Some(0),
+        ),
+        "start: {} / after edit: {}",
+        started.stderr,
+        after.stderr,
+    );
+}
+
+#[cfg(feature = "real-lsp")]
+const FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/multi-module");
+
+#[cfg(feature = "real-lsp")]
+const EDITED_ORDER_REPOSITORY: &str = "package shop.order\n\ninterface OrderRepository {\n    fun save(order: Order): OrderId\n\n    fun findById(id: OrderId): Order?\n\n    fun purge(id: OrderId)\n}\n";
+
+#[cfg(feature = "real-lsp")]
+fn daemon_rooted(runtime_dir: &Path, root: &Path, args: &[&str]) -> Run {
+    let output = Command::cargo_bin("ktsense")
+        .expect("binary builds")
+        .current_dir(WORKSPACE_ROOT)
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env("KTSENSE_DAEMON_IDLE_SECS", "20")
+        .args(args)
+        .args(["--root", root.to_str().expect("utf-8 root")])
+        .output()
+        .expect("binary runs");
+    Run {
+        code: output.status.code(),
+        stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+    }
+}
+
+#[cfg(feature = "real-lsp")]
+fn outline_via_daemon(runtime_dir: &Path, root: &Path, target: &Path) -> Run {
+    let output = Command::cargo_bin("ktsense")
+        .expect("binary builds")
+        .current_dir(WORKSPACE_ROOT)
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env("KTSENSE_REQUIRE_DAEMON", "1")
+        .args([
+            "--root",
+            root.to_str().expect("utf-8 root"),
+            "outline",
+            target.to_str().expect("utf-8 target"),
+        ])
+        .output()
+        .expect("binary runs");
+    Run {
+        code: output.status.code(),
+        stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+    }
+}
+
+#[cfg(feature = "real-lsp")]
+fn copy_tree(from: &Path, to: &Path) {
+    for entry in std::fs::read_dir(from).expect("read source dir") {
+        let entry = entry.expect("dir entry");
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            std::fs::create_dir_all(&destination).expect("create dir");
+            copy_tree(&source, &destination);
+        } else {
+            std::fs::copy(&source, &destination).expect("copy file");
+        }
     }
 }

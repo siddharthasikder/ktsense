@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod cache;
 mod context;
 mod daemon;
 mod routing;
