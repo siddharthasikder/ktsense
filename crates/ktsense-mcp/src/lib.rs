@@ -17,13 +17,17 @@
 #![forbid(unsafe_code)]
 
 mod citations;
+mod roots;
 mod server;
+mod warm;
 
 pub use citations::{index_answer, Answer, Citation, MAX_CITATIONS};
+pub use roots::ClientRoots;
 pub use server::{
     serve, ExecutableRunner, Format, Invocation, KtsenseServer, Request, Runner, RunnerError,
     ServerConfig,
 };
+pub use warm::{EngineWarmer, WarmEngines, Warmer, Warmth, DEFAULT_WARM_UP_BOUND};
 
 /// What has to be installed and settled before a tool can answer, which is the first thing an
 /// agent needs to know about it and the one thing it cannot discover by trying.
@@ -66,6 +70,16 @@ pub struct Tool {
     /// not-implemented error. Held as data so the description, the documentation and the session
     /// test read the same fact from one place.
     pub pending_card: Option<&'static str>,
+    /// Whether a settled index changes what this tool answers, rather than only how fast.
+    ///
+    /// Not the same question as [`Tool::requires`], and measured rather than assumed. On ktor with an
+    /// empty engine cache, `find_kotlin_symbol` comes back with four candidates for one class,
+    /// because the engine's `find` falls back to a text search, and `trace_kotlin_symbol` then exits
+    /// ambiguous instead of answering at all; against a settled index both are exact. So `symbols`
+    /// requires no index wait and is still shaped by one. `check_kotlin_syntax` is the other side of
+    /// that line: it needs the engine and parses one file, and an index would change nothing, which
+    /// is why it is not made to wait for one.
+    pub index_shapes_answer: bool,
 }
 
 pub const OUTLINE: Tool = Tool {
@@ -73,6 +87,7 @@ pub const OUTLINE: Tool = Tool {
     cli_command: "outline",
     requires: Requirement::Nothing,
     pending_card: None,
+    index_shapes_answer: false,
 };
 
 pub const SYMBOLS: Tool = Tool {
@@ -80,6 +95,7 @@ pub const SYMBOLS: Tool = Tool {
     cli_command: "symbols",
     requires: Requirement::Engine,
     pending_card: None,
+    index_shapes_answer: true,
 };
 
 pub const TRACE: Tool = Tool {
@@ -87,6 +103,7 @@ pub const TRACE: Tool = Tool {
     cli_command: "trace",
     requires: Requirement::EngineIndex,
     pending_card: None,
+    index_shapes_answer: true,
 };
 
 pub const DEPS: Tool = Tool {
@@ -94,6 +111,7 @@ pub const DEPS: Tool = Tool {
     cli_command: "deps",
     requires: Requirement::Nothing,
     pending_card: None,
+    index_shapes_answer: false,
 };
 
 pub const MAP: Tool = Tool {
@@ -101,6 +119,7 @@ pub const MAP: Tool = Tool {
     cli_command: "map",
     requires: Requirement::Nothing,
     pending_card: None,
+    index_shapes_answer: false,
 };
 
 pub const CHECK: Tool = Tool {
@@ -108,6 +127,7 @@ pub const CHECK: Tool = Tool {
     cli_command: "check",
     requires: Requirement::Engine,
     pending_card: None,
+    index_shapes_answer: false,
 };
 
 pub const CONTEXT: Tool = Tool {
@@ -115,6 +135,7 @@ pub const CONTEXT: Tool = Tool {
     cli_command: "context",
     requires: Requirement::EngineIndex,
     pending_card: Some("KT-35"),
+    index_shapes_answer: true,
 };
 
 pub const STATUS: Tool = Tool {
@@ -122,6 +143,7 @@ pub const STATUS: Tool = Tool {
     cli_command: "status",
     requires: Requirement::Nothing,
     pending_card: None,
+    index_shapes_answer: false,
 };
 
 /// Every tool the MCP server exposes, paired with the CLI command it delegates to.
@@ -155,24 +177,32 @@ mod tests {
     }
 
     #[test]
-    fn a_requirement_names_what_must_be_installed_not_how_cheap_the_call_is() {
-        let observed: Vec<(&str, &str)> = TOOLS
+    fn a_requirement_names_what_must_be_installed_and_is_not_the_same_as_being_shaped_by_the_index()
+    {
+        let observed: Vec<(&str, &str, bool)> = TOOLS
             .iter()
-            .map(|tool| (tool.cli_command, tool.requires.label()))
+            .map(|tool| {
+                (
+                    tool.cli_command,
+                    tool.requires.label(),
+                    tool.index_shapes_answer,
+                )
+            })
             .collect();
 
         assert_eq!(
             observed,
             [
-                ("outline", "nothing"),
-                ("symbols", "kmp-lsp"),
-                ("trace", "kmp-lsp and a settled index"),
-                ("deps", "nothing"),
-                ("map", "nothing"),
-                ("check", "kmp-lsp"),
-                ("context", "kmp-lsp and a settled index"),
-                ("status", "nothing"),
-            ]
+                ("outline", "nothing", false),
+                ("symbols", "kmp-lsp", true),
+                ("trace", "kmp-lsp and a settled index", true),
+                ("deps", "nothing", false),
+                ("map", "nothing", false),
+                ("check", "kmp-lsp", false),
+                ("context", "kmp-lsp and a settled index", true),
+                ("status", "nothing", false),
+            ],
+            "symbols waits for no index and is still shaped by one; check needs the engine and is not"
         );
     }
 }

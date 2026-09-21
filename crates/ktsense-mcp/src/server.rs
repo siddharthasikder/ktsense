@@ -6,13 +6,20 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, JsonObject, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, JsonObject,
+    ServerCapabilities, ServerInfo,
 };
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
+use rmcp::service::{NotificationContext, RequestContext};
+use rmcp::{
+    tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler, ServiceExt,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio::sync::RwLock;
 
 use crate::citations::{index_answer, Answer};
+use crate::roots::ClientRoots;
+use crate::warm::{EngineWarmer, WarmEngines};
 use crate::Tool;
 
 /// Exit codes the CLI documents as answers rather than failures: success, and an ambiguous name,
@@ -76,6 +83,11 @@ pub trait Runner: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Invocation, RunnerError>> + Send + '_>,
     >;
+
+    /// The root this runner answers about when a request names none, which is what the server has to
+    /// know to keep the right workspace warm. The runner owns that default, so it reports it rather
+    /// than the server holding a second copy that could disagree.
+    fn default_root(&self) -> PathBuf;
 }
 
 /// Runs the `ktsense` binary at `binary` with the configured default root.
@@ -125,6 +137,10 @@ impl Runner for ExecutableRunner {
             })
         })
     }
+
+    fn default_root(&self) -> PathBuf {
+        self.root.clone()
+    }
 }
 
 /// How the server finds the binary it delegates to and which workspace it answers about by
@@ -135,13 +151,17 @@ pub struct ServerConfig {
     pub root: PathBuf,
 }
 
-/// Serves the tools over stdio until the client disconnects.
+/// Serves the tools over stdio until the client disconnects, holding a warm engine for any root
+/// whose index-dependent tools get used and that no daemon is already keeping warm.
 pub async fn serve(config: ServerConfig) -> anyhow::Result<()> {
     let runner = ExecutableRunner::new(config.binary, config.root);
-    let running = KtsenseServer::new(Arc::new(runner))
+    let engines = Arc::new(WarmEngines::new(Arc::new(EngineWarmer::default())));
+    let running = KtsenseServer::warming(Arc::new(runner), engines.clone())
         .serve(rmcp::transport::stdio())
         .await?;
-    running.waiting().await?;
+    let outcome = running.waiting().await;
+    engines.close().await;
+    outcome?;
     Ok(())
 }
 
@@ -235,18 +255,40 @@ fn answer_schema() -> Arc<JsonObject> {
         .expect("Answer is a struct, so its schema is a JSON object")
 }
 
+/// How long the server waits for a client to answer `roots/list` before deciding it has no usable
+/// roots. Generous, since the client may be prompting a person, and finite so a client that
+/// advertises the capability and then never answers cannot wedge every tool call.
+const ROOTS_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The MCP server. Every tool builds a CLI argument list and hands it to the runner.
 #[derive(Clone)]
 pub struct KtsenseServer {
     runner: Arc<dyn Runner>,
     tool_router: ToolRouter<Self>,
+    /// The roots the client advertised, fetched once and cleared when it says they changed. `None`
+    /// means not asked yet; an empty `ClientRoots` means asked, and there are none to use.
+    client_roots: Arc<RwLock<Option<ClientRoots>>>,
+    warm: Option<Arc<WarmEngines>>,
 }
 
 impl KtsenseServer {
+    /// A server that answers tool calls and holds no warm engine, which is what the unit tests and
+    /// the catalogue snapshot need.
     pub fn new(runner: Arc<dyn Runner>) -> Self {
         Self {
             runner,
             tool_router: Self::tool_router(),
+            client_roots: Arc::new(RwLock::new(None)),
+            warm: None,
+        }
+    }
+
+    /// A server that additionally keeps an engine warm for the roots whose index-dependent tools get
+    /// used, unless a daemon is already holding one.
+    pub fn warming(runner: Arc<dyn Runner>, engines: Arc<WarmEngines>) -> Self {
+        Self {
+            warm: Some(engines),
+            ..Self::new(runner)
         }
     }
 
@@ -255,13 +297,104 @@ impl KtsenseServer {
         self.tool_router.list_all()
     }
 
+    /// The root a call is about: its own argument, else the advertised root holding `subject`, else
+    /// `None` so the runner uses the root the server was started with.
+    async fn root_for(&self, call: Option<String>, subject: Option<&str>) -> Option<String> {
+        let advertised = self.client_roots.read().await.clone().unwrap_or_default();
+        advertised.resolve(call, subject)
+    }
+
+    /// Asks the client for its roots, once. Called before every dispatch rather than from the
+    /// `initialized` notification, so the answer is in hand before any tool body reads it instead of
+    /// racing a notification handler.
+    async fn learn_roots(&self, peer: &Peer<RoleServer>) {
+        if self.client_roots.read().await.is_some() {
+            return;
+        }
+        let advertised = ClientRoots::new(advertised_roots(peer).await);
+        self.client_roots.write().await.replace(advertised);
+    }
+
+    /// Makes sure an engine is warm for the root this call is about, when the index would shape the
+    /// answer. Never fails the call: a root that could not be warmed is answered anyway, just from a
+    /// cold index.
+    async fn keep_warm(&self, tool: &Tool, request: &Request) {
+        if !tool.index_shapes_answer {
+            return;
+        }
+        let Some(engines) = self.warm.as_ref() else {
+            return;
+        };
+        let root = request
+            .root
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.runner.default_root());
+        let warmth = engines
+            .ensure(&root, || self.daemon_holds(root.clone()))
+            .await;
+        tracing::debug!(root = %root.display(), ?warmth, "engine warmth for this root");
+    }
+
+    /// Whether a daemon is already holding a warm session for `root`, asked of our own `status`
+    /// command in JSON. The state is read from a field rather than matched in prose: `no daemon
+    /// running` contains `daemon running`, and KT-38 records a benchmark that believed a daemon was
+    /// live for exactly that reason.
+    async fn daemon_holds(&self, root: PathBuf) -> bool {
+        let probe = Request {
+            args: vec![crate::STATUS.cli_command.to_string()],
+            root: Some(root.display().to_string()),
+            format: Format::Json,
+        };
+        let Ok(invocation) = self.runner.run(probe).await else {
+            return false;
+        };
+        serde_json::from_str::<serde_json::Value>(&invocation.stdout)
+            .ok()
+            .and_then(|report| report["daemon"]["state"].as_str().map(str::to_string))
+            .is_some_and(|state| state == "running")
+    }
+
     async fn invoke(&self, tool: &Tool, request: Request) -> Result<CallToolResult, ErrorData> {
+        self.keep_warm(tool, &request).await;
         let invocation = self
             .runner
             .run(request)
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
         Ok(present(tool, invocation))
+    }
+}
+
+/// The client's roots, or none when it never advertised the capability, declined, or did not answer
+/// within [`ROOTS_BOUND`].
+///
+/// `Peer::list_roots` is deprecated in rmcp 2.2.0 because SEP-2577 deprecates roots protocol-wide,
+/// but it is still what every client that has roots speaks, and answering about the wrong workspace
+/// is the failure this prevents. The allow is scoped to this one call so the deprecation stays
+/// visible everywhere else.
+#[allow(deprecated)]
+async fn advertised_roots(peer: &Peer<RoleServer>) -> Vec<PathBuf> {
+    let declared = peer
+        .peer_info()
+        .is_some_and(|info| info.capabilities.roots.is_some());
+    if !declared {
+        return Vec::new();
+    }
+    match tokio::time::timeout(ROOTS_BOUND, peer.list_roots()).await {
+        Ok(Ok(listed)) => listed
+            .roots
+            .iter()
+            .map(|root| ktsense_lsp::uri_to_path(&root.uri))
+            .collect(),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "client declared roots but could not list them");
+            Vec::new()
+        }
+        Err(_elapsed) => {
+            tracing::warn!(bound = ?ROOTS_BOUND, "client did not answer roots/list");
+            Vec::new()
+        }
     }
 }
 
@@ -336,7 +469,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<OutlineParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::OUTLINE, params.root)
+        let root = self.root_for(params.root, Some(&params.file)).await;
+        let args = Args::for_tool(&crate::OUTLINE, root)
             .positional(params.file)
             .flag("private", params.private)
             .flag("kdoc", params.kdoc);
@@ -345,7 +479,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "find_kotlin_symbol",
-        description = "Answers where a name is declared: kind, file, line and signature for every declaration carrying it. Prefer it over grep, which also finds uses and cannot tell a class from a local. Several matches come back as a list to choose from; pass pick with one fully-qualified name to narrow. requires: kmp-lsp. cost: about 300 ms on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+        description = "Answers where a name is declared: kind, file, line and signature for every declaration carrying it. Prefer it over grep, which also finds uses and cannot tell a class from a local. Several matches come back as a list to choose from; pass pick with one fully-qualified name to narrow. Against an unsettled index the engine falls back to a text search and one declaration can come back as several candidates, so check ktsense_status when a result looks duplicated. requires: kmp-lsp. cost: about 300 ms on 1861 files (ktor 3.0.1, median of 9, KT-38).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -353,7 +487,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<SymbolParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::SYMBOLS, params.root)
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::SYMBOLS, root)
             .positional(params.query)
             .option("kind", params.kind)
             .option("limit", params.limit)
@@ -371,7 +506,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<TraceParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::TRACE, params.root)
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::TRACE, root)
             .positional(params.symbol)
             .option("pick", params.pick)
             .option("depth", params.depth)
@@ -389,7 +525,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<DepsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::DEPS, params.root).option("level", params.level);
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::DEPS, root).option("level", params.level);
         self.invoke(&crate::DEPS, args.0).await
     }
 
@@ -403,7 +540,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<MapParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::MAP, params.root).option("budget", params.budget);
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::MAP, root).option("budget", params.budget);
         self.invoke(&crate::MAP, args.0).await
     }
 
@@ -417,7 +555,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<CheckParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::CHECK, params.root).positional(params.path);
+        let root = self.root_for(params.root, Some(&params.path)).await;
+        let args = Args::for_tool(&crate::CHECK, root).positional(params.path);
         self.invoke(&crate::CHECK, args.0).await
     }
 
@@ -431,7 +570,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<ContextParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::CONTEXT, params.root)
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::CONTEXT, root)
             .positional(params.symbol)
             .option("budget", params.budget);
         self.invoke(&crate::CONTEXT, args.0).await
@@ -447,7 +587,8 @@ impl KtsenseServer {
         &self,
         Parameters(params): Parameters<StatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args = Args::for_tool(&crate::STATUS, params.root);
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::STATUS, root);
         self.invoke(&crate::STATUS, args.0).await
     }
 }
@@ -478,6 +619,26 @@ impl ServerHandler for KtsenseServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("ktsense", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
+    }
+
+    /// Learns the client's roots before dispatching, so a tool body reads an answer that is already
+    /// in hand. Doing it here rather than from the `initialized` notification is what makes the
+    /// choice of root deterministic: notifications are handled in their own task, which a tool call
+    /// arriving straight afterwards can overtake.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.learn_roots(&context.peer).await;
+        let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(call).await
+    }
+
+    /// The client says its roots changed, so the cached answer is dropped and the next call asks
+    /// again. A root list that went stale would send answers to the wrong workspace.
+    async fn on_roots_list_changed(&self, _context: NotificationContext<RoleServer>) {
+        self.client_roots.write().await.take();
     }
 }
 
@@ -526,6 +687,10 @@ mod tests {
             self.calls.lock().unwrap().push(request);
             let reply = self.reply.clone();
             Box::pin(async move { Ok(reply) })
+        }
+
+        fn default_root(&self) -> PathBuf {
+            PathBuf::from("/repo")
         }
     }
 
@@ -691,6 +856,100 @@ mod tests {
                 json!("ktsense: no declaration named ZzzNope"),
                 Some(json!(1)),
             )
+        );
+    }
+    /// Charges a fixed cost the first time a root is warmed, standing in for an engine launch and
+    /// its index build. A real engine cannot be assumed present in the default suite, and an
+    /// injected cost is what makes the bound below a fact rather than a race.
+    struct Slow {
+        opens: std::sync::atomic::AtomicUsize,
+        cost: std::time::Duration,
+    }
+
+    impl crate::Warmer for Slow {
+        fn open(
+            &self,
+            _root: PathBuf,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async move {
+                self.opens
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(self.cost).await;
+                Ok(())
+            })
+        }
+
+        fn close(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async {})
+        }
+    }
+
+    /// The cost charged for one warm-up. Large enough that the first call cannot finish inside the
+    /// noise of a shared host, small enough that the test stays quick.
+    const WARM_UP: std::time::Duration = std::time::Duration::from_millis(300);
+
+    /// What the second call must come in under. Deliberately half the warm-up rather than something
+    /// tight: four agents share this host, so a bound within a few milliseconds of the truth would be
+    /// a flaky test rather than a strong one. The second call does a mutex acquisition, a recorded
+    /// runner reply and an in-memory citation index, so the real figure is microseconds and the
+    /// margin here is three orders of magnitude.
+    const SECOND_CALL_BOUND: std::time::Duration = std::time::Duration::from_millis(150);
+
+    #[tokio::test]
+    async fn the_engine_is_warmed_once_per_root_so_the_second_index_backed_call_skips_the_warm_up()
+    {
+        let warmer = Arc::new(Slow {
+            opens: std::sync::atomic::AtomicUsize::new(0),
+            cost: WARM_UP,
+        });
+        let runner = Recorded::replying(0, "# Trace: save\n\nindex: complete\n", "");
+        let server = KtsenseServer::warming(
+            runner.clone(),
+            Arc::new(crate::WarmEngines::new(warmer.clone())),
+        );
+        let trace = || {
+            Parameters(TraceParams {
+                symbol: "save".to_string(),
+                pick: None,
+                depth: None,
+                limit: None,
+                root: None,
+            })
+        };
+
+        let started = std::time::Instant::now();
+        server.trace_kotlin_symbol(trace()).await.expect("first");
+        let first = started.elapsed();
+        let started = std::time::Instant::now();
+        server.trace_kotlin_symbol(trace()).await.expect("second");
+        let second = started.elapsed();
+
+        let commands: Vec<String> = runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| format!("{} {:?}", request.args[0], request.format))
+            .collect();
+        assert_eq!(
+            (
+                warmer.opens.load(std::sync::atomic::Ordering::Relaxed),
+                commands,
+                first >= WARM_UP,
+                second < SECOND_CALL_BOUND,
+            ),
+            (
+                1,
+                vec![
+                    "status Json".to_string(),
+                    "trace Md".to_string(),
+                    "trace Md".to_string(),
+                ],
+                true,
+                true,
+            ),
+            "first={first:?} second={second:?}"
         );
     }
 }

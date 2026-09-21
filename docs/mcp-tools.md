@@ -36,7 +36,6 @@ those fast would be the most misleading thing on the page.
 
 So requirement and cost are now two separate markers. `requires:` names what has to be installed
 and settled, in three states; `cost:` carries a measured number or admits there is none.
-
 | Tool | Command | `requires:` | `cost:` | Source |
 |---|---|---|---|---|
 | `get_kotlin_outline` | `outline` | nothing | ~30 ms, 54 KB file | KT-38 |
@@ -68,6 +67,82 @@ engine-backed tools only `trace_kotlin_symbol` refuses an incompatible engine ma
 The server `instructions` say exactly that rather than claiming version safety across the board.
 `ktsense_status` reports the installed version and its compatibility, and never fails for a missing
 engine: absence is the state a caller runs it to learn.
+
+## Needing an index and being shaped by one are different questions
+
+`requires:` says what has to be there before a tool can answer at all. Whether a settled index
+changes *what* it answers is a separate fact, held separately in the catalogue as
+`index_shapes_answer`, and it was measured rather than assumed.
+
+On ktor with a provably empty engine cache, `find_kotlin_symbol` returns four candidates for one
+class, all in the same file at lines 28, 162, 301 and 352, because the engine's `find` falls back to a
+text search when it has no index. `trace_kotlin_symbol` then exits ambiguous in 85 ms instead of
+answering. Against a settled index both are exact: one candidate, and a trace marked
+`index: complete`. So `find_kotlin_symbol` waits for no index, which is what `requires: kmp-lsp` says,
+and is still shaped by one, which its description now warns about. `check_kotlin_syntax` is the other
+side of that line: it needs the engine, parses one file, and an index would change nothing.
+
+The distinction is what decides which tools warm a root, below.
+
+## Roots, and which workspace a call is about
+
+Three sources, in order:
+
+1. The call's own `root` argument. The caller was specific, so nothing overrides it.
+2. The roots the client advertised through `roots/list`: the first one that holds the file or
+   directory the call names, else the first one it listed.
+3. Neither, in which case the root the server was started with is used: `--root`, and failing that
+   the working directory. That fallback already lives in the CLI and is not duplicated here.
+
+Picking the root that holds the requested file is not a nicety. AGENTS.md records that a widened root
+does not fail, it answers about the wrong code, and an editor with two projects open advertises both.
+Containment is decided against the filesystem: an absolute subject by prefix, resolving symlinks when
+a textual compare would miss, and a relative one by whether it actually exists under that root, since
+the same relative path is valid under several roots at once.
+
+The server asks for roots inside `call_tool`, before dispatching, rather than from the `initialized`
+notification. rmcp handles notifications in their own task, which a tool call arriving straight
+afterwards can overtake, so fetching there would make the choice of root a race. It asks once, caches
+the answer, and drops the cache when the client sends `roots/list_changed`. A client that never
+declared the roots capability is never asked.
+
+`Peer::list_roots` is deprecated in rmcp 2.2.0, because SEP-2577 deprecates roots protocol-wide. It
+is still what every client that has roots speaks, so it is used, with the deprecation allowed at that
+one call site and nowhere else.
+
+## The warm engine, and what holding one actually buys
+
+When a root's index would shape an answer and no daemon is holding a session for it, the MCP server
+opens one `kmp-lsp` session itself and keeps it alive until it stops serving. Tool calls are still
+answered by a delegated `ktsense` child; the held session answers nothing. What it does is build the
+workspace index, which the children then read from the engine's on-disk cache.
+
+That distinction matters, because the benefit is not the one you would guess. Measured on ktor with a
+provably empty cache:
+
+| | first call | second | third |
+|---|---|---|---|
+| through the MCP server, holding a warm engine | 2347 ms, `index: complete` | 1178 ms | 1180 ms |
+| the same `trace` straight from the CLI | 85 ms, **exit 3 ambiguous** | 85 ms, ambiguous | 85 ms, ambiguous |
+
+The CLI arm never answers. Its `find` text-searches a cold index, gets four candidates, and exits
+ambiguous every time, because nothing in that arm ever builds the index. The warm session builds it
+once, 1861 files and 29,575 symbols, and every call after that is exact. Running the same three CLI
+traces against the cache the warm session left behind gives `index: complete` in 1.18 s each.
+
+So the first index-shaped call on a new repository pays about a second for the warm-up, and
+everything after it is both faster and correct. On a tiny tree the warm-up is a pure cost: on the
+9-file fixture the same experiment gives 1201, 567, 565 ms through the server against 671, 567, 568 ms
+from the CLI, because a 9-file text search resolves correctly anyway. The benefit scales with the
+repository, which is the case an agent meeting an unfamiliar codebase is actually in.
+
+Warming never fails a call. A launch that fails or exceeds its 30 second bound is logged and the call
+is delegated anyway, from a cold index. Every held session is shut down when the server stops
+serving, which was checked by counting `kmp-lsp` processes before and after: none is left behind.
+
+`check_kotlin_syntax` deliberately does not warm anything. It is the tool an agent calls after every
+edit, its answer does not depend on an index, and making the first check after a change pay a session
+launch would be a straight regression on the loop it exists for.
 
 ## `structuredContent`
 
@@ -122,7 +197,9 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
       measurements recorded in `.agents/scratchpad/ktsense/KT-32.md`; the one tool with no
       measurement says `unmeasured` rather than guessing, and says why.
 - [x] No description calls a whole-tree tool fast. `deps` and `map` state their measured seconds.
-- [x] `trace_kotlin_symbol` states that `index: partial` is a lower bound rather than the answer.
+- [x] `trace_kotlin_symbol` states that `index: partial` is a lower bound rather than the answer, and
+      `find_kotlin_symbol` states that an unsettled index can duplicate one declaration into several
+      candidates.
 - [x] Accuracy honesty: resolution is stated as syntactic in the server instructions, and
       `analyze_kotlin_dependencies` states that its edges are imports rather than type-checked
       references.

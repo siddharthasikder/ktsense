@@ -1,6 +1,5 @@
 ---
 source: crates/ktsense-mcp/tests/tools_list.rs
-assertion_line: 21
 expression: listed
 ---
 {
@@ -391,7 +390,7 @@ expression: listed
     },
     {
       "name": "find_kotlin_symbol",
-      "description": "Answers where a name is declared: kind, file, line and signature for every declaration carrying it. Prefer it over grep, which also finds uses and cannot tell a class from a local. Several matches come back as a list to choose from; pass pick with one fully-qualified name to narrow. requires: kmp-lsp. cost: about 300 ms on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+      "description": "Answers where a name is declared: kind, file, line and signature for every declaration carrying it. Prefer it over grep, which also finds uses and cannot tell a class from a local. Several matches come back as a list to choose from; pass pick with one fully-qualified name to narrow. Against an unsettled index the engine falls back to a text search and one declaration can come back as several candidates, so check ktsense_status when a result looks duplicated. requires: kmp-lsp. cost: about 300 ms on 1861 files (ktor 3.0.1, median of 9, KT-38).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
