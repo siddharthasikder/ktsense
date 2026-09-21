@@ -110,7 +110,10 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
         .unwrap_or_default();
 
     let observed = (
-        init["result"]["serverInfo"]["name"].clone(),
+        (
+            init["result"]["serverInfo"]["name"].clone(),
+            init["result"]["serverInfo"]["version"].clone(),
+        ),
         init["result"]["capabilities"]["tools"].is_object(),
         names,
         every_schema_is_an_object,
@@ -129,7 +132,7 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
     assert_eq!(
         observed,
         (
-            json!("ktsense"),
+            (json!("ktsense"), json!(ktsense_lsp::KTSENSE_VERSION)),
             true,
             vec![
                 "analyze_kotlin_dependencies",

@@ -40,9 +40,6 @@ pub use trace::{
     TraceInput, TraceReport,
 };
 
-/// Version reported by every front-end, sourced from the workspace manifest.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Estimates the token cost of rendered output so budgeted commands can stop in time.
 ///
 /// The default implementation is a byte-ratio approximation rather than a real tokenizer, so a

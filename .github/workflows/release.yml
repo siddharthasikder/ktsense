@@ -56,11 +56,17 @@ jobs:
       - name: Resolve the release version
         id: version
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_INPUT_VERSION: ${{ inputs.version }}
+          PUSHED_TAG: ${{ github.ref_name }}
         run: |
-          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            raw="$MANUAL_INPUT_VERSION"
+          else
+            raw="$PUSHED_TAG"
+          fi
+          version="$(scripts/release-version.sh "$raw")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Install pinned toolchain
         env:
@@ -87,12 +93,14 @@ jobs:
         if: matrix.builder == 'zigbuild'
         env:
           TARGET: ${{ matrix.target }}
+          KTSENSE_BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: cargo zigbuild --release --locked --target "$TARGET" -p ktsense-cli
 
       - name: Build natively for darwin
         if: matrix.builder == 'cargo'
         env:
           TARGET: ${{ matrix.target }}
+          KTSENSE_BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: cargo build --release --locked --target "$TARGET" -p ktsense-cli
 
       - name: Acquire the pinned upstream engine
@@ -127,12 +135,13 @@ jobs:
           NAME: ${{ steps.stage.outputs.name }}
         run: file "dist/$NAME/bin/ktsense" | grep -F 'statically linked'
 
-      - name: Binary runs and finds its bundled engine
+      - name: Packaged binary reports the release version
         if: matrix.runnable
         env:
           NAME: ${{ steps.stage.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          "dist/$NAME/bin/ktsense" --version
+          "dist/$NAME/bin/ktsense" --version | tee /dev/stderr | grep -Fxq "ktsense $VERSION"
 
       - name: Engine reports the pinned version
         if: matrix.runnable

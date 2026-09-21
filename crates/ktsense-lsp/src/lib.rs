@@ -28,7 +28,7 @@ pub use symbols::{
 };
 pub use version::{
     check_version, check_version_within, classify, reported_version, Compatibility, VersionCheck,
-    PINNED_UPSTREAM_VERSION,
+    KTSENSE_VERSION, PINNED_UPSTREAM_VERSION,
 };
 
 use std::path::PathBuf;
