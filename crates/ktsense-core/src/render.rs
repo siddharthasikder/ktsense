@@ -56,6 +56,12 @@ const INFERRED_TYPE_MARKER: &str = "/* inferred */";
 /// bounded render announces itself rather than reading as a complete outline.
 const TRUNCATION_NOTICE: &str = "// truncated: nesting depth limit reached";
 
+/// Printed at the head of a skeleton recovered from a file with a localized parse error, so the
+/// declarations that follow are never read as the file's complete API. `bench/compress.sh` also
+/// keys the "recovered (partial)" tally on this exact prefix, so the two must stay in lockstep.
+const PARTIAL_NOTICE: &str =
+    "// partial: recovered around a parse error; some declarations may be missing";
+
 /// Width past which a single-member container opens braces instead of collapsing onto one line.
 /// Narrower than Kotlin's own 120-column guidance, because this output is read inside an agent's
 /// context window where a long line costs the same as several short ones but scans worse.
@@ -97,6 +103,9 @@ fn is_visible_api(visibility: Visibility) -> bool {
 /// The Kotlin-like skeleton body. No trailing newline, so callers decide how to join it.
 pub fn render_skeleton(file: &FileSkeleton, options: &RenderOptions) -> String {
     let mut writer = SkeletonWriter::new(options);
+    if file.partial {
+        writer.note_partial();
+    }
     writer.write_all(&file.declarations, 0);
     if file.truncated {
         writer.note_truncation(0);
@@ -517,6 +526,10 @@ impl<'a> SkeletonWriter<'a> {
     fn note_truncation(&mut self, depth: usize) {
         self.lines
             .push(format!("{}{TRUNCATION_NOTICE}", INDENT.repeat(depth)));
+    }
+
+    fn note_partial(&mut self) {
+        self.lines.push(PARTIAL_NOTICE.to_string());
     }
 
     fn write_doc(&mut self, declaration: &Declaration, padding: &str) {
@@ -980,6 +993,21 @@ mod tests {
         assert_eq!(
             render_skeleton(&file, &RenderOptions::default()),
             concat!("class C\n", "// truncated: nesting depth limit reached")
+        );
+    }
+
+    #[test]
+    fn a_partial_skeleton_leads_with_a_notice_so_recovered_declarations_never_read_as_complete() {
+        let file = FileSkeleton::new("broken.kt")
+            .with_declarations(vec![Declaration::function("survivor", 1)])
+            .marked_partial();
+
+        assert_eq!(
+            render_skeleton(&file, &RenderOptions::default()),
+            concat!(
+                "// partial: recovered around a parse error; some declarations may be missing\n",
+                "fun survivor()"
+            )
         );
     }
 

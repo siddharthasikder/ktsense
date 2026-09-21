@@ -37,6 +37,13 @@ pub struct FileSkeleton {
     /// [`MAX_NESTING_DEPTH`]. Set so a bounded outline is never read as a complete one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// True when the source held one or more localized parse errors and this skeleton is a
+    /// best-effort recovery of the declarations that parsed around them, not a complete extraction.
+    /// Set so recovered declarations are never read as the file's full API: the accuracy-honesty
+    /// rule forbids presenting a partial answer as a confident one. A complete extraction leaves it
+    /// false, and it is then absent from JSON, so complete output is unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 impl FileSkeleton {
@@ -47,6 +54,7 @@ impl FileSkeleton {
             imports: Vec::new(),
             declarations: Vec::new(),
             truncated: false,
+            partial: false,
         }
     }
 
@@ -69,6 +77,20 @@ impl FileSkeleton {
     pub fn marked_truncated(mut self) -> Self {
         self.truncated = true;
         self
+    }
+
+    /// Marks the outline as partial: it recovers the declarations that parsed around a localized
+    /// error, and is not a complete extraction.
+    pub fn marked_partial(mut self) -> Self {
+        self.partial = true;
+        self
+    }
+
+    /// True when nothing at all was recovered: no package, no imports, no declarations. A partial
+    /// extraction that is also empty carries no trustworthy structure, so the adapter reports a
+    /// failure rather than handing back a confident-looking empty skeleton.
+    pub fn is_empty(&self) -> bool {
+        self.package.is_none() && self.imports.is_empty() && self.declarations.is_empty()
     }
 
     /// Total declarations including nested ones, which is what a caller reports as "N symbols".
@@ -462,6 +484,26 @@ mod tests {
         assert_eq!(
             modifiers,
             vec![Modifier::Override, Modifier::Suspend, Modifier::Data]
+        );
+    }
+
+    #[test]
+    fn partial_is_absent_from_complete_json_and_present_only_when_a_file_is_marked_partial() {
+        let complete =
+            FileSkeleton::new("a.kt").with_declarations(vec![Declaration::class("A", 1)]);
+        let partial = complete.clone().marked_partial();
+
+        let complete_json = serde_json::to_string(&complete).expect("serialize complete");
+        let partial_json = serde_json::to_string(&partial).expect("serialize partial");
+
+        assert_eq!(
+            (
+                complete_json.contains("partial"),
+                partial_json.contains("\"partial\":true"),
+                serde_json::from_str::<FileSkeleton>(&partial_json).expect("round-trips")
+                    == partial,
+            ),
+            (false, true, true)
         );
     }
 }

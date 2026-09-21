@@ -169,6 +169,7 @@ fn outline_block(file: &FileSkeleton, declaration: &Declaration) -> Option<Strin
         imports: Vec::new(),
         declarations: vec![declaration.clone()],
         truncated: false,
+        partial: false,
     };
     let rendered = render_skeleton(&lone, &RenderOptions::default());
     (!rendered.is_empty()).then_some(rendered)

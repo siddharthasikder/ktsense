@@ -37,6 +37,15 @@ const TYPE_KINDS: &[&str] = &[
 ///
 /// `path` is carried through verbatim: this function does not touch the filesystem, so the caller
 /// decides what a path means and keeps it relative to the workspace root.
+///
+/// tree-sitter is error tolerant and returns a tree for broken input. When that tree carries a
+/// localized ERROR node the surrounding declarations still parse, so the result is a best-effort
+/// recovery marked [`FileSkeleton::partial`] rather than a whole-file rejection (KT-52a). The
+/// declarations skeletons keep are signatures, and every gap KT-52 isolated puts its ERROR node in
+/// a region the extractor already discards (a function or property body, an initializer) or skips
+/// (a stray token between members), so the recovered signatures are trustworthy. A file whose every
+/// token is garbage collapses to a single top-level ERROR node with no declaration beneath it, so
+/// nothing is recovered; that case returns an error rather than an empty confident skeleton.
 pub fn extract(path: impl Into<String>, source: &str) -> Result<FileSkeleton> {
     let tree = crate::parse(source).context("parsing Kotlin source")?;
     let root = tree.root_node();
@@ -71,6 +80,11 @@ pub fn extract(path: impl Into<String>, source: &str) -> Result<FileSkeleton> {
         }
     }
     file.truncated = extractor.truncated.get();
+    file.partial = root.has_error();
+
+    if file.partial && file.is_empty() {
+        anyhow::bail!("Kotlin syntax errors left no declaration to recover");
+    }
     Ok(file)
 }
 

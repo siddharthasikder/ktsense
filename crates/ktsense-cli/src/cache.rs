@@ -10,12 +10,14 @@
 //! A cached answer must be byte-identical to the in-process one, so [`SkeletonCache::outline`] and
 //! [`SkeletonCache::deps`] mirror `crate::outline` and `crate::deps` exactly, swapping only the
 //! per-file parse for a fingerprint-guarded cache lookup. The rendering, traversal and graph code is
-//! the same code the fresh path calls, so the two cannot drift.
+//! the same code the fresh path calls, so the two cannot drift. A file with a localized parse error
+//! is recovered and marked partial exactly as the in-process path recovers it (KT-52a); the cache
+//! stores that partial skeleton like any other and its partial marker rides through unchanged.
 //!
 //! Invalidation is a content fingerprint, not a timestamp or a size: an editor that rewrites a file
 //! to the same length within the same coarse mtime tick still changes the fingerprint, so the next
 //! request re-parses. There is no watcher thread to leak; a stale entry is caught at request time by
-//! the fingerprint mismatch. Only successful parses are cached, so a read or extraction failure is
+//! the fingerprint mismatch. Only recovered skeletons are cached, so a read or extraction failure is
 //! never remembered as an answer.
 
 use std::collections::HashMap;
@@ -38,27 +40,13 @@ pub(crate) struct SkeletonCache {
 
 struct CacheEntry {
     fingerprint: u64,
-    parse: CachedParse,
-}
-
-#[derive(Clone)]
-struct CachedParse {
-    has_syntax_error: bool,
     skeleton: FileSkeleton,
-}
-
-/// The outcome of parsing one file: whether tree-sitter flagged a syntax error, and the extracted
-/// skeleton or the extraction failure. `outline` rejects on the syntax-error flag exactly as the
-/// in-process path does; `deps` ignores it and takes any skeleton that extracted.
-struct Parsed {
-    has_syntax_error: bool,
-    skeleton: Result<FileSkeleton, CommandError>,
 }
 
 impl SkeletonCache {
     /// Outlines `file` from the cache, re-parsing only when the file's content changed. Mirrors
-    /// `crate::outline`: the same read error, the same syntax-error rejection, the same extraction
-    /// error, and the same rendering, so a routed answer equals the in-process one byte for byte.
+    /// `crate::outline`: the same read error, the same recovery-or-rejection from `extract`, and the
+    /// same rendering, so a routed answer equals the in-process one byte for byte, partial or not.
     pub(crate) fn outline(
         &self,
         root: &Path,
@@ -68,11 +56,7 @@ impl SkeletonCache {
     ) -> Result<String, CommandError> {
         let source =
             std::fs::read_to_string(file).map_err(|error| CommandError::read(file, &error))?;
-        let parsed = self.resolve(root, file, &source);
-        if parsed.has_syntax_error {
-            return Err(CommandError::unparseable(file));
-        }
-        let skeleton = parsed.skeleton?;
+        let skeleton = self.resolve(root, file, &source)?;
         crate::present(&skeleton, format, options)
     }
 
@@ -95,47 +79,47 @@ impl SkeletonCache {
     }
 
     /// A malformed or unreadable file contributes no honest edges, so it is skipped rather than
-    /// aborting the graph, matching `crate::skeleton_for_deps`.
+    /// aborting the graph, matching `crate::skeleton_for_deps`. A partial skeleton is kept: its
+    /// import edges parsed and are as trustworthy as a complete file's, so the graph consumes it.
     fn skeleton_for_deps(&self, root: &Path, path: &Path) -> Option<FileSkeleton> {
         let source = std::fs::read_to_string(path).ok()?;
-        self.resolve(root, path, &source).skeleton.ok()
+        self.resolve(root, path, &source).ok()
     }
 
-    fn resolve(&self, root: &Path, file: &Path, source: &str) -> Parsed {
+    fn resolve(
+        &self,
+        root: &Path,
+        file: &Path,
+        source: &str,
+    ) -> Result<FileSkeleton, CommandError> {
         let fingerprint = fingerprint(source);
-        if let Some(parse) = self.hit(file, fingerprint) {
-            return Parsed {
-                has_syntax_error: parse.has_syntax_error,
-                skeleton: Ok(parse.skeleton),
-            };
+        if let Some(skeleton) = self.hit(file, fingerprint) {
+            return Ok(skeleton);
         }
-        let parsed = parse_fresh(root, file, source);
+        let skeleton = parse_fresh(root, file, source);
         #[cfg(test)]
         self.parses.fetch_add(1, Ordering::Relaxed);
-        if let Ok(skeleton) = &parsed.skeleton {
-            self.store(file, fingerprint, parsed.has_syntax_error, skeleton.clone());
+        if let Ok(skeleton) = &skeleton {
+            self.store(file, fingerprint, skeleton.clone());
         }
-        parsed
+        skeleton
     }
 
-    fn hit(&self, file: &Path, fingerprint: u64) -> Option<CachedParse> {
+    fn hit(&self, file: &Path, fingerprint: u64) -> Option<FileSkeleton> {
         let entries = self.entries.lock().expect("cache lock is never poisoned");
         entries
             .get(file)
             .filter(|entry| entry.fingerprint == fingerprint)
-            .map(|entry| entry.parse.clone())
+            .map(|entry| entry.skeleton.clone())
     }
 
-    fn store(&self, file: &Path, fingerprint: u64, has_syntax_error: bool, skeleton: FileSkeleton) {
+    fn store(&self, file: &Path, fingerprint: u64, skeleton: FileSkeleton) {
         let mut entries = self.entries.lock().expect("cache lock is never poisoned");
         entries.insert(
             file.to_path_buf(),
             CacheEntry {
                 fingerprint,
-                parse: CachedParse {
-                    has_syntax_error,
-                    skeleton,
-                },
+                skeleton,
             },
         );
     }
@@ -146,26 +130,12 @@ impl SkeletonCache {
     }
 }
 
-/// Parses and extracts one file, reproducing `crate::reject_syntax_errors` followed by
-/// `ktsense_syntax::extract`: a parse that fails is surfaced as an extraction error rather than a
-/// syntax-error rejection, exactly as the in-process path reports it.
-fn parse_fresh(root: &Path, file: &Path, source: &str) -> Parsed {
-    let tree = match ktsense_syntax::parse(source) {
-        Ok(tree) => tree,
-        Err(error) => {
-            return Parsed {
-                has_syntax_error: false,
-                skeleton: Err(CommandError::extraction(file, &error)),
-            }
-        }
-    };
-    let has_syntax_error = tree.root_node().has_error();
-    let skeleton = ktsense_syntax::extract(crate::normalized_path(root, file), source)
-        .map_err(|error| CommandError::extraction(file, &error));
-    Parsed {
-        has_syntax_error,
-        skeleton,
-    }
+/// Parses and extracts one file exactly as `crate::outline` does: a recovered skeleton (complete or
+/// partial) on success, and the same `unparseable` rejection when the tree errors and nothing
+/// survives, so the routed answer matches the in-process one.
+fn parse_fresh(root: &Path, file: &Path, source: &str) -> Result<FileSkeleton, CommandError> {
+    ktsense_syntax::extract(crate::normalized_path(root, file), source)
+        .map_err(|_| CommandError::unparseable(file))
 }
 
 /// FNV-1a over the file's bytes. A content fingerprint catches an equal-size rewrite and a rewrite
@@ -379,5 +349,46 @@ mod tests {
         in_process: Result<String, CommandError>,
     ) -> bool {
         cached.expect("cached answer") == in_process.expect("in-process answer")
+    }
+
+    /// A file with a localized parse error is recovered and marked partial, cached like any other,
+    /// and its cached outline equals the in-process one; editing it re-parses rather than serving
+    /// the stale partial. A leading `;` in the class body is the KT-52 semicolon gap.
+    #[test]
+    fn a_partial_file_is_cached_matches_in_process_and_re_parses_on_edit() {
+        let fixture = Fixture::new();
+        let partial = "package shop.order\n\nclass Ledger {;\n    fun balance(): Int = 0\n}\n";
+        let file = fixture.write("Ledger.kt", partial);
+        let cache = SkeletonCache::default();
+        let options = RenderOptions::default();
+
+        let first = cache.outline(&fixture.root, &file, Format::Md, &options);
+        let repeat = cache.outline(&fixture.root, &file, Format::Md, &options);
+        let parses_after_repeat = cache.parse_count();
+        let in_process =
+            crate::outline(&fixture.root, &file, Format::Md, &options).expect("in-process outline");
+
+        fixture.write(
+            "Ledger.kt",
+            "package shop.order\n\nclass Ledger {\n    fun paid(): Int = 0\n}\n",
+        );
+        let after_edit = cache
+            .outline(&fixture.root, &file, Format::Md, &options)
+            .expect("edited outline");
+
+        let first = first.expect("first outline");
+        assert_eq!(
+            (
+                first == repeat.expect("repeat outline"),
+                parses_after_repeat,
+                first.contains("// partial:"),
+                first.contains("fun balance"),
+                first == in_process,
+                after_edit.contains("// partial:"),
+                after_edit.contains("fun paid"),
+                cache.parse_count(),
+            ),
+            (true, 1, true, true, true, false, true, 2),
+        );
     }
 }

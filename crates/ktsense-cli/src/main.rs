@@ -274,13 +274,6 @@ impl CommandError {
         }
     }
 
-    fn extraction(file: &Path, error: &anyhow::Error) -> Self {
-        Self {
-            exit: Exit::Failure,
-            message: format!("ktsense: cannot outline {}: {error}", file.display()),
-        }
-    }
-
     fn serialization(error: serde_json::Error) -> Self {
         Self {
             exit: Exit::Failure,
@@ -664,22 +657,13 @@ fn outline(
     options: &RenderOptions,
 ) -> Result<String, CommandError> {
     let source = fs::read_to_string(file).map_err(|error| CommandError::read(file, &error))?;
-    reject_syntax_errors(file, &source)?;
+    // tree-sitter is error tolerant and returns a tree for broken input, so `extract` recovers the
+    // declarations that parsed around a localized error and marks the skeleton partial (KT-52a). It
+    // fails only when the tree errors and nothing survives (whole-file garbage), which surfaces as
+    // the same "syntax errors" rejection, so an unparseable file is still never a confident answer.
     let skeleton = ktsense_syntax::extract(normalized_path(root, file), &source)
-        .map_err(|error| CommandError::extraction(file, &error))?;
+        .map_err(|_| CommandError::unparseable(file))?;
     present(&skeleton, format, options)
-}
-
-// tree-sitter is error-tolerant and returns a tree for broken input, so `extract` alone would
-// happily outline garbage. Gating on `has_error` keeps a syntactically invalid file from being
-// presented as a confident skeleton, which the accuracy-honesty rule forbids.
-fn reject_syntax_errors(file: &Path, source: &str) -> Result<(), CommandError> {
-    let tree =
-        ktsense_syntax::parse(source).map_err(|error| CommandError::extraction(file, &error))?;
-    if tree.root_node().has_error() {
-        return Err(CommandError::unparseable(file));
-    }
-    Ok(())
 }
 
 fn present(

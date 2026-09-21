@@ -1,0 +1,13 @@
+---
+source: crates/ktsense-cli/tests/partial_outline.rs
+expression: record
+---
+exit: 0
+stderr: (empty)
+--- stdout ---
+## nullable-callable-reference.gap.kt
+
+```kotlin
+// partial: recovered around a parse error; some declarations may be missing
+val reference /* inferred */
+```
