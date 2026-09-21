@@ -1,0 +1,1072 @@
+---
+source: crates/ktsense-mcp/tests/tools_list.rs
+assertion_line: 21
+expression: listed
+---
+{
+  "tools": [
+    {
+      "name": "analyze_kotlin_dependencies",
+      "description": "Answers which packages or files import which, listing the cycles and the external imports as well. Prefer it over grepping import lines when you want the whole graph or the cycles in it. Edges are import statements, not type-checked references. requires: nothing. cost: about 1.7 s on 1861 files, the slowest tool here because it parses every file in the tree (ktor 3.0.1, median of 9, KT-38).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "level": {
+            "description": "Whether nodes are `package` (default) or `file`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "check_kotlin_syntax",
+      "description": "Answers whether a file or a directory parses, reporting every syntax error with its position. Run it after each edit. It is syntax only: type errors are the compiler's job and are not reported, and a file with errors comes back as an error result carrying the report. requires: kmp-lsp, which has to be installed even though no index is waited for. cost: about 145 ms for one 54 KB file (ktor 3.0.1, median of 9, KT-32).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "path": {
+            "description": "A Kotlin file or a directory to syntax-check.",
+            "type": "string"
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "explain_kotlin_symbol",
+      "description": "Will answer with a budgeted bundle for one symbol: its declaration, the files it depends on and the callers that matter. Not implemented yet (KT-35), so every call returns ktsense's not-implemented message as an error; reach for find_kotlin_symbol and trace_kotlin_symbol instead. requires: kmp-lsp and a settled index. cost: unmeasured.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "budget": {
+            "description": "Token budget for the bundle; defaults to 2000.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "symbol": {
+            "description": "Declaration name to explain.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "find_kotlin_symbol",
+      "description": "Answers where a name is declared: kind, file, line and signature for every declaration carrying it. Prefer it over grep, which also finds uses and cannot tell a class from a local. Several matches come back as a list to choose from; pass pick with one fully-qualified name to narrow. requires: kmp-lsp. cost: about 300 ms on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "kind": {
+            "description": "Keep only declarations of this kind: class, interface, object, fun, val, var, typealias\nor constructor.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "Show at most this many rows when the name is ambiguous.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pick": {
+            "description": "Select the single candidate with this fully-qualified name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "Declaration name to find, for example `OrderRepository` or `save`.",
+            "type": "string"
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_kotlin_outline",
+      "description": "Answers what one Kotlin file declares: every signature with no bodies, public API only unless you ask for private. Prefer it over reading the file whenever you want the shape rather than the implementation; it is the cheapest tool here. requires: nothing. cost: about 30 ms on a 54 KB file (ktor 3.0.1, median of 9, KT-38).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "file": {
+            "description": "Path to one Kotlin file, absolute or relative to the workspace root.",
+            "type": "string"
+          },
+          "kdoc": {
+            "default": false,
+            "description": "Include the first line of each declaration's KDoc.",
+            "type": "boolean"
+          },
+          "private": {
+            "default": false,
+            "description": "Include private and internal declarations, hidden by default.",
+            "type": "boolean"
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_kotlin_repo_map",
+      "description": "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "budget": {
+            "description": "Token budget for the map; defaults to 4000.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ktsense_status",
+      "description": "Answers what this installation can do right now: the workspace root, how many Kotlin files it holds, whether kmp-lsp is present and version-compatible, and whether a warm daemon is holding an index. Call it first when another tool fails, and before a trace when you need to know whether the index has settled. A missing engine is reported rather than raised. requires: nothing. cost: about 100 ms on 1990 Kotlin files (ktor 3.0.1, median of 9, KT-32).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "trace_kotlin_symbol",
+      "description": "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "depth": {
+            "description": "How many levels of callers to follow, 1 to 5; 1 is the declarations that refer to it.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "Show at most this many reference sites per file.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pick": {
+            "description": "Select the single candidate with this fully-qualified name when the name is ambiguous.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "symbol": {
+            "description": "Declaration name to trace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status: `0` an answer, `3` an ambiguous name whose candidates are listed,\n`70` a subcommand that has not shipped. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}
