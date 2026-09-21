@@ -24,6 +24,7 @@
 
 use std::borrow::Cow;
 
+use crate::context::{ContextSection, SymbolContext};
 use crate::imports::ImportGraph;
 use crate::references::ReferenceGroup;
 use crate::repo_map::RepoMap;
@@ -267,7 +268,100 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
     out
 }
 
-fn related_line(declaration: &RelatedDeclaration) -> String {
+/// Renders a budgeted `context` bundle: the declaration, the outline of its file, its callers and
+/// its implementors, in the priority order the budget spent itself on.
+///
+/// The index marker comes first for the same reason it does in a trace. Every section is printed
+/// even when the budget reached none of it, because a missing `Callers` section would read as a
+/// symbol nobody calls; a section that lost lines says how many.
+pub fn render_context_markdown(context: &SymbolContext) -> String {
+    let mut out = format!("# Context: {}\n\n", neutralize(&context.symbol));
+    out.push_str(&format!("index: {}\n", context.index.label()));
+    out.push_str(&format!(
+        "Budget {} tokens, content bound {}. {} omitted for budget.\n",
+        context.budget,
+        context.token_upper_bound,
+        pluralize(context.omitted(), "item"),
+    ));
+
+    out.push_str("\n## Declaration\n\n");
+    out.push_str(&format!(
+        "{}:{}\n",
+        neutralize(&context.definition.path),
+        context.definition.line
+    ));
+    append_context_blocks(&mut out, &context.declaration, "signature");
+
+    out.push_str(&format!(
+        "\n## File outline: {}\n",
+        neutralize(&context.definition.path)
+    ));
+    append_context_blocks(&mut out, &context.file_outline, "declaration");
+
+    out.push_str(&format!("\n## Callers ({})\n", context.callers.available()));
+    append_context_lines(&mut out, &context.callers);
+
+    out.push_str(&format!(
+        "\n## Implementors ({})\n",
+        context.implementors.available()
+    ));
+    append_context_lines(&mut out, &context.implementors);
+
+    out.push_str(
+        "\nCallers are the declarations enclosing each reference site; the engine reports no call \
+         hierarchy. Resolution is syntactic, not type-checked. The content bound covers the \
+         declaration, outline, caller and implementor lines the budget gated, not the headings \
+         around them.\n",
+    );
+    out
+}
+
+/// A fenced Kotlin section, or a line saying why it is empty. `unit` names what was dropped, so
+/// `3 declarations omitted` reads as the outline losing declarations rather than losing lines.
+fn append_context_blocks(out: &mut String, section: &ContextSection<String>, unit: &str) {
+    if section.items.is_empty() {
+        let reason = if section.omitted > 0 {
+            format!(
+                "Omitted for budget: {}.\n",
+                pluralize(section.omitted, unit)
+            )
+        } else {
+            "None.\n".to_string()
+        };
+        out.push('\n');
+        out.push_str(&reason);
+        return;
+    }
+    let body = section.items.join("\n");
+    let fence = fence_for(&body);
+    out.push_str(&format!("\n{fence}kotlin\n{body}\n{fence}\n"));
+    if section.omitted > 0 {
+        out.push_str(&format!(
+            "\nOmitted for budget: {}.\n",
+            pluralize(section.omitted, unit)
+        ));
+    }
+}
+
+/// A list of related declarations, rendered by the same writer a trace uses, with the count the
+/// budget dropped. `- none` distinguishes "nothing found" from "nothing affordable".
+fn append_context_lines(out: &mut String, section: &ContextSection<RelatedDeclaration>) {
+    if section.items.is_empty() && section.omitted == 0 {
+        out.push_str("- none\n");
+        return;
+    }
+    for declaration in &section.items {
+        out.push_str(&related_line(declaration));
+        out.push('\n');
+    }
+    if section.omitted > 0 {
+        out.push_str(&format!("- ... {} omitted for budget\n", section.omitted));
+    }
+}
+
+/// One related declaration as a list line. Shared with [`crate::context`] so a caller reads
+/// identically in a `trace` and in a `context` bundle.
+pub(crate) fn related_line(declaration: &RelatedDeclaration) -> String {
     let name = declaration
         .qualified_name
         .as_deref()
