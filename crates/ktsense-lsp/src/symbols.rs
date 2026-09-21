@@ -16,6 +16,7 @@
 //! itself. A name that matches nothing prints nothing and exits non-zero, which is an empty result
 //! rather than a failure; a genuine failure carries a message on stderr.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -112,10 +113,9 @@ impl<'a> SymbolResolver<'a> {
         let captured = EngineCommand::within(self.binary, self.root, self.timeout)
             .capture("find", &["find", query, "--json", "--root", root.as_ref()])
             .await?;
-        Ok(parse_find(&captured)?
-            .into_iter()
-            .map(correct_column)
-            .collect())
+        Ok(correct_columns(parse_find(&captured)?, |path| {
+            std::fs::read_to_string(path).ok()
+        }))
     }
 
     /// Resolves `query` to a single outcome the caller can branch on.
@@ -179,13 +179,32 @@ fn parse_find(captured: &Captured) -> Result<Vec<SymbolCandidate>, PassthroughEr
         .collect())
 }
 
-/// Corrects one candidate's column to its declaration name when the source can be read, leaving the
-/// engine's reported column in place otherwise so a location ktsense cannot verify stays honest.
-fn correct_column(mut candidate: SymbolCandidate) -> SymbolCandidate {
-    if let Some(column) = name_column(Path::new(&candidate.file), candidate.line, &candidate.name) {
-        candidate.col = column;
-    }
-    candidate
+/// Corrects every candidate's column to its declaration name, reading each unique file at most once
+/// per call. A file is read through `read` the first time a candidate names it and the result, text
+/// or failure, is reused for every later candidate sharing that path, so an ambiguous match across
+/// three overrides of one file reads it once, not three times. The engine's reported column is kept
+/// when the source cannot be read or the name is absent, so a location ktsense cannot verify stays
+/// honest. The cache lives only for this call, so no read outlives the request that made it.
+fn correct_columns<F>(candidates: Vec<SymbolCandidate>, mut read: F) -> Vec<SymbolCandidate>
+where
+    F: FnMut(&Path) -> Option<String>,
+{
+    let mut sources: HashMap<String, Option<String>> = HashMap::new();
+    candidates
+        .into_iter()
+        .map(|mut candidate| {
+            let source = sources
+                .entry(candidate.file.clone())
+                .or_insert_with(|| read(Path::new(&candidate.file)));
+            if let Some(column) = source
+                .as_deref()
+                .and_then(|text| name_column_in_source(text, candidate.line, &candidate.name))
+            {
+                candidate.col = column;
+            }
+            candidate
+        })
+        .collect()
 }
 
 /// The 1-based column of the first whole-word occurrence of `name` on 1-based `line` of the file at
@@ -197,6 +216,14 @@ fn correct_column(mut candidate: SymbolCandidate) -> SymbolCandidate {
 /// rather than the declaration.
 pub fn name_column(path: &Path, line: u32, name: &str) -> Option<u32> {
     let source = std::fs::read_to_string(path).ok()?;
+    name_column_in_source(&source, line, name)
+}
+
+/// The 1-based character column of the first whole-word occurrence of `name` on 1-based `line` of
+/// already-read `source`, or `None` when the line or the name is absent. The column counts
+/// characters, not bytes, so a name preceded by multibyte text reports the column an editor shows
+/// rather than a byte offset.
+fn name_column_in_source(source: &str, line: u32, name: &str) -> Option<u32> {
     let text = source.lines().nth(line.checked_sub(1)? as usize)?;
     let offset = whole_word_offset(text, name)?;
     u32::try_from(text[..offset].chars().count() + 1).ok()
@@ -317,6 +344,73 @@ mod tests {
         assert_eq!(
             name_column(Path::new("/no/such/OrderRepository.kt"), 4, "save"),
             None
+        );
+    }
+
+    #[test]
+    fn a_multibyte_prefix_yields_a_character_column_not_a_byte_column() {
+        assert_eq!(
+            (
+                name_column_in_source("val 日本 = save()", 1, "save"),
+                whole_word_offset("val 日本 = save()", "save"),
+            ),
+            (Some(10), Some(13)),
+        );
+    }
+
+    #[test]
+    fn each_unique_candidate_file_is_read_once_and_columns_corrected_or_kept() {
+        use std::cell::RefCell;
+        use std::collections::BTreeMap;
+
+        let sources = BTreeMap::from([
+            (
+                "/r/A.kt",
+                "package shop\n    fun save(order: Order): OrderId",
+            ),
+            ("/r/B.kt", "\n\n\nval 日本 = save()"),
+        ]);
+        let reads = RefCell::new(BTreeMap::<String, usize>::new());
+        let read = |path: &Path| {
+            let key = path.to_string_lossy().into_owned();
+            *reads.borrow_mut().entry(key.clone()).or_default() += 1;
+            sources.get(key.as_str()).map(|text| text.to_string())
+        };
+
+        let corrected = correct_columns(
+            vec![
+                candidate("save", "/r/A.kt", 2, 5),
+                candidate("save", "/r/A.kt", 2, 5),
+                candidate("save", "/r/missing.kt", 1, 7),
+                candidate("save", "/r/missing.kt", 1, 7),
+                candidate("save", "/r/B.kt", 4, 1),
+            ],
+            read,
+        );
+
+        let observed = (
+            corrected
+                .iter()
+                .map(|found| (found.file.clone(), found.line, found.col))
+                .collect::<Vec<_>>(),
+            reads.into_inner(),
+        );
+        assert_eq!(
+            observed,
+            (
+                vec![
+                    ("/r/A.kt".to_string(), 2, 9),
+                    ("/r/A.kt".to_string(), 2, 9),
+                    ("/r/missing.kt".to_string(), 1, 7),
+                    ("/r/missing.kt".to_string(), 1, 7),
+                    ("/r/B.kt".to_string(), 4, 10),
+                ],
+                BTreeMap::from([
+                    ("/r/A.kt".to_string(), 1),
+                    ("/r/B.kt".to_string(), 1),
+                    ("/r/missing.kt".to_string(), 1),
+                ]),
+            )
         );
     }
 }
