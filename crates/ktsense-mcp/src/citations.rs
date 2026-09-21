@@ -43,6 +43,17 @@ pub struct Citation {
     pub column: Option<u32>,
 }
 
+/// What the caller already knows about the call it made, as opposed to what the answer says. Grouped
+/// so indexing takes the call and its text, rather than four loose arguments two of which are strings.
+pub struct Call<'a> {
+    pub tool: &'a crate::Tool,
+    pub root: &'a str,
+    pub exit: Option<i32>,
+    /// The label of what the server did about keeping an engine warm for this root, when it did
+    /// anything at all.
+    pub warmth: Option<&'static str>,
+}
+
 /// The structured half of a tool result: which tool answered, about what, and every file and line
 /// its text cites.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -64,6 +75,18 @@ pub struct Answer {
     /// is a lower bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<String>,
+    /// What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,
+    /// `already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or
+    /// when warming is switched off.
+    ///
+    /// This is a fact about the server's own action and never a claim about the engine's index, which
+    /// the commands that carry an `index:` marker state for themselves. It is reported because
+    /// `find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:
+    /// against a cold one the engine text-searches, and one declaration can arrive as several
+    /// candidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a
+    /// duplicated-looking result and to call `ktsense_status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warmth: Option<String>,
     /// Files the answer is about, in the order it introduced them.
     pub files: Vec<String>,
     /// Every path and line the answer cites, deduplicated, in the order they appear.
@@ -73,17 +96,18 @@ pub struct Answer {
     pub citations_omitted: usize,
 }
 
-/// Indexes one rendered answer. `text` is whatever the command wrote; everything else is what the
-/// caller already knows about the call it made.
-pub fn index_answer(tool: &crate::Tool, root: &str, exit: Option<i32>, text: &str) -> Answer {
+/// Indexes one rendered answer. `text` is whatever the command wrote; `call` is what the caller
+/// already knows about the call it made.
+pub fn index_answer(call: Call<'_>, text: &str) -> Answer {
     let scan = Scan::of(text);
     Answer {
-        tool: tool.name.to_string(),
-        command: tool.cli_command.to_string(),
-        requires: tool.requires.label().to_string(),
-        root: root.to_string(),
-        exit,
+        tool: call.tool.name.to_string(),
+        command: call.tool.cli_command.to_string(),
+        requires: call.tool.requires.label().to_string(),
+        root: call.root.to_string(),
+        exit: call.exit,
         index: scan.index,
+        warmth: call.warmth.map(str::to_string),
         files: scan.files,
         citations: scan.citations,
         citations_omitted: scan.omitted,
@@ -231,8 +255,17 @@ mod tests {
     use super::*;
     use crate::{CHECK, OUTLINE, TRACE};
 
+    fn call(tool: &crate::Tool) -> Call<'_> {
+        Call {
+            tool,
+            root: "/repo",
+            exit: Some(0),
+            warmth: None,
+        }
+    }
+
     fn indexed(tool: &crate::Tool, text: &str) -> (Option<String>, Vec<String>, Vec<Citation>) {
-        let answer = index_answer(tool, "/repo", Some(0), text);
+        let answer = index_answer(call(tool), text);
         (answer.index, answer.files, answer.citations)
     }
 
@@ -365,7 +398,7 @@ mod tests {
             text.push_str(&format!("- {line}\n"));
         }
 
-        let answer = index_answer(&TRACE, "/repo", Some(0), &text);
+        let answer = index_answer(call(&TRACE), &text);
 
         assert_eq!(
             (answer.citations.len(), answer.citations_omitted),

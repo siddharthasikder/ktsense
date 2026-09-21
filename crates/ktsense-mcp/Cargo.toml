@@ -7,10 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# The dependency list is the layering statement AGENTS.md enforces, so it carries only what is
+# actually used: this crate reaches ktsense-lsp to hold a warm session and to read a root URI, and
+# nothing else. ktsense-core and ktsense-syntax were declared and never referenced, which overstated
+# the graph the table is meant to describe.
 [dependencies]
-ktsense-core = { workspace = true }
 ktsense-lsp = { workspace = true }
-ktsense-syntax = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

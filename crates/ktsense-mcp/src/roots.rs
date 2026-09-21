@@ -153,4 +153,47 @@ mod tests {
              no advertised roots leaves the choice to the configured one"
         );
     }
+
+    /// The filesystem-resolving half of [`holds`], which a textual prefix compare cannot reach.
+    ///
+    /// A root carrying a `..` is the cheapest way to produce one: `<temp>/alpha/../alpha` is the same
+    /// directory as `<temp>/alpha` and is not a textual prefix of anything under it. It is listed
+    /// second on purpose. Listed first, the answer would be the same whether containment found it or
+    /// the first-root fallback did, so the test would pass with the fallback deleted, which is the
+    /// same as not having written it.
+    #[test]
+    fn a_root_that_needs_resolving_is_still_chosen_over_a_root_that_does_not_hold_the_file() {
+        let tree = TwoRoots::build();
+        let indirect = tree.first.join("..").join("alpha");
+        let roots = ClientRoots::new(vec![tree.second.clone(), indirect.clone()]);
+        let inside_indirect = tree
+            .first
+            .join("core/src/main/kotlin/Alpha.kt")
+            .display()
+            .to_string();
+        let inside_plain = tree
+            .second
+            .join("app/src/main/kotlin/Beta.kt")
+            .display()
+            .to_string();
+
+        let observed = (
+            indirect.display().to_string() == tree.first.display().to_string(),
+            roots.resolve(None, Some(&inside_indirect)),
+            roots.resolve(None, Some(&inside_plain)),
+            roots.resolve(None, Some(&tree.elsewhere.display().to_string())),
+        );
+
+        assert_eq!(
+            observed,
+            (
+                false,
+                Some(indirect.display().to_string()),
+                Some(tree.second.display().to_string()),
+                Some(tree.second.display().to_string()),
+            ),
+            "the unresolved root is not a textual prefix of its own file, so only the resolving \
+             fallback can reach past the first root to it; a file in neither still takes the first"
+        );
+    }
 }

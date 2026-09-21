@@ -137,7 +137,10 @@ from the CLI, because a 9-file text search resolves correctly anyway. The benefi
 repository, which is the case an agent meeting an unfamiliar codebase is actually in.
 
 Warming never fails a call. A launch that fails or exceeds its 30 second bound is logged and the call
-is delegated anyway, from a cold index. Every held session is shut down when the server stops
+is delegated anyway, from a cold index; that bound covers the daemon probe as well as the warm-up,
+since the probe runs a `status` command as a child and nothing else would stop a wedged one holding a
+tool call open. Roots are decided independently: the lock covers the claim on a root and nothing after
+it, so a second workspace's first index-shaped call does not queue behind a first workspace's warm-up. Every held session is shut down when the server stops
 serving, which was checked by counting `kmp-lsp` processes before and after: none is left behind.
 `KTSENSE_MCP_NO_WARM_ENGINE=1` turns warming off, for the small-tree case above and for an operator
 who wants the server to spawn no engine but the ones its commands spawn themselves.
@@ -158,11 +161,21 @@ Every result carries the command's Markdown as its text content and an `Answer` 
 | `root` | The workspace root the answer is about, which the cited paths are relative to. |
 | `exit` | The command's exit status: `0` an answer, `3` a name that resolved to several candidates, `1` a failure on the input, `2` a malformed invocation. |
 | `index` | `complete` or `partial`, when the answer carried an index marker. |
+| `warmth` | What the server did about keeping an engine warm for this root, when the tool is one an index shapes. |
 | `files` | Files the answer is about, in the order it introduced them. |
 | `citations` | Every `path`, `line` and optional `column` the answer cites. |
 | `citations_omitted` | How many further citations the text has and this index does not. |
 
-It is an index over the answer, not a second analysis. The commands each render one document per
+`warmth` is the one field that is not read out of the answer text, and it is there for a reason the
+reviewers put their finger on. `find_kotlin_symbol` carries no `index:` marker, and its answer is
+shaped by the index anyway: against a cold one the engine text-searches and a single declaration can
+arrive as several candidates that look exactly like a genuine ambiguity. So the server reports what it
+itself did, `opened`, `left_to_daemon`, `already_decided` or `failed`, which is a fact about its own
+action rather than a claim about the engine's index. A `failed` is the reason to distrust a
+duplicated-looking result and call `ktsense_status`. `already_decided` says an earlier call in this
+session settled the root and does not restate which way, which is a real limit of the signal.
+
+Everything else in it is an index over the answer, not a second analysis. The commands each render one document per
 question and are the authority on their own shape; re-deriving the same facts from a `--format json`
 run would invoke the engine twice per call and let the text and the structure disagree. So the
 citation index never asserts anything the text does not already say, and where the text carries no
@@ -191,13 +204,15 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
 - [x] Every tool states the question it answers, before any mention of how it works.
 - [x] Every tool states when to prefer it over `grep`, over reading the file, or over another tool.
       `explain_kotlin_symbol` names the two tools to use instead of it while it is unimplemented.
-- [x] Every tool carries a `requires:` marker matching its catalogue entry, asserted by
-      `every_listed_tool_is_catalogued_read_only_and_states_its_requirement_and_pending_card`.
+- [x] Every tool carries a `requires:` marker matching its catalogue entry and a `cost:` marker that
+      states a figure or admits none was measured, both asserted by
+      `every_listed_tool_is_catalogued_read_only_and_states_its_requirement_and_its_cost`. The cost
+      rule is itself tested: `cost: fast` is rejected, because that is the marker this page replaced.
 - [x] Three requirement states are distinguished, so no description implies an engine-free path
       through `check_kotlin_syntax` or `find_kotlin_symbol`.
-- [x] Every `cost:` figure traces to `.agents/scratchpad/ktsense/KT-38.md` or to the two
-      measurements recorded in `.agents/scratchpad/ktsense/KT-32.md`; the one tool with no
-      measurement says `unmeasured` rather than guessing, and says why.
+- [x] Every `cost:` figure traces to `.agents/scratchpad/ktsense/KT-38.md`, to the two measurements in
+      `KT-32.md`, or to the `context` measurement in `KT-34.md`. Nothing is guessed, and a tool with no
+      measurement is allowed to say `unmeasured` rather than being pushed into inventing a number.
 - [x] No description calls a whole-tree tool fast. `deps` and `map` state their measured seconds.
 - [x] `trace_kotlin_symbol` states that `index: partial` is a lower bound rather than the answer, and
       `find_kotlin_symbol` states that an unsettled index can duplicate one declaration into several
@@ -268,21 +283,24 @@ sessions set `KTSENSE_MCP_NO_WARM_ENGINE=1`, because a warm client and a traced 
 different conversations and one script cannot serve both; the warm path is proved by its own test and
 by the measurements above instead.
 
-## Known gap and a proposed card
+## A known gap, described without a card id
 
-`check_kotlin_syntax` maps a file with syntax errors onto `isError: true`, because the CLI exits 1
-and KT-31 mapped every non-answer exit to a tool error. That is defensible as "the tool's news is
-bad" but arguable: MCP's `isError` means the tool failed to run, and a syntax check that found
-errors ran perfectly. Changing it would change the KT-31 contract the exit-code mapping documents,
-so it is recorded here rather than altered inside a card about descriptions.
+`check_kotlin_syntax` maps a file with syntax errors onto `isError: true`, because the CLI exits 1 and
+KT-31 mapped every non-answer exit to a tool error. That is defensible as "the tool's news is bad" but
+arguable: MCP's `isError` means the tool failed to run, and a syntax check that found errors ran
+perfectly. An agent branching on `isError` cannot tell "the engine is missing" from "your file has a
+typo on line 12", and both are exit 1.
 
-    ### KT-57 Let `check` report errors as an answer rather than a tool error
+Changing it would change the KT-31 contract the exit-code mapping documents, so it is recorded here
+rather than altered inside a card about descriptions. No card id is quoted on purpose: ids are the
+board owner's to allocate, and an earlier draft of this page committed one that was already
+provisionally in use for something else. The shape of the work, for whoever gets the id:
+
+    ### KT-?? Let `check` report errors as an answer rather than a tool error
     - Phase: 3 | Size: S | Blocked by: KT-32
     - `ANSWER_EXITS` is `[0, 3]`, so `check` exiting 1 on a file with syntax errors becomes
-      `isError: true` carrying the report. An agent that branches on `isError` cannot tell "the
-      engine is missing" from "your file has a typo on line 12", and both are exit 1. Either add a
-      distinct exit for "checked, found errors" or let the MCP layer treat the check report as the
-      answer it is.
+      `isError: true` carrying the report. Either add a distinct exit for "checked, found errors" or
+      let the MCP layer treat the check report as the answer it is.
     - Acceptance: a file with a syntax error returns `isError: false` with the report and its
       citations; a missing engine still returns `isError: true`; the CLI's own exit codes are
       unchanged, because a shell caller branches on them.

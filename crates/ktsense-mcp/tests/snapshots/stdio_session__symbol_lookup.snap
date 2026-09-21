@@ -27,7 +27,8 @@ structuredContent:
   ],
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
-  "tool": "find_kotlin_symbol"
+  "tool": "find_kotlin_symbol",
+  "warmth": "opened"
 }
 ---
 ## Symbols: save
@@ -55,7 +56,8 @@ structuredContent:
   ],
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
-  "tool": "find_kotlin_symbol"
+  "tool": "find_kotlin_symbol",
+  "warmth": "already_decided"
 }
 ---
 ## Symbols: save
@@ -84,7 +86,8 @@ structuredContent:
   ],
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
-  "tool": "find_kotlin_symbol"
+  "tool": "find_kotlin_symbol",
+  "warmth": "already_decided"
 }
 ---
 ## Symbols: save
@@ -116,7 +119,8 @@ structuredContent:
   ],
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
-  "tool": "find_kotlin_symbol"
+  "tool": "find_kotlin_symbol",
+  "warmth": "already_decided"
 }
 ---
 ## Symbols: ZzzNope

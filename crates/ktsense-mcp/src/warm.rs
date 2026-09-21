@@ -48,7 +48,7 @@ pub trait Warmer: Send + Sync {
 }
 
 /// What deciding a root came to, which is the fact a test asserts rather than inferring it from a
-/// clock.
+/// clock, and which an answer reports so a caller can weigh how settled the index was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Warmth {
     /// This root was decided on an earlier call; nothing was done.
@@ -59,6 +59,20 @@ pub enum Warmth {
     Opened,
     /// Opening one failed or timed out. The message is logged, not returned to the agent.
     Failed,
+}
+
+impl Warmth {
+    /// The label an answer carries. Deliberately says what the server did, not what the engine's
+    /// index is: `already_decided` means an earlier call in this session settled this root and does
+    /// not restate which way it went.
+    pub fn label(self) -> &'static str {
+        match self {
+            Warmth::Decided => "already_decided",
+            Warmth::LeftToDaemon => "left_to_daemon",
+            Warmth::Opened => "opened",
+            Warmth::Failed => "failed",
+        }
+    }
 }
 
 /// Holds one warm session per root, deciding each root exactly once.
@@ -83,26 +97,51 @@ impl WarmEngines {
 
     /// Makes sure something holds a warm session for `root`, consulting `daemon_holds` only when
     /// this is the first call for that root and we would otherwise open one ourselves.
+    ///
+    /// The lock is held for the claim and nothing else. Holding it across the warm-up would serialize
+    /// every root behind the first one, for as long as that first warm-up took, and this is awaited
+    /// inline in the dispatch path: a second workspace's first index-shaped call would have waited out
+    /// a thirty second bound belonging to a workspace it has nothing to do with. The claim is what
+    /// makes the decision exclusive, so everything after it can run unlocked.
     pub async fn ensure<F, Fut>(&self, root: &Path, daemon_holds: F) -> Warmth
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = bool>,
     {
-        let mut decided = self.decided.lock().await;
-        if !decided.insert(root.to_path_buf()) {
+        if !self.claim(root).await {
             return Warmth::Decided;
         }
+        match tokio::time::timeout(self.bound, self.decide(root, daemon_holds)).await {
+            Ok(warmth) => warmth,
+            Err(_elapsed) => {
+                tracing::warn!(root = %root.display(), bound = ?self.bound, "warm-up timed out");
+                Warmth::Failed
+            }
+        }
+    }
+
+    /// Whether this caller is the one that decides `root`, recording that it has been decided in the
+    /// same step. Reading and writing have to be one operation here: two callers that each looked
+    /// first and inserted afterwards would both believe they were first and open two sessions.
+    async fn claim(&self, root: &Path) -> bool {
+        self.decided.lock().await.insert(root.to_path_buf())
+    }
+
+    /// The decision itself, run unlocked and under the caller's bound. The bound covers the daemon
+    /// probe as well as the warm-up, because the probe runs a `status` command as a child process and
+    /// nothing else would stop a wedged one holding a tool call open.
+    async fn decide<F, Fut>(&self, root: &Path, daemon_holds: F) -> Warmth
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = bool>,
+    {
         if daemon_holds().await {
             return Warmth::LeftToDaemon;
         }
-        match tokio::time::timeout(self.bound, self.warmer.open(root.to_path_buf())).await {
-            Ok(Ok(())) => Warmth::Opened,
-            Ok(Err(reason)) => {
+        match self.warmer.open(root.to_path_buf()).await {
+            Ok(()) => Warmth::Opened,
+            Err(reason) => {
                 tracing::warn!(root = %root.display(), %reason, "could not hold a warm engine");
-                Warmth::Failed
-            }
-            Err(_elapsed) => {
-                tracing::warn!(root = %root.display(), bound = ?self.bound, "warm-up timed out");
                 Warmth::Failed
             }
         }
@@ -258,7 +297,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_warm_up_that_never_returns_is_abandoned_at_the_bound_rather_than_held_open() {
+    async fn a_second_root_warms_alongside_the_first_rather_than_queueing_behind_its_warm_up() {
+        /// Both roots have to be inside `open` at once before either returns. If the decision were
+        /// taken under the lock, the second root would still be waiting for it, the first would wait
+        /// here forever, and the bound below turns that deadlock into a readable failure instead of a
+        /// hung suite.
+        struct Rendezvous {
+            gate: tokio::sync::Barrier,
+            opens: AtomicUsize,
+        }
+
+        impl Warmer for Rendezvous {
+            fn open(
+                &self,
+                _root: PathBuf,
+            ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+                Box::pin(async move {
+                    self.opens.fetch_add(1, Ordering::Relaxed);
+                    self.gate.wait().await;
+                    Ok(())
+                })
+            }
+
+            fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+                Box::pin(async {})
+            }
+        }
+
+        let warmer = Arc::new(Rendezvous {
+            gate: tokio::sync::Barrier::new(2),
+            opens: AtomicUsize::new(0),
+        });
+        let engines = WarmEngines::new(warmer.clone());
+
+        // Generous on purpose: the work inside the bound is two barrier waits, so anything but a
+        // regression finishes in microseconds, and four agents share this host.
+        let both = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures_join(
+                engines.ensure(Path::new("/alpha"), never_a_daemon),
+                engines.ensure(Path::new("/beta"), never_a_daemon),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            (both, warmer.opens.load(Ordering::Relaxed)),
+            (Ok((Warmth::Opened, Warmth::Opened)), 2),
+            "one root's warm-up must not hold the lock the next root needs to claim"
+        );
+    }
+
+    /// `tokio::join!` in expression position, so the two futures above read as one value.
+    async fn futures_join<A: Future, B: Future>(first: A, second: B) -> (A::Output, B::Output) {
+        tokio::join!(first, second)
+    }
+
+    #[tokio::test]
+    async fn neither_a_wedged_warm_up_nor_a_wedged_probe_outlives_the_bound() {
         struct Hanging;
         impl Warmer for Hanging {
             fn open(
@@ -278,9 +374,15 @@ mod tests {
 
         let engines = WarmEngines::within(Arc::new(Hanging), Duration::from_millis(50));
 
+        let wedged_engine = engines.ensure(Path::new("/wedged"), never_a_daemon).await;
+        let wedged_probe = engines
+            .ensure(Path::new("/probe"), std::future::pending)
+            .await;
+
         assert_eq!(
-            engines.ensure(Path::new("/wedged"), never_a_daemon).await,
-            Warmth::Failed
+            (wedged_engine, wedged_probe),
+            (Warmth::Failed, Warmth::Failed),
+            "the bound covers the daemon probe as well as the warm-up"
         );
     }
 }

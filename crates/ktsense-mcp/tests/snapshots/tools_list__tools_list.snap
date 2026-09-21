@@ -111,6 +111,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -236,6 +243,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -377,6 +391,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -525,6 +546,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -660,6 +688,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -787,6 +822,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -905,6 +947,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1056,6 +1105,13 @@ expression: listed
           "tool": {
             "description": "The MCP tool name that produced this.",
             "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

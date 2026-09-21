@@ -17,9 +17,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use crate::citations::{index_answer, Answer};
+use crate::citations::{index_answer, Answer, Call};
 use crate::roots::ClientRoots;
-use crate::warm::{EngineWarmer, WarmEngines};
+use crate::warm::{EngineWarmer, WarmEngines, Warmth};
 use crate::Tool;
 
 /// Exit codes the CLI documents as answers rather than failures: success, and an ambiguous name,
@@ -337,13 +337,11 @@ impl KtsenseServer {
     /// Makes sure an engine is warm for the root this call is about, when the index would shape the
     /// answer. Never fails the call: a root that could not be warmed is answered anyway, just from a
     /// cold index.
-    async fn keep_warm(&self, tool: &Tool, request: &Request) {
+    async fn keep_warm(&self, tool: &Tool, request: &Request) -> Option<Warmth> {
         if !tool.index_shapes_answer {
-            return;
+            return None;
         }
-        let Some(engines) = self.warm.as_ref() else {
-            return;
-        };
+        let engines = self.warm.as_ref()?;
         let root = request
             .root
             .as_ref()
@@ -353,6 +351,7 @@ impl KtsenseServer {
             .ensure(&root, || self.daemon_holds(root.clone()))
             .await;
         tracing::debug!(root = %root.display(), ?warmth, "engine warmth for this root");
+        Some(warmth)
     }
 
     /// Whether a daemon is already holding a warm session for `root`, asked of our own `status`
@@ -375,13 +374,13 @@ impl KtsenseServer {
     }
 
     async fn invoke(&self, tool: &Tool, request: Request) -> Result<CallToolResult, ErrorData> {
-        self.keep_warm(tool, &request).await;
+        let warmth = self.keep_warm(tool, &request).await;
         let invocation = self
             .runner
             .run(request)
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        Ok(present(tool, invocation))
+        Ok(present(tool, invocation, warmth))
     }
 }
 
@@ -421,7 +420,7 @@ async fn advertised_roots(peer: &Peer<RoleServer>) -> Vec<PathBuf> {
 /// error carrying the command's own message, so the agent sees `no declaration named X` rather
 /// than a bare failure. Either way the result carries its citation index, because the files a
 /// failure names are as worth following as the ones an answer names.
-fn present(tool: &Tool, invocation: Invocation) -> CallToolResult {
+fn present(tool: &Tool, invocation: Invocation, warmth: Option<Warmth>) -> CallToolResult {
     let answered = invocation
         .code
         .is_some_and(|code| ANSWER_EXITS.contains(&code));
@@ -432,7 +431,15 @@ fn present(tool: &Tool, invocation: Invocation) -> CallToolResult {
     } else {
         invocation.stderr.trim().to_string()
     };
-    let indexed = index_answer(tool, &invocation.root, invocation.code, &text);
+    let indexed = index_answer(
+        Call {
+            tool,
+            root: &invocation.root,
+            exit: invocation.code,
+            warmth: warmth.map(Warmth::label),
+        },
+        &text,
+    );
     let content = vec![ContentBlock::text(text)];
     let mut result = if answered {
         CallToolResult::success(content)
@@ -721,6 +728,44 @@ mod tests {
             .expect("listed tools come from the catalogue")
     }
 
+    /// What an answer says the server did about warmth, which is how a caller with no `index:` marker
+    /// weighs the result.
+    fn warmth(result: &CallToolResult) -> Option<Value> {
+        result
+            .structured_content
+            .as_ref()
+            .map(|structured| structured["warmth"].clone())
+    }
+
+    /// Whether a description states a cost the way KT-32 requires: the marker, and then either a
+    /// figure or an explicit admission that nothing was measured.
+    ///
+    /// `cost: fast` is the case this exists to reject. It is what KT-31 shipped, it reads as cheap, and
+    /// KT-38 measured `analyze_kotlin_dependencies` at 1.7 s and `get_kotlin_repo_map` at 1.1 s. An
+    /// admission is allowed because the alternative would be a test that pressures the next author into
+    /// inventing a number for a tool nobody has timed.
+    fn states_a_cost(description: &str) -> bool {
+        let Some(stated) = description.split("cost: ").nth(1) else {
+            return false;
+        };
+        let stated = stated.trim().trim_end_matches('.').trim();
+        stated.contains(|character: char| character.is_ascii_digit()) || stated == "unmeasured"
+    }
+
+    #[test]
+    fn a_cost_marker_needs_a_figure_or_an_admission_and_fast_is_neither() {
+        let judged = [
+            "requires: nothing. cost: about 30 ms on a 54 KB file (ktor 3.0.1, median of 9, KT-38).",
+            "requires: nothing. cost: unmeasured.",
+            "requires: nothing. cost: fast (no index).",
+            "requires: nothing. cost: .",
+            "requires: nothing.",
+        ]
+        .map(states_a_cost);
+
+        assert_eq!(judged, [true, true, false, false, false]);
+    }
+
     fn is_object_schema(schema: &Value) -> bool {
         schema.get("type") == Some(&json!("object")) && schema.get("properties").is_some()
     }
@@ -746,7 +791,7 @@ mod tests {
             let description = tool.description.as_deref().unwrap_or_default();
             let entry = catalogued(&tool.name);
             description.contains(&format!("requires: {}", entry.requires.label()))
-                && description.contains("cost: ")
+                && states_a_cost(description)
         });
         let read_only = listed.iter().all(|tool| {
             tool.annotations
@@ -937,10 +982,10 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        server.trace_kotlin_symbol(trace()).await.expect("first");
+        let first_result = server.trace_kotlin_symbol(trace()).await.expect("first");
         let first = started.elapsed();
         let started = std::time::Instant::now();
-        server.trace_kotlin_symbol(trace()).await.expect("second");
+        let second_result = server.trace_kotlin_symbol(trace()).await.expect("second");
         let second = started.elapsed();
 
         let commands: Vec<String> = runner
@@ -956,6 +1001,8 @@ mod tests {
                 commands,
                 first >= WARM_UP,
                 second < SECOND_CALL_BOUND,
+                warmth(&first_result),
+                warmth(&second_result),
             ),
             (
                 1,
@@ -966,6 +1013,8 @@ mod tests {
                 ],
                 true,
                 true,
+                Some(json!("opened")),
+                Some(json!("already_decided")),
             ),
             "first={first:?} second={second:?}"
         );

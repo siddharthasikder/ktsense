@@ -21,7 +21,7 @@ mod roots;
 mod server;
 mod warm;
 
-pub use citations::{index_answer, Answer, Citation, MAX_CITATIONS};
+pub use citations::{index_answer, Answer, Call, Citation, MAX_CITATIONS};
 pub use roots::ClientRoots;
 pub use server::{
     serve, ExecutableRunner, Format, Invocation, KtsenseServer, Request, Runner, RunnerError,
