@@ -25,7 +25,7 @@ pub use progress::{wait_for_index, IndexPhase, IndexWait};
 pub use requests::{uri_to_path, DeclarationScope, FilePosition, SiteLocation};
 pub use symbols::{resolve_symbol, run_symbols, Resolution, SymbolCandidate, SymbolResolver};
 pub use version::{
-    check_version, check_version_within, classify, Compatibility, VersionCheck,
+    check_version, check_version_within, classify, reported_version, Compatibility, VersionCheck,
     PINNED_UPSTREAM_VERSION,
 };
 
@@ -78,7 +78,9 @@ pub async fn launch() -> Result<LspClient, LspError> {
     }
 }
 
-fn locate_binary() -> PathBuf {
+/// The engine binary ktsense will use: the first existing candidate of [`discovery_order`], or the
+/// bare `PATH` name when none exists so the eventual spawn error names what was looked for.
+pub fn locate_binary() -> PathBuf {
     let candidates = discovery_order(
         std::env::var_os(LSP_PATH_ENV).map(PathBuf::from),
         std::env::current_exe().ok(),

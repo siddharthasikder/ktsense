@@ -34,28 +34,16 @@ const IDLE_SECS_ENV: &str = "KTSENSE_DAEMON_IDLE_SECS";
 pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
     let socket = socket_for(&root);
-    let text = match block_on(status(&socket)) {
-        Liveness::Live => format!(
-            "ktsense: daemon running for {}\nsocket: {}\nindex phase, symbol counts and uptime are \
-             not reported yet (KT-36)\n",
-            root.display(),
-            socket.display()
-        ),
-        // A stale socket is not an error to report to a human: naming it explains why a file exists
-        // where a live daemon is not, and says who will clean it up.
-        Liveness::Stale => format!(
-            "ktsense: no daemon running for {}\nsocket: {} is a stale leftover and will be \
-             reclaimed by the next start\n",
-            root.display(),
-            socket.display()
-        ),
-        Liveness::Absent => format!(
-            "ktsense: no daemon running for {}\nsocket: {} does not exist\n",
-            root.display(),
-            socket.display()
-        ),
+    let daemon = block_on(crate::status::observe_daemon(&socket));
+    let headline = match daemon.state {
+        crate::status::DaemonState::Running => "daemon running for",
+        _ => "no daemon running for",
     };
-    Ok(CommandOutcome::success(text))
+    Ok(CommandOutcome::success(format!(
+        "ktsense: {headline} {}\n{}",
+        root.display(),
+        crate::status::daemon_lines(&daemon)
+    )))
 }
 
 /// Starts a daemon for `root`, or reports that one is already running. Idempotent by design: asking
@@ -145,7 +133,7 @@ pub(crate) fn socket_for(root: &Path) -> PathBuf {
 
 /// Resolves the root before it is used as a daemon's identity, so `.`, a relative path and an
 /// absolute path all address the same daemon instead of silently starting three.
-fn canonical_root(root: &Path) -> PathBuf {
+pub(crate) fn canonical_root(root: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 

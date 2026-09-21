@@ -1,0 +1,10 @@
+---
+source: crates/ktsense-cli/tests/status.rs
+expression: "neutralize(&md.stdout, temp.path(), &engine)"
+---
+# Status: <workspace>/fixtures/tiny-app
+
+kotlin files: 17
+engine: kmp-lsp 0.26.0 at <engine> (pinned 0.26.0, supported)
+daemon: not running
+socket: <runtime>/ktsense/<root-hash>.sock does not exist

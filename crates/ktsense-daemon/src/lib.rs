@@ -12,7 +12,7 @@ mod server;
 mod wire;
 
 pub use client::{verify_protocol, Client, ClientError, ProtocolMismatch};
-pub use engine::{Engine, EngineRequest, HandlerOutcome, WarmEngine};
+pub use engine::{Engine, EngineRequest, HandlerOutcome, IndexTracker, WarmEngine};
 pub use server::{
     probe, run, status, stop, DaemonConfig, DaemonError, Liveness, StopOutcome, StopReason,
     DEFAULT_IDLE_TIMEOUT,

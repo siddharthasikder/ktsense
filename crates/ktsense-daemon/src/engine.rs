@@ -6,9 +6,11 @@
 //! point of the daemon, and it decides what happens when that client faults.
 
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 
-use ktsense_lsp::{InitializeConfig, LspClient, LspError};
+use ktsense_lsp::{IndexPhase, InitializeConfig, LspClient, LspError, Notification};
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 /// One request routed from a connected client to the warm engine.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +40,47 @@ pub trait Engine: Send + Sync + 'static {
 /// The production engine: one initialized `LspClient` kept warm for the daemon's whole life.
 pub struct WarmEngine {
     client: LspClient,
+    index: IndexTracker,
+}
+
+/// Follows the engine's indexing lifecycle from its progress notifications on a background task,
+/// so a status request can read the current phase without anyone having to drain the stream at
+/// that moment. Once the stream closes the last observed phase stays readable.
+#[derive(Clone)]
+pub struct IndexTracker {
+    phase: Arc<Mutex<IndexPhase>>,
+}
+
+impl IndexTracker {
+    /// Starts following `notifications`. Must be called on a tokio runtime, which is where every
+    /// daemon lives. A `None` stream, already taken by someone else, leaves the phase at
+    /// [`IndexPhase::Pending`] for good, which is the honest answer when nothing is being observed.
+    pub fn spawn(notifications: Option<UnboundedReceiver<Notification>>) -> Self {
+        let tracker = Self {
+            phase: Arc::new(Mutex::new(IndexPhase::Pending)),
+        };
+        if let Some(stream) = notifications {
+            tokio::spawn(tracker.clone().follow(stream));
+        }
+        tracker
+    }
+
+    pub fn phase(&self) -> IndexPhase {
+        *self
+            .phase
+            .lock()
+            .expect("index phase lock is never poisoned")
+    }
+
+    async fn follow(self, mut stream: UnboundedReceiver<Notification>) {
+        while let Some(notification) = stream.recv().await {
+            let mut phase = self
+                .phase
+                .lock()
+                .expect("index phase lock is never poisoned");
+            *phase = phase.observe(&notification);
+        }
+    }
 }
 
 impl WarmEngine {
@@ -46,12 +89,18 @@ impl WarmEngine {
     pub async fn warm_up(config: InitializeConfig) -> Result<Self, LspError> {
         let client = ktsense_lsp::launch().await?;
         client.initialize(&config).await?;
-        Ok(Self { client })
+        Ok(Self::from_client(client))
     }
 
     /// Wraps an already-spawned client, so a session prepared elsewhere can back the daemon.
-    pub fn from_client(client: LspClient) -> Self {
-        Self { client }
+    pub fn from_client(mut client: LspClient) -> Self {
+        let index = IndexTracker::spawn(client.take_notifications());
+        Self { client, index }
+    }
+
+    /// Where the engine's indexing stands, as last reported through its progress notifications.
+    pub fn index_phase(&self) -> IndexPhase {
+        self.index.phase()
     }
 }
 
@@ -80,7 +129,52 @@ fn outcome_for(result: Result<Value, LspError>) -> HandlerOutcome {
 mod tests {
     use super::*;
     use ktsense_lsp::FramingError;
+    use serde_json::json;
     use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    fn progress(kind: &str) -> Notification {
+        Notification {
+            method: "$/progress".to_string(),
+            params: json!({ "token": "index", "value": { "kind": kind, "title": "Indexing" } }),
+        }
+    }
+
+    async fn settled(tracker: &IndexTracker, expected: IndexPhase) -> IndexPhase {
+        for _ in 0..200 {
+            if tracker.phase() == expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tracker.phase()
+    }
+
+    #[tokio::test]
+    async fn the_tracker_follows_begin_and_end_and_keeps_the_last_phase_after_the_stream_closes() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let tracker = IndexTracker::spawn(Some(receiver));
+        let untracked = IndexTracker::spawn(None);
+
+        let before = tracker.phase();
+        sender.send(progress("begin")).expect("open");
+        let during = settled(&tracker, IndexPhase::Indexing).await;
+        sender.send(progress("end")).expect("open");
+        let after = settled(&tracker, IndexPhase::Ready).await;
+        drop(sender);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(
+            (before, during, after, tracker.phase(), untracked.phase()),
+            (
+                IndexPhase::Pending,
+                IndexPhase::Indexing,
+                IndexPhase::Ready,
+                IndexPhase::Ready,
+                IndexPhase::Pending
+            )
+        );
+    }
 
     #[test]
     fn only_a_framing_fault_stops_the_daemon() {

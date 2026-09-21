@@ -1,0 +1,18 @@
+---
+source: crates/ktsense-cli/tests/status.rs
+expression: "neutralize(&json.stdout, temp.path(), &engine)"
+---
+{
+  "root": "<workspace>/fixtures/tiny-app",
+  "kotlin_files": 17,
+  "engine": {
+    "binary": "<engine>",
+    "pinned_version": "0.26.0",
+    "version": "0.26.0",
+    "compatibility": "supported"
+  },
+  "daemon": {
+    "socket": "<runtime>/ktsense/<root-hash>.sock",
+    "state": "absent"
+  }
+}

@@ -55,6 +55,15 @@ pub async fn check_version_within(binary: &Path, bound: Duration) -> VersionChec
     assess(&probe(binary, bound).await)
 }
 
+/// The version string `binary --version` reports, or `None` when the binary is missing, fails, or
+/// prints nothing. For reporting, not for gating: [`check_version`] decides whether to start.
+pub async fn reported_version(binary: &Path) -> Option<String> {
+    match probe(binary, DEFAULT_PROBE_TIMEOUT).await {
+        VersionProbe::Reported(version) => Some(version),
+        VersionProbe::NoOutput | VersionProbe::Failed(_) => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum VersionProbe {
     Reported(String),

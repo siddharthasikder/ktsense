@@ -8,6 +8,7 @@
 
 mod daemon;
 mod routing;
+mod status;
 mod symbols;
 mod trace;
 
@@ -481,6 +482,10 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         Command::Diagnose { file } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             diagnose(&base, &resolve_root(Some(&base), &file), format).map(CommandOutcome::success)
+        }
+        Command::Status => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            status::run(&base, format).map(CommandOutcome::success)
         }
         ref pending => Err(CommandError::unimplemented(not_implemented_label(pending))),
     }

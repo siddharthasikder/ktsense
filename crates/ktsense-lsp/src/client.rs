@@ -90,7 +90,7 @@ pub struct LspClient {
     child: SharedChild,
     stdin: EngineStdin,
     pending: Pending,
-    notifications: mpsc::UnboundedReceiver<Notification>,
+    notifications: Option<mpsc::UnboundedReceiver<Notification>>,
     next_id: AtomicI64,
     request_timeout: Duration,
     shutdown_timeout: Duration,
@@ -143,7 +143,7 @@ impl LspClient {
             child,
             stdin: Arc::new(TokioMutex::new(Some(stdin))),
             pending,
-            notifications: notif_rx,
+            notifications: Some(notif_rx),
             next_id: AtomicI64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
@@ -258,9 +258,20 @@ impl LspClient {
         Ok(result)
     }
 
-    /// Returns the next server notification, or `None` once the engine stream has closed.
+    /// Returns the next server notification, or `None` once the engine stream has closed or the
+    /// stream has been handed off with [`LspClient::take_notifications`].
     pub async fn next_notification(&mut self) -> Option<Notification> {
-        self.notifications.recv().await
+        match self.notifications.as_mut() {
+            Some(notifications) => notifications.recv().await,
+            None => None,
+        }
+    }
+
+    /// Hands the notification stream to a dedicated consumer, so a long-lived session can track
+    /// progress from a background task while requests keep flowing through `&self`. Afterwards this
+    /// client sees no notifications itself. Returns `None` if the stream was already taken.
+    pub fn take_notifications(&mut self) -> Option<mpsc::UnboundedReceiver<Notification>> {
+        self.notifications.take()
     }
 
     /// Requests `shutdown`, sends `exit`, closes the child's stdin, and guarantees the child is

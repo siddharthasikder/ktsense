@@ -17,12 +17,15 @@
 //! there is nothing a warm session could answer more faithfully than the subprocess already does.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use ktsense_core::{DepLevel, RenderOptions};
 use ktsense_daemon::{Client, ClientError, Engine, EngineRequest, HandlerOutcome, WarmEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::status::{DaemonSnapshot, STATUS_METHOD};
 use crate::{block_on, CommandError, Format};
 
 pub(crate) const NO_DAEMON_ENV: &str = "KTSENSE_NO_DAEMON";
@@ -193,11 +196,28 @@ async fn ask_daemon(socket: &Path, command: &RoutedCommand, format: Format) -> D
 pub(crate) struct CommandEngine {
     root: PathBuf,
     engine: WarmEngine,
+    started: Instant,
+    served: AtomicU64,
 }
 
 impl CommandEngine {
     pub(crate) fn new(root: PathBuf, engine: WarmEngine) -> Self {
-        Self { root, engine }
+        Self {
+            root,
+            engine,
+            started: Instant::now(),
+            served: AtomicU64::new(0),
+        }
+    }
+
+    /// What `ktsense status` shows for this daemon. Status requests are not counted as served: the
+    /// count answers "how much work has this daemon done", and looking at it is not work.
+    fn snapshot(&self) -> DaemonSnapshot {
+        DaemonSnapshot {
+            uptime_secs: self.started.elapsed().as_secs(),
+            index: self.engine.index_phase().into(),
+            requests_served: self.served.load(Ordering::Relaxed),
+        }
     }
 
     fn answer(&self, params: Value) -> HandlerOutcome {
@@ -216,6 +236,13 @@ impl CommandEngine {
 
 impl Engine for CommandEngine {
     async fn handle(&self, request: EngineRequest) -> HandlerOutcome {
+        if request.method == STATUS_METHOD {
+            return match serde_json::to_value(self.snapshot()) {
+                Ok(value) => HandlerOutcome::Reply(value),
+                Err(error) => HandlerOutcome::Error(error.to_string()),
+            };
+        }
+        self.served.fetch_add(1, Ordering::Relaxed);
         if request.method == COMMAND_METHOD {
             return self.answer(request.params);
         }

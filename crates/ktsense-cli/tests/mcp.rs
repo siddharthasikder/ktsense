@@ -88,6 +88,11 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
         "tools/call",
         json!({ "name": "find_kotlin_symbol", "arguments": { "query": "ZzzNope", "root": FIXTURE } }),
     );
+    let status = session.request(
+        5,
+        "tools/call",
+        json!({ "name": "ktsense_status", "arguments": {} }),
+    );
     let (exit, stderr) = session.finish();
 
     let tools = listed["result"]["tools"].as_array().expect("tools array");
@@ -114,6 +119,10 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
             && outline_text.contains("fun save(order: Order): OrderId"),
         missing["result"]["isError"].clone(),
         missing["result"]["content"][0]["text"].clone(),
+        status["result"]["isError"].clone(),
+        status["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("# Status: ") && text.contains("\ndaemon: ")),
         exit,
         stderr.is_empty(),
     );
@@ -137,6 +146,8 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
             true,
             json!(true),
             json!("ktsense: no declaration named ZzzNope"),
+            json!(false),
+            true,
             Some(0),
             true,
         ),
