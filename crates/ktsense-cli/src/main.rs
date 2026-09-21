@@ -425,7 +425,6 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 kdoc,
             };
             routing::route(&base, &daemon::socket_for(&base), command, format)
-                .map(CommandOutcome::success)
         }
         Command::Deps { level } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
@@ -433,7 +432,6 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 level: DepLevel::from(level).into(),
             };
             routing::route(&base, &daemon::socket_for(&base), command, format)
-                .map(CommandOutcome::success)
         }
         Command::Symbols {
             query,
@@ -446,7 +444,8 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         }
         Command::Map { budget } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
-            repository_map(&base, budget, format).map(CommandOutcome::success)
+            let command = routing::RoutedCommand::Map { budget };
+            routing::route(&base, &daemon::socket_for(&base), command, format)
         }
         Command::Trace {
             symbol,
@@ -456,15 +455,14 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             wait_index,
         } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
-            trace::trace(trace::TraceRequest {
-                root: &base,
-                symbol: &symbol,
-                pick: pick.as_deref(),
-                depth: usize::from(depth),
+            let command = routing::RoutedCommand::Trace {
+                symbol,
+                pick,
+                depth,
                 limit,
-                wait: trace::IndexWaitPolicy::from_flag(wait_index),
-                format,
-            })
+                wait_index,
+            };
+            routing::route(&base, &daemon::socket_for(&base), command, format)
         }
         Command::Daemon { action } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));

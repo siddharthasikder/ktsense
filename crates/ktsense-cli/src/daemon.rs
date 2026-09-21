@@ -93,7 +93,7 @@ pub(crate) fn serve(root: &Path) -> Result<CommandOutcome, CommandError> {
     let config = DaemonConfig::new(socket, idle_timeout());
     let initialize = InitializeConfig {
         root_uri: file_uri(&root),
-        ignore_patterns: Vec::new(),
+        ignore_patterns: vec![crate::trace::IGNORED_BUILD_OUTPUT.to_string()],
     };
 
     let reason = block_on(async move {

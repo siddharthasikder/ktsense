@@ -16,6 +16,7 @@ use ktsense_core::{
     build_trace, callers_of, render_trace_markdown, Definition, FileSkeleton, GroupingOptions,
     IndexCompleteness, Location, RelatedDeclaration, TraceInput, TraceReport,
 };
+use ktsense_daemon::WarmEngine;
 use ktsense_lsp::{
     wait_for_index, DeclarationScope, FilePosition, IndexPhase, InitializeConfig, LspClient,
     LspError, SiteLocation, SymbolCandidate,
@@ -28,7 +29,10 @@ use crate::{block_on, normalized_path, CommandError, CommandOutcome, Format};
 /// has; `KTSENSE_INDEX_CAP_MS` overrides it, which the tests use to shorten it.
 const DEFAULT_INDEX_CAP: Duration = Duration::from_secs(3);
 const INDEX_CAP_ENV: &str = "KTSENSE_INDEX_CAP_MS";
-const IGNORED_BUILD_OUTPUT: &str = "**/build/**";
+/// The build-output glob a trace session tells the engine to ignore, so implementors and references
+/// never point at a Buildship `bin/` copy of a source. The daemon's warm session is initialized with
+/// the same pattern, so a routed trace answers about the same files the fresh path does.
+pub(crate) const IGNORED_BUILD_OUTPUT: &str = "**/build/**";
 
 pub(crate) struct TraceRequest<'a> {
     pub root: &'a Path,
@@ -78,6 +82,9 @@ pub(crate) enum Traced {
     Ambiguous(CommandOutcome),
 }
 
+/// The in-process `trace`: resolve the name, then answer from a fresh engine session. This is the
+/// fallback path a routed `trace` degrades to when no daemon is live, and the path `context` reuses
+/// through [`resolve`].
 pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, CommandError> {
     match resolve(&request)? {
         Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
@@ -85,44 +92,143 @@ pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, Command
     }
 }
 
+/// The daemon-side `trace`: resolve the name the same way, then answer from the daemon's own warm
+/// session rather than launching a second engine child. The core flow, [`Session::run`], is shared
+/// with the fresh path, so the two answers cannot drift. Resolution still shells out to command-mode
+/// `find` (Fork A exempts symbols, and `workspace/symbol` is fuzzy and not root-scoped), so a routed
+/// trace still pays that subprocess even with the warm session answering the engine requests.
+pub(crate) async fn trace_warm(
+    engine: &WarmEngine,
+    request: TraceRequest<'_>,
+) -> Result<CommandOutcome, CommandError> {
+    match resolve_candidate(&request).await? {
+        Resolution::Ambiguous(outcome) => Ok(outcome),
+        Resolution::Ready {
+            candidate,
+            definition,
+        } => {
+            let index = await_warm_index(engine, request.wait).await;
+            let report = Session::new(request.root, request.limit)
+                .run(
+                    engine.client(),
+                    &candidate,
+                    definition,
+                    request.depth,
+                    index,
+                )
+                .await
+                .map_err(CommandError::engine)?;
+            present(&report, request.format).map(CommandOutcome::success)
+        }
+    }
+}
+
 pub(crate) fn resolve(request: &TraceRequest<'_>) -> Result<Traced, CommandError> {
-    let candidates = block_on(ktsense_lsp::run_symbols(request.root, request.symbol))
+    block_on(resolve_in_process(request))
+}
+
+/// Resolves the name and, when it is unambiguous, answers from a fresh session. Async so it composes
+/// with the async resolver instead of nesting a runtime; [`resolve`] blocks on it for the synchronous
+/// callers.
+async fn resolve_in_process(request: &TraceRequest<'_>) -> Result<Traced, CommandError> {
+    match resolve_candidate(request).await? {
+        Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
+        Resolution::Ready {
+            candidate,
+            definition,
+        } => {
+            let report = collect_fresh(request, &candidate, definition)
+                .await
+                .map_err(CommandError::engine)?;
+            Ok(Traced::Resolved(report))
+        }
+    }
+}
+
+/// What resolving the name settled on: the one declaration to trace, or the candidate list to print
+/// when it was ambiguous. Shared by the fresh and warm paths so the ambiguity contract is stated
+/// once.
+enum Resolution {
+    Ready {
+        candidate: SymbolCandidate,
+        definition: Definition,
+    },
+    Ambiguous(CommandOutcome),
+}
+
+async fn resolve_candidate(request: &TraceRequest<'_>) -> Result<Resolution, CommandError> {
+    let candidates = ktsense_lsp::run_symbols(request.root, request.symbol)
+        .await
         .map_err(|error| CommandError::passthrough(&error))?;
-    let (candidate, resolved) = match symbols::select(
+    match symbols::select(
         request.root,
         request.symbol,
         candidates,
         request.pick,
         request.format,
     )? {
-        Selection::One(candidate, resolved) => (candidate, resolved),
-        Selection::Ambiguous(outcome) => return Ok(Traced::Ambiguous(outcome.into())),
-    };
-
-    let definition = Definition {
-        qualified_name: resolved.fqn,
-        path: resolved.file,
-        line: resolved.line,
-        signature: resolved.signature,
-    };
-    let report =
-        block_on(collect(request, &candidate, definition)).map_err(CommandError::engine)?;
-    Ok(Traced::Resolved(report))
+        Selection::One(candidate, resolved) => Ok(Resolution::Ready {
+            candidate,
+            definition: Definition {
+                qualified_name: resolved.fqn,
+                path: resolved.file,
+                line: resolved.line,
+                signature: resolved.signature,
+            },
+        }),
+        Selection::Ambiguous(outcome) => Ok(Resolution::Ambiguous(outcome.into())),
+    }
 }
 
-/// Runs the whole engine session and always tears it down, whatever the requests returned.
-async fn collect(
+/// Launches a fresh engine, runs the whole session, and always tears it down, whatever the requests
+/// returned. The index wait happens here because a fresh session must build its index before it can
+/// answer; the warm path reads the daemon's already-tracked phase instead.
+async fn collect_fresh(
     request: &TraceRequest<'_>,
     candidate: &SymbolCandidate,
     definition: Definition,
 ) -> Result<TraceReport, LspError> {
     let mut client = ktsense_lsp::launch().await?;
-    let outcome = Session::new(request.root, request.limit, request.wait)
-        .run(&mut client, candidate, definition, request.depth)
+    let config = InitializeConfig {
+        root_uri: format!("file://{}", canonical(request.root).display()),
+        ignore_patterns: vec![IGNORED_BUILD_OUTPUT.to_string()],
+    };
+    client.initialize(&config).await?;
+    let wait = wait_for_index(&mut client, request.wait.cap()).await;
+    let outcome = Session::new(request.root, request.limit)
+        .run(
+            &client,
+            candidate,
+            definition,
+            request.depth,
+            completeness(wait.phase),
+        )
         .await;
     let _ = client.shutdown().await;
     outcome
 }
+
+/// The index completeness the daemon's warm session can honestly claim, waiting under the same
+/// policy a fresh session would: until the tracked phase is ready, or until the cap elapses, after
+/// which the phase reached is reported as the lower bound it is. The phase is polled from the
+/// tracker rather than drained from the notification stream, which the daemon already consumes.
+async fn await_warm_index(engine: &WarmEngine, wait: IndexWaitPolicy) -> IndexCompleteness {
+    let deadline = tokio::time::Instant::now() + wait.cap();
+    loop {
+        let phase = engine.index_phase();
+        if phase.is_ready() {
+            return IndexCompleteness::Complete;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return completeness(phase);
+        }
+        tokio::time::sleep(WARM_INDEX_POLL).await;
+    }
+}
+
+/// How often [`await_warm_index`] rechecks the tracker. Short enough that a just-finished index is
+/// noticed promptly, long enough that the poll costs nothing next to the engine requests.
+const WARM_INDEX_POLL: Duration = Duration::from_millis(20);
 
 /// The state one trace accumulates while talking to the engine: the workspace root every path is
 /// shown relative to, the per-file cap, and the skeletons of every file the answer has touched.
@@ -132,35 +238,31 @@ struct Session<'a> {
     /// a relative `--root` would otherwise produce a relative `file://` URI the engine cannot open.
     canonical_root: PathBuf,
     limit: Option<usize>,
-    wait: IndexWaitPolicy,
     skeletons: Skeletons,
 }
 
 impl<'a> Session<'a> {
-    fn new(root: &'a Path, limit: Option<usize>, wait: IndexWaitPolicy) -> Self {
+    fn new(root: &'a Path, limit: Option<usize>) -> Self {
         Self {
             root,
             canonical_root: canonical(root),
             limit,
-            wait,
             skeletons: Skeletons::default(),
         }
     }
 
+    /// The shared core flow: ask the engine for implementors and references at the declaration,
+    /// build the report at the given index completeness, then follow callers for each further level
+    /// of depth. `client` is a fresh session on the in-process path and the daemon's warm session on
+    /// the routed path, so the two answers are identical by construction.
     async fn run(
         mut self,
-        client: &mut LspClient,
+        client: &LspClient,
         candidate: &SymbolCandidate,
         definition: Definition,
         depth: usize,
+        index: IndexCompleteness,
     ) -> Result<TraceReport, LspError> {
-        let config = InitializeConfig {
-            root_uri: format!("file://{}", self.canonical_root.display()),
-            ignore_patterns: vec![IGNORED_BUILD_OUTPUT.to_string()],
-        };
-        client.initialize(&config).await?;
-        let wait = wait_for_index(client, self.wait.cap()).await;
-
         let at = self.declaration_position(candidate);
         let implementation_sites = self.sites(&client.implementation_sites(&at).await?);
         let reference_sites = self.sites(
@@ -174,7 +276,7 @@ impl<'a> Session<'a> {
         let options = self.grouping();
         let mut report = build_trace(TraceInput {
             definition,
-            index: completeness(wait.phase),
+            index,
             definition_site,
             implementation_sites,
             reference_sites,

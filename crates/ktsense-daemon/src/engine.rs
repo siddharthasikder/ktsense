@@ -102,6 +102,15 @@ impl WarmEngine {
     pub fn index_phase(&self) -> IndexPhase {
         self.index.phase()
     }
+
+    /// The warm session itself, so CLI orchestration that a warm daemon serves can drive the very
+    /// client the daemon keeps initialized instead of launching a second engine child. This is the
+    /// narrowest port the layering allows: the daemon crate already owns the client, and high-level
+    /// orchestration such as `trace` cannot live here because it needs the syntax crate this one may
+    /// not depend on.
+    pub fn client(&self) -> &LspClient {
+        &self.client
+    }
 }
 
 impl Engine for WarmEngine {
