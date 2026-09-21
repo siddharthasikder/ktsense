@@ -12,7 +12,8 @@ cell, and six more on one question to bound the timing claim.
 
 ## The result
 
-Both arms answered all nine graded questions correctly. ktsense was slower on nine of the ten cells.
+Both arms answered all nine graded questions correctly. ktsense was nominally slower on nine of the ten
+cells, by a margin this host's noise does not resolve.
 
 | Question | Kind | baseline | ktsense | ktsense tools it chose |
 |---|---|---|---|---|
@@ -38,8 +39,9 @@ or not at all.
 
 ## Reading the result
 
-The honest summary is that ktsense did not win. It matched the baseline on correctness, cost about a
-third more wall time at the median, and used more tool calls in total, 21 against 17.
+The honest summary is that ktsense did not win. It matched the baseline on correctness, used more tool
+calls in total, 21 against 17, and was nominally about a third slower at the median, though that gap is
+inside this host's noise and is not a measured cost: see the null control below.
 
 The reason is visible in the questions rather than in the tools. Nine of the ten ask where a named
 declaration lives or what it declares, and `kotlinx.coroutines` gives almost every declaration a
@@ -78,9 +80,11 @@ A direct JSON-RPC handshake against `ktsense --root <corpus> mcp`, with no model
 eight tools. A preflight session was then told to call `get_kotlin_repo_map`, and Kiro reported the
 call as `from mcp server: ktsense`. Both gates are hard failures: the run aborts rather than starting
 the matrix. Beyond that, every cell records the number of ktsense calls it made, and a ktsense-arm
-session that makes zero is reported as a failed cell rather than scored. Nine such calls were observed
-across seven of the ten cells, and the per-call arguments are in the transcripts under
-`runs/full-1/transcripts/`.
+session that makes zero is still scored and is additionally flagged as a failed cell, which makes the
+run exit non-zero. It is not withheld from the table, so the credit needs stating plainly: 2 of the 9
+correct answers on the ktsense arm, Q07 and Q08, were reached without calling ktsense at all. Nine
+calls were observed across seven of the ten cells, and the per-call arguments are in the transcripts
+under `runs/full-1/transcripts/`.
 
 An earlier version of the preflight gated on the agent listing all eight tool names, and it failed
 twice against a correctly configured server: asked to name its tools, the model omitted the one it was
@@ -89,10 +93,12 @@ the observed call, and the echoed name count is recorded for interest only.
 
 ## The bin duplication, and a correction
 
-The corpus holds 1025 `.kt` files, plus 214 byte-identical copies under directories named `bin`, left
-by the Eclipse Buildship import that `kmp-lsp` triggers on a Gradle project. An agent that reaches for
-`grep`, `find` or `rg` sees 1239 files and can answer a counting question wrongly through no fault of
-its own.
+The corpus holds 1025 `.kt` files that ktsense's traversal walks, out of 1592 on disk: 214 are the
+byte-identical `bin` copies left by the Eclipse Buildship import that `kmp-lsp` triggers on a Gradle
+project, and 353 more sit under `build`, `target` and friends. So `find` and `grep -r` see all 1592,
+while `rg` lands at 1239 because it honours the corpus `.gitignore`, which excludes `build` and `out`
+but not `bin`. An agent reaching for any of them can answer a counting question wrongly through no fault
+of its own.
 
 **Both arms were told to ignore `bin`, in identical words, in every prompt.** The preamble in
 `questions.yaml` names `bin`, `build`, `target`, `.gradle` and `node_modules` as out of scope, and it
@@ -120,13 +126,19 @@ question asks for a repository wide count, which is where the duplication would 
 ## Wall time is indicative, not a benchmark
 
 Between four and six other agents were compiling on this 32 core host throughout. The one minute load
-average was sampled next to every cell and ranged from 2.07 to 11.92; available memory never fell
+average was sampled next to every cell and ranged from 4.48 to 11.92 across the twenty matrix cells; the
+quieter 2.07 belongs only to the Q09 repetitions, which ran later. Available memory never fell
 below 17.8 GB, against a 4 GB floor at which `run.sh` stops. Timing is taken with the bash `time`
 keyword, the method `bench/latency.sh` uses, so nothing forks inside the measured span.
 
 Two things bound what these numbers can mean. Each matrix cell is one sample, and the span is dominated
 by model latency rather than tool latency, so it reports how many turns an arm needed more than how
 fast anything ran.
+
+Q06, Q07 and Q08 are an accidental null control, because on those three the ktsense arm used no ktsense
+tool and so both arms ran identical tooling: the ktsense-arm span came out between 7.0 s faster and
+5.7 s slower than the baseline. A 12.7 s noise band around zero swallows the 3.6 s median difference
+reported above, so that difference is unresolved at this sample size rather than a measured cost.
 
 The one claim with a real spread behind it is Q09, repeated to four sessions per arm:
 

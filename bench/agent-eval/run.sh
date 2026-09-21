@@ -39,12 +39,15 @@
 #                 agent sets `"useLegacyMcpJson": true`; without it a session starts with none of the
 #                 tools and looks exactly like a session that chose not to use them. This script
 #                 therefore declares the server inside the agent configuration, which is always
-#                 honoured, and proves the tools arrived before running the matrix: a preflight
-#                 session lists its own tools and the run aborts unless all eight are present.
+#                 honoured, and proves the tools arrived before running the matrix: the run aborts
+#                 unless a JSON-RPC handshake exposes all eight tools and a preflight session then
+#                 makes at least one call Kiro attributes to the server. That session's own count of
+#                 the tool names it lists is recorded and deliberately not gated on, because a model
+#                 asked to name its tools was seen omitting the one it went on to call.
 #
-#                 On top of that, a ktsense-arm session that makes zero ktsense tool calls is a
-#                 failed cell, not a result. Silently scoring it would publish a comparison of the
-#                 baseline against itself.
+#                 On top of that, a ktsense-arm session that makes zero ktsense tool calls is scored
+#                 and additionally flagged as a failed cell, so the run exits non-zero. Scoring it
+#                 quietly would publish a comparison of the baseline against itself.
 #
 # Wall time       Recorded with the bash `time` keyword, as in bench/latency.sh, and the one-minute
 #                 load average is sampled next to every row, because a number taken from a host with
