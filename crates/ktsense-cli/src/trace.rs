@@ -69,7 +69,23 @@ impl IndexWaitPolicy {
 /// Long enough that no index finishes after it; the waiter still returns when the stream closes.
 const UNBOUNDED_WAIT: Duration = Duration::from_secs(60 * 60 * 24);
 
+/// What resolving a symbol and running one engine session produced: the answer, or the candidate
+/// list to print when the name was ambiguous. Shared with `context`, so both commands inherit the
+/// same ambiguity contract and drive the same session rather than each talking to the engine their
+/// own way.
+pub(crate) enum Traced {
+    Resolved(TraceReport),
+    Ambiguous(CommandOutcome),
+}
+
 pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, CommandError> {
+    match resolve(&request)? {
+        Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
+        Traced::Ambiguous(outcome) => Ok(outcome),
+    }
+}
+
+pub(crate) fn resolve(request: &TraceRequest<'_>) -> Result<Traced, CommandError> {
     let candidates = block_on(ktsense_lsp::run_symbols(request.root, request.symbol))
         .map_err(|error| CommandError::passthrough(&error))?;
     let (candidate, resolved) = match symbols::select(
@@ -80,7 +96,7 @@ pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, Command
         request.format,
     )? {
         Selection::One(candidate, resolved) => (candidate, resolved),
-        Selection::Ambiguous(outcome) => return Ok(outcome.into()),
+        Selection::Ambiguous(outcome) => return Ok(Traced::Ambiguous(outcome.into())),
     };
 
     let definition = Definition {
@@ -90,8 +106,8 @@ pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, Command
         signature: resolved.signature,
     };
     let report =
-        block_on(collect(&request, &candidate, definition)).map_err(CommandError::engine)?;
-    present(&report, request.format).map(CommandOutcome::success)
+        block_on(collect(request, &candidate, definition)).map_err(CommandError::engine)?;
+    Ok(Traced::Resolved(report))
 }
 
 /// Runs the whole engine session and always tears it down, whatever the requests returned.
@@ -309,15 +325,7 @@ impl Skeletons {
         if self.by_path.contains_key(path) {
             return;
         }
-        let absolute = if Path::new(path).is_absolute() {
-            PathBuf::from(path)
-        } else {
-            root.join(path)
-        };
-        let Ok(source) = fs::read_to_string(&absolute) else {
-            return;
-        };
-        let Ok(skeleton) = ktsense_syntax::extract(path.to_string(), &source) else {
+        let Some(skeleton) = skeleton_at(root, path) else {
             return;
         };
         self.by_path.insert(path.to_string(), skeleton);
@@ -331,6 +339,18 @@ impl Skeletons {
         }
         &self.ordered
     }
+}
+
+/// The skeleton of one file named as the answer names it, or `None` when it cannot be read or
+/// parsed. Shared with `context`, which outlines the file a declaration lives in.
+pub(crate) fn skeleton_at(root: &Path, path: &str) -> Option<FileSkeleton> {
+    let absolute = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+    let source = fs::read_to_string(&absolute).ok()?;
+    ktsense_syntax::extract(path.to_string(), &source).ok()
 }
 
 fn present(report: &TraceReport, format: Format) -> Result<String, CommandError> {

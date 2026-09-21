@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod budget;
+pub mod context;
 pub mod imports;
 pub mod rank;
 pub mod references;
@@ -18,14 +19,15 @@ pub mod skeleton;
 pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
+pub use context::{build_context, ContextInput, ContextSection, SymbolContext};
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
     group_references, EnclosingDeclaration, GroupingOptions, Location, Reference, ReferenceGroup,
 };
 pub use render::{
-    render_deps_dot, render_deps_markdown, render_map_markdown, render_markdown, render_skeleton,
-    render_trace_markdown, RenderOptions,
+    render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,
+    render_markdown, render_skeleton, render_trace_markdown, RenderOptions,
 };
 pub use repo_map::{build_repo_map, MappedFile, RepoMap};
 pub use scc::{cycles, strongly_connected_components};

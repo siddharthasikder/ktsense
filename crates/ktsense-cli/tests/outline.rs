@@ -226,16 +226,3 @@ fn the_root_flag_resolves_a_relative_outline_path_instead_of_being_ignored() {
 
     assert_eq!(observed, ((Some(0), true), (Some(1), true)));
 }
-
-#[test]
-fn an_unimplemented_command_keeps_the_not_implemented_contract() {
-    let run = ktsense(&["context", "User"]);
-
-    let observed = (
-        run.code,
-        run.stderr.contains("not implemented"),
-        run.stdout.is_empty(),
-    );
-
-    assert_eq!(observed, (Some(70), true, true));
-}

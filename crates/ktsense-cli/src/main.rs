@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod context;
 mod daemon;
 mod routing;
 mod status;
@@ -159,6 +160,9 @@ enum Command {
     /// Budgeted context bundle for one symbol
     Context {
         symbol: String,
+        /// Select the single candidate with this fully-qualified name when the name is ambiguous.
+        #[arg(long, value_name = "FQN")]
+        pick: Option<String>,
         #[arg(long, default_value_t = 2000)]
         budget: usize,
     },
@@ -197,12 +201,17 @@ enum DaemonAction {
 /// `Ambiguous` is `3`, not `2`, because clap already exits `2` for its own usage errors. An agent
 /// must be able to tell "I called the tool wrong" (fix the invocation) from "the name was
 /// ambiguous" (choose a candidate), and those demand opposite responses.
+///
+/// `70` has no caller since KT-35 landed `context`, the last command the surface advertised without
+/// implementing. The code stays in the table because the README, the agent skill file and the MCP
+/// tool descriptions quote the whole set, and a surface-first command would need it again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Exit {
     Success,
     Failure,
     Usage,
     Ambiguous,
+    #[allow(dead_code)]
     Unimplemented,
 }
 
@@ -274,13 +283,6 @@ impl CommandError {
         Self {
             exit: Exit::Failure,
             message: format!("ktsense: cannot serialize outline as JSON: {error}"),
-        }
-    }
-
-    fn unimplemented(card: &str) -> Self {
-        Self {
-            exit: Exit::Unimplemented,
-            message: format!("ktsense: {card} is not implemented yet"),
         }
     }
 
@@ -483,11 +485,24 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             diagnose(&base, &resolve_root(Some(&base), &file), format).map(CommandOutcome::success)
         }
+        Command::Context {
+            symbol,
+            pick,
+            budget,
+        } => {
+            let base = root.unwrap_or_else(|| PathBuf::from("."));
+            context::context(context::ContextRequest {
+                root: &base,
+                symbol: &symbol,
+                pick: pick.as_deref(),
+                budget,
+                format,
+            })
+        }
         Command::Status => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             status::run(&base, format).map(CommandOutcome::success)
         }
-        ref pending => Err(CommandError::unimplemented(not_implemented_label(pending))),
     }
 }
 
@@ -908,22 +923,6 @@ fn neutralize(text: &str) -> Cow<'_, str> {
 
 fn is_unsafe_in_output(character: char) -> bool {
     character.is_control() || BIDIRECTIONAL_OVERRIDES.contains(&character)
-}
-
-fn not_implemented_label(command: &Command) -> &'static str {
-    match command {
-        Command::Outline { .. } => "outline (KT-07)",
-        Command::Symbols { .. } => "symbols (KT-16)",
-        Command::Trace { .. } => "trace (KT-18)",
-        Command::Deps { .. } => "deps (KT-20)",
-        Command::Map { .. } => "map (KT-22)",
-        Command::Check { .. } => "check (KT-23)",
-        Command::Diagnose { .. } => "diagnose (KT-23)",
-        Command::Context { .. } => "context (KT-35)",
-        Command::Status => "status (KT-36)",
-        Command::Mcp => "mcp (KT-31)",
-        Command::Daemon { .. } => "daemon (KT-27)",
-    }
 }
 
 #[cfg(test)]

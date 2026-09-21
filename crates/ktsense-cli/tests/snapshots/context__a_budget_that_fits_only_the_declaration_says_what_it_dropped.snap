@@ -1,0 +1,31 @@
+---
+source: crates/ktsense-cli/tests/context.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+# Context: shop.order.OrderRepository.save
+
+index: complete
+Budget 9 tokens, content bound 9. 6 items omitted for budget.
+
+## Declaration
+
+core/src/main/kotlin/shop/order/OrderRepository.kt:4
+
+```kotlin
+fun save(order: Order): OrderId
+```
+
+## File outline: core/src/main/kotlin/shop/order/OrderRepository.kt
+
+Omitted for budget: 1 declaration.
+
+## Callers (3)
+- ... 3 omitted for budget
+
+## Implementors (2)
+- ... 2 omitted for budget
+
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, outline, caller and implementor lines the budget gated, not the headings around them.
