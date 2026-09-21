@@ -265,29 +265,15 @@ impl<'a> Session<'a> {
 }
 
 /// The zero-based LSP position of the first whole-word occurrence of `name` on 1-based `line` of
-/// the file at `path`, or `None` when the file cannot be read or the name is not on that line.
+/// the file at `path`, or `None` when the file cannot be read or the name is not on that line. The
+/// whole-word search is centralized in `ktsense-lsp` so the resolver and this command agree.
 fn name_position(path: &Path, line: u32, name: &str) -> Option<FilePosition> {
-    let source = fs::read_to_string(path).ok()?;
-    let text = source.lines().nth(line.checked_sub(1)? as usize)?;
-    let column = whole_word_offset(text, name)?;
+    let column = ktsense_lsp::name_column(path, line, name)?;
     Some(FilePosition {
         uri: format!("file://{}", path.display()),
         line: line - 1,
-        character: u32::try_from(text[..column].chars().count()).ok()?,
+        character: column - 1,
     })
-}
-
-/// Byte offset of `name` in `text` where it is not part of a longer identifier, so `save` is not
-/// found inside `saveAll`.
-fn whole_word_offset(text: &str, name: &str) -> Option<usize> {
-    let is_identifier = |character: char| character.is_alphanumeric() || character == '_';
-    text.match_indices(name)
-        .map(|(offset, _)| offset)
-        .find(|&offset| {
-            let before = text[..offset].chars().next_back();
-            let after = text[offset + name.len()..].chars().next();
-            !before.is_some_and(is_identifier) && !after.is_some_and(is_identifier)
-        })
 }
 
 fn completeness(phase: IndexPhase) -> IndexCompleteness {
@@ -358,27 +344,5 @@ fn present(report: &TraceReport, format: Format) -> Result<String, CommandError>
         Format::Md => Ok(render_trace_markdown(report)),
         Format::Json => serde_json::to_string_pretty(report).map_err(CommandError::serialization),
         Format::Dot => Err(CommandError::unsupported_format("trace")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_name_is_located_as_a_whole_word_not_inside_a_longer_identifier() {
-        let observed = (
-            whole_word_offset("    fun save(order: Order): OrderId", "save"),
-            whole_word_offset(
-                "    fun saveAll(all: List<Order>): Int = all.map(::save).size",
-                "save",
-            ),
-            whole_word_offset(
-                "public val CallLogging: ApplicationPlugin<CallLoggingConfig>",
-                "CallLogging",
-            ),
-            whole_word_offset("    fun saveAll(): Int", "save"),
-        );
-        assert_eq!(observed, (Some(8), Some(51), Some(11), None));
     }
 }

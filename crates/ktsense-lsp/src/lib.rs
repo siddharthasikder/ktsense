@@ -23,7 +23,9 @@ pub use passthrough::{
 };
 pub use progress::{wait_for_index, IndexPhase, IndexWait};
 pub use requests::{uri_to_path, DeclarationScope, FilePosition, SiteLocation};
-pub use symbols::{resolve_symbol, run_symbols, Resolution, SymbolCandidate, SymbolResolver};
+pub use symbols::{
+    name_column, resolve_symbol, run_symbols, Resolution, SymbolCandidate, SymbolResolver,
+};
 pub use version::{
     check_version, check_version_within, classify, reported_version, Compatibility, VersionCheck,
     PINNED_UPSTREAM_VERSION,

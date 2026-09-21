@@ -27,7 +27,8 @@ use crate::passthrough::{
 };
 use crate::requests::FilePosition;
 
-/// One declaration location as the engine reported it: the raw `find --json` fields, unenriched.
+/// One declaration location from the engine's `find --json`. The fields are the engine's own,
+/// except `col`, which [`SymbolResolver::find`] corrects to the declaration name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolCandidate {
     pub name: String,
@@ -36,7 +37,9 @@ pub struct SymbolCandidate {
     pub file: String,
     /// 1-based line, as the engine reports it.
     pub line: u32,
-    /// 1-based column, as the engine reports it.
+    /// 1-based column of the declaration name. [`SymbolResolver::find`] corrects the column
+    /// `find --json` reports on a cold cache, where it can point at the keyword before the name
+    /// (`fun save` at the `fun`); the engine's own column is kept when the source cannot be read.
     pub col: u32,
 }
 
@@ -109,7 +112,10 @@ impl<'a> SymbolResolver<'a> {
         let captured = EngineCommand::within(self.binary, self.root, self.timeout)
             .capture("find", &["find", query, "--json", "--root", root.as_ref()])
             .await?;
-        parse_find(&captured)
+        Ok(parse_find(&captured)?
+            .into_iter()
+            .map(correct_column)
+            .collect())
     }
 
     /// Resolves `query` to a single outcome the caller can branch on.
@@ -171,6 +177,42 @@ fn parse_find(captured: &Captured) -> Result<Vec<SymbolCandidate>, PassthroughEr
             col: entry.col,
         })
         .collect())
+}
+
+/// Corrects one candidate's column to its declaration name when the source can be read, leaving the
+/// engine's reported column in place otherwise so a location ktsense cannot verify stays honest.
+fn correct_column(mut candidate: SymbolCandidate) -> SymbolCandidate {
+    if let Some(column) = name_column(Path::new(&candidate.file), candidate.line, &candidate.name) {
+        candidate.col = column;
+    }
+    candidate
+}
+
+/// The 1-based column of the first whole-word occurrence of `name` on 1-based `line` of the file at
+/// `path`, or `None` when the file cannot be read or `name` is not present on that line.
+///
+/// This corrects the column `find --json` reports: on a cold cache it takes a text-search path and
+/// has been observed to report the column of the keyword before the name (`fun save` at the `fun`,
+/// `val CallLogging` at the `v`), and a position request built from that column reads the keyword
+/// rather than the declaration.
+pub fn name_column(path: &Path, line: u32, name: &str) -> Option<u32> {
+    let source = std::fs::read_to_string(path).ok()?;
+    let text = source.lines().nth(line.checked_sub(1)? as usize)?;
+    let offset = whole_word_offset(text, name)?;
+    u32::try_from(text[..offset].chars().count() + 1).ok()
+}
+
+/// Byte offset of `name` in `text` where it is not part of a longer identifier, so `save` is not
+/// found inside `saveAll`.
+fn whole_word_offset(text: &str, name: &str) -> Option<usize> {
+    let is_identifier = |character: char| character.is_alphanumeric() || character == '_';
+    text.match_indices(name)
+        .map(|(offset, _)| offset)
+        .find(|&offset| {
+            let before = text[..offset].chars().next_back();
+            let after = text[offset + name.len()..].chars().next();
+            !before.is_some_and(is_identifier) && !after.is_some_and(is_identifier)
+        })
 }
 
 #[cfg(test)]
@@ -250,6 +292,31 @@ mod tests {
                 line: 3,
                 character: 4,
             }
+        );
+    }
+
+    #[test]
+    fn the_name_is_located_as_a_whole_word_not_inside_a_longer_identifier() {
+        let observed = (
+            whole_word_offset("    fun save(order: Order): OrderId", "save"),
+            whole_word_offset(
+                "    fun saveAll(all: List<Order>): Int = all.map(::save).size",
+                "save",
+            ),
+            whole_word_offset(
+                "public val CallLogging: ApplicationPlugin<CallLoggingConfig>",
+                "CallLogging",
+            ),
+            whole_word_offset("    fun saveAll(): Int", "save"),
+        );
+        assert_eq!(observed, (Some(8), Some(51), Some(11), None));
+    }
+
+    #[test]
+    fn the_name_column_is_none_when_the_source_cannot_be_read() {
+        assert_eq!(
+            name_column(Path::new("/no/such/OrderRepository.kt"), 4, "save"),
+            None
         );
     }
 }

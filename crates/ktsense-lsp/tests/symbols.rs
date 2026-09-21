@@ -46,6 +46,14 @@ fn candidate(name: &str, file: &str, line: u32, col: u32) -> SymbolCandidate {
     }
 }
 
+fn fixture(relative: &str) -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/multi-module")
+        .join(relative)
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[tokio::test]
 async fn a_unique_match_resolves_to_one_candidate_and_a_position() {
     let candidates = find_replay(
@@ -102,6 +110,26 @@ async fn several_exact_matches_come_back_ambiguous_in_engine_order() {
             candidate("save", "/repo/db/InMemoryOrderRepository.kt", 13, 14),
         ])
     );
+}
+
+#[tokio::test]
+async fn the_reported_keyword_column_is_corrected_to_the_declaration_name() {
+    let readable = fixture("core/src/main/kotlin/shop/order/OrderRepository.kt");
+    let unreadable = "/no/such/file/Ghost.kt";
+    let stdout = format!(
+        r#"[{{"file":"{readable}","line":4,"col":5,"name":"save"}},
+           {{"file":"{unreadable}","line":4,"col":5,"name":"save"}}]"#
+    );
+
+    let candidates = find_replay("save", &stdout, "", 0)
+        .await
+        .expect("two matches");
+
+    let observed: Vec<(u32, u32)> = candidates
+        .iter()
+        .map(|candidate| (candidate.line, candidate.col))
+        .collect();
+    assert_eq!(observed, vec![(4, 9), (4, 5)]);
 }
 
 #[tokio::test]
