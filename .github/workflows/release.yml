@@ -56,15 +56,17 @@ jobs:
       - name: Resolve the release version
         id: version
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_INPUT_VERSION: ${{ inputs.version }}
+          PUSHED_TAG: ${{ github.ref_name }}
         run: |
-          raw="${INPUT_VERSION:-$GITHUB_REF_NAME}"
-          version="${raw#v}"
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
-            echo "refusing release version '$raw': expected vX.Y.Z or X.Y.Z with an optional -suffix" >&2
-            exit 1
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            raw="$MANUAL_INPUT_VERSION"
+          else
+            raw="$PUSHED_TAG"
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          version="$(scripts/release-version.sh "$raw")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Install pinned toolchain
         env:

@@ -51,6 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Release version validation accepts and rejects
+        run: bash scripts/tests/release-version.test.sh
+
       - name: Package layout, sidecar policy and reproducibility
         run: bash scripts/tests/package-release.test.sh
 
