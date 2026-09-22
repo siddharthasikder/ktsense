@@ -11,8 +11,11 @@
 //! the index was still building lists fewer callers than exist, and a reader who acts on it as
 //! though it were complete is being misled.
 //!
-//! Only `outline` and `deps` route through the daemon today, so this runs in process. That is a
-//! known gap rather than an oversight.
+//! `context` is not a routed wire command, and the trace it drives is the in-process resolver above:
+//! a fresh engine session, and a command-mode `find` to resolve the name, even while a daemon holds a
+//! warm session for the same root. `outline`, `deps`, `map` and `trace` do route, so the gap is that
+//! `context` inherits the cold half of `trace` rather than that nothing routes at all. A known gap
+//! rather than an oversight.
 
 use std::path::Path;
 

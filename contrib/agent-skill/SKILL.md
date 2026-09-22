@@ -40,9 +40,9 @@ Three tools are pure tree-sitter and need no engine at all: `get_kotlin_outline`
 `check_kotlin_syntax` included despite its fast marker, so on a host where `kmp-lsp` is missing those
 fail whatever their marker says.
 
-Only `get_kotlin_outline` and `analyze_kotlin_dependencies` reuse a warm daemon session when one is
-running. Every other tool does its own work per call, so do not assume that one warm call makes the
-next one warm.
+`get_kotlin_outline`, `analyze_kotlin_dependencies`, `get_kotlin_repo_map` and `trace_kotlin_symbol`
+reuse a warm daemon session when one is running. Every other tool does its own work per call, so do
+not assume that one warm call makes the next one warm.
 
 Every tool takes an optional `root` naming the workspace to answer about. Leave it alone unless you
 genuinely need to ask about a different checkout: the server was launched with a root and a wider one

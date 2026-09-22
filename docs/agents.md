@@ -170,14 +170,16 @@ relative command path, a typo in the JSON or TOML, or on Kiro the agent question
 
 ## An optional warm session
 
-`ktsense daemon start --root <dir>` keeps an engine session warm for a root, and `get_kotlin_outline`
-and `analyze_kotlin_dependencies` route through it automatically when it is live, falling back to
-running in process when it is not. It expires after an hour idle, and `ktsense daemon status` and
-`ktsense daemon stop` inspect and end it.
+`ktsense daemon start --root <dir>` keeps an engine session warm for a root, and `get_kotlin_outline`,
+`analyze_kotlin_dependencies`, `get_kotlin_repo_map` and `trace_kotlin_symbol` route through it
+automatically when it is live, falling back to running in process when it is not. It expires after an
+hour idle, and `ktsense daemon status` and `ktsense daemon stop` inspect and end it.
 
-Nothing requires it. The two tools that use it are the tree-sitter ones that were already fast, so
-the daemon is a convenience rather than a prerequisite, and the tools that wait on an index do not
-currently route through it.
+Nothing requires it. Three of those four are the tree-sitter tools that were already fast, so the
+daemon is a convenience rather than a prerequisite. `trace_kotlin_symbol` is the one that gains from
+it: a routed trace answers on the daemon's own warm session, and on a complete index resolves its
+symbol from that session rather than paying for a fresh one. The rest, `find_kotlin_symbol` and
+`explain_kotlin_symbol` included, still do their own work per call.
 
 ## Troubleshooting
 

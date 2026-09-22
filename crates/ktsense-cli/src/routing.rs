@@ -1,10 +1,13 @@
-//! Transparent daemon routing for the commands a warm daemon can answer without the engine.
+//! Transparent daemon routing for the commands a warm daemon can answer in place of the in-process
+//! path: `outline`, `deps`, `map` and `trace`.
 //!
-//! `outline` and `deps` are pure tree-sitter work, so a running daemon answers them by calling the
-//! very same functions the in-process path calls; identical output is then a property of the
-//! construction, not a hope. The daemon side is [`CommandEngine`], which wraps the warm LSP engine
-//! and intercepts one extra method, `ktsense/command`, whose params are the command and its
-//! arguments; every other method still reaches the engine. The client side is [`route`], which
+//! `outline`, `deps` and `map` are pure tree-sitter work, so a running daemon answers them by
+//! calling the very same functions the in-process path calls; identical output is then a property of
+//! the construction, not a hope. `trace` is the one routed command that needs the engine, and the
+//! daemon answers it on the warm session it already holds rather than launching a second engine
+//! child. The daemon side is [`CommandEngine`], which wraps the warm LSP engine and intercepts one
+//! extra method, `ktsense/command`, whose params are the command and its arguments; every other
+//! method still reaches the engine. The client side is [`route`], which
 //! tries the root's socket first and falls back to running in-process when there is no live
 //! daemon, when `KTSENSE_NO_DAEMON=1` is set, or when the transport fails, so a routing problem
 //! degrades to a slower answer rather than no answer. A daemon that answers with a command error
@@ -12,9 +15,18 @@
 //! for tests that must prove a daemon answered, `KTSENSE_REQUIRE_DAEMON=1` turns the fallback into
 //! a failure.
 //!
-//! `symbols` is deliberately not routed (Fork A, 2026-09-18): its backend is the engine's
-//! command-mode `find`, and `workspace/symbol` is fuzzy and not root-scoped on this engine, so
-//! there is nothing a warm session could answer more faithfully than the subprocess already does.
+//! `symbols` stays on the engine's command-mode `find` and is deliberately not routed (Fork A,
+//! 2026-09-18), but the boundary is narrower than that card first read. Fork A argued that
+//! `workspace/symbol`, being a case-insensitive substring match over an index that reaches past the
+//! session root, could never answer a symbol question as faithfully as `find`. KT-60 disproved that
+//! for the warm path: [`ktsense_daemon::resolve_from_warm_index`] narrows both widenings away,
+//! keeping only exact-name matches under the explicit root and handing them to the same selection
+//! code the `find` candidates go through, so the exact, ambiguous, no-such-symbol and `--pick`
+//! contracts are unchanged. What survives of Fork A is the command boundary rather than the
+//! argument: a routed `trace` resolves through that narrower resolver on a complete index, while the
+//! user-facing `symbols` command keeps its command-mode contract. The resolver is no general
+//! replacement either, so a truncated response, a name the warm index does not hold, or an index
+//! still building sends even a routed `trace` back to `find`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
