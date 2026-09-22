@@ -707,8 +707,8 @@ impl KtsenseServer {
 }
 
 /// What the client is told before it reads a single tool description. Everything here is true of
-/// every tool, and the version-check scope is stated because it is not uniform: only the tool that
-/// opens an LSP session refuses an incompatible engine.
+/// every tool, and the version-check scope is stated because it is not uniform: only the tools that
+/// open an LSP session refuse an incompatible engine.
 const INSTRUCTIONS: &str = "Kotlin code understanding for agents.\n\n\
      Every tool states what it requires. `requires: nothing` is answered by ktsense alone with \
      tree-sitter, so it works on a host with no engine installed. `requires: kmp-lsp` needs the \
@@ -717,10 +717,11 @@ const INSTRUCTIONS: &str = "Kotlin code understanding for agents.\n\n\
      bound, not the answer. Requiring nothing is not the same as being cheap: the tools that walk \
      the whole tree take about a second on a 1861-file repository, and each description carries its \
      measured cost.\n\n\
-     Call `ktsense_status` to learn whether the engine is installed and version-compatible. Only \
-     `trace_kotlin_symbol` refuses to run against an incompatible engine version, because it is the \
-     one tool that opens an LSP session; `find_kotlin_symbol` and `check_kotlin_syntax` use the \
-     engine's command mode, which is not version-guarded.\n\n\
+     Call `ktsense_status` to learn whether the engine is installed and version-compatible. \
+     `trace_kotlin_symbol` and `explain_kotlin_symbol` refuse to run against an incompatible engine \
+     version, because they are the two tools that open an LSP session; `explain_kotlin_symbol` opens \
+     one through the depth-1 trace its bundle is built from. `find_kotlin_symbol` and \
+     `check_kotlin_syntax` use the engine's command mode, which is not version-guarded.\n\n\
      Every result carries the answer as Markdown text plus `structuredContent` listing the files \
      and lines that answer cites, so following a result up needs no parsing of the prose.\n\n\
      Resolution is syntactic, never type-checked. A result is a candidate, not a proof, and type \

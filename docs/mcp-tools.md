@@ -66,11 +66,10 @@ engine-backed tools `trace_kotlin_symbol` and `explain_kotlin_symbol` refuse an 
 major version, the second of them because the bundle it builds is a depth-1 trace driven through the
 same fresh-session path rather than because it probes on its own; `find_kotlin_symbol` and
 `check_kotlin_syntax` will run against whatever binary discovery found. The server `instructions`
-scope the guarantee rather than claiming version safety across the board, but they still name
-`trace_kotlin_symbol` as the only guarded tool, which has understated it by one since KT-35 landed
-`context`. Correcting that sentence is a change to the instructions string in the catalogue, not to
-this page. `ktsense_status` reports the installed version and its compatibility, and never fails for a
-missing engine: absence is the state a caller runs it to learn.
+scope the guarantee rather than claiming version safety across the board, and name both guarded
+tools: they had named `trace_kotlin_symbol` alone, understating the scope by one from KT-35 landing
+`context` until KT-70 corrected the sentence. `ktsense_status` reports the installed version and its
+compatibility, and never fails for a missing engine: absence is the state a caller runs it to learn.
 
 ## Needing an index and being shaped by one are different questions
 
@@ -232,8 +231,7 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
       page was written and is not one now, so the `pending_card` field that recorded that state is
       gone rather than left as an always-empty option.
 - [x] Version-check scope is stated where it is true, and not generalised. The instructions string
-      still names one guarded tool where there are two, which the section above records as an
-      outstanding catalogue fix.
+      names both guarded tools, `trace_kotlin_symbol` and `explain_kotlin_symbol`.
 - [x] Every tool is annotated `readOnlyHint: true` and `openWorldHint: false`; none of them writes.
 - [x] Every tool declares an output schema, and all eight are identical.
 - [x] No em dashes.
