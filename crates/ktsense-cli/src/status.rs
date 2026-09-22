@@ -134,7 +134,7 @@ pub(crate) fn run(root: &Path, format: Format) -> Result<String, CommandError> {
 pub(crate) fn collect(root: &Path) -> Result<StatusReport, CommandError> {
     let root = crate::daemon::canonical_root(root);
     let kotlin_files = collect_kotlin_files(&root)?.len();
-    let socket = crate::daemon::socket_for(&root);
+    let socket = crate::daemon::socket_for(&root)?;
     let (engine, daemon) =
         block_on(async { tokio::join!(observe_engine(), observe_daemon(&socket)) });
     Ok(StatusReport {

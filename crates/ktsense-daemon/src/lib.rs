@@ -8,12 +8,17 @@
 
 mod client;
 mod engine;
+mod placement;
 mod server;
 mod symbols;
 mod wire;
 
 pub use client::{verify_protocol, Client, ClientError, ProtocolMismatch};
 pub use engine::{Engine, EngineRequest, HandlerOutcome, IndexTracker, WarmEngine};
+pub use placement::{
+    resolve_socket_path, short_socket_base, BaseFault, SocketPlacementError, COMPANION_RESERVE,
+    MAX_SOCKET_PATH, SOCKET_BUDGET,
+};
 pub use server::{
     probe, run, status, stop, DaemonConfig, DaemonError, Liveness, StopOutcome, StopReason,
     DEFAULT_IDLE_TIMEOUT,
@@ -27,6 +32,10 @@ use std::path::{Path, PathBuf};
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
+///
+/// This is the preferred place and not the only one: a runtime directory deep enough to overflow a
+/// Unix domain address is answered from a short base instead, which [`resolve_socket_path`] decides.
+/// Resolve through that rather than calling this directly.
 pub fn socket_dir(xdg_runtime_dir: Option<&Path>, home: &Path) -> PathBuf {
     match xdg_runtime_dir {
         Some(runtime) => runtime.join("ktsense"),
@@ -36,18 +45,20 @@ pub fn socket_dir(xdg_runtime_dir: Option<&Path>, home: &Path) -> PathBuf {
 
 /// Socket path for one workspace root. Distinct roots get distinct daemons.
 pub fn socket_path(dir: &Path, workspace_root: &Path) -> PathBuf {
-    dir.join(format!("{}.sock", root_key(workspace_root)))
+    dir.join(format!("{}.sock", path_key(workspace_root)))
 }
 
-/// Stable short key for a workspace root path.
+/// Stable short key for a path, used both for the socket name of a workspace root and for the
+/// directory a socket falls back to when its preferred one is too deep.
 ///
-/// FNV-1a keeps this dependency-free and is sufficient: the key only has to distinguish roots on one
+/// FNV-1a keeps this dependency-free and is sufficient: the key only has to distinguish paths on one
 /// machine, and a collision costs a wrong-daemon rejection at the hello frame, not silent bad data.
-fn root_key(workspace_root: &Path) -> String {
+/// Sixteen hex digits regardless of input, which is what lets a path budget be reasoned about.
+fn path_key(path: &Path) -> String {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;
-    for byte in workspace_root.to_string_lossy().as_bytes() {
+    for byte in path.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(PRIME);
     }

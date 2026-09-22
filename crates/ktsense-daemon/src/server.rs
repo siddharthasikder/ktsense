@@ -6,7 +6,7 @@
 //! without this crate deciding how results reach a terminal.
 
 use std::io;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -202,11 +202,22 @@ async fn serve_connection<E: Engine>(mut stream: UnixStream, engine: &E) -> Conn
 fn prepare_directory(dir: &Path, current: u32) -> Result<(), DaemonError> {
     match std::fs::symlink_metadata(dir) {
         Ok(meta) => refuse_foreign(meta.uid(), current)?,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => std::fs::create_dir_all(dir)?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => create_private_dir(dir)?,
         Err(err) => return Err(err.into()),
     }
     set_mode(dir, DIR_MODE)?;
     Ok(())
+}
+
+/// Creates the socket directory and every parent it needs, owner-only as each is created rather than
+/// widened afterwards. The mode covers the parents because a fallback socket directory sits under a
+/// per-uid base this call may be the first to create, and a base left at the default mode would be a
+/// directory anyone could write into holding a socket that serves source.
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(DIR_MODE)
+        .create(dir)
 }
 
 async fn prepare_socket_path(socket_path: &Path, current: u32) -> Result<(), DaemonError> {
@@ -238,7 +249,7 @@ fn owned_by_current_user(file_uid: u32, current: u32) -> bool {
     file_uid == current
 }
 
-fn current_uid() -> u32 {
+pub(crate) fn current_uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
 

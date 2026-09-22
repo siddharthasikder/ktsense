@@ -19,8 +19,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ktsense_daemon::{
-    run, socket_dir, socket_path, status, stop, DaemonConfig, Liveness, StopOutcome, StopReason,
-    WarmEngine, DEFAULT_IDLE_TIMEOUT,
+    resolve_socket_path, run, short_socket_base, status, stop, DaemonConfig, Liveness, StopOutcome,
+    StopReason, WarmEngine, DEFAULT_IDLE_TIMEOUT,
 };
 use ktsense_lsp::InitializeConfig;
 
@@ -48,7 +48,7 @@ const MAX_CLAIM_GENERATIONS: u32 = 64;
 /// Reports whether a daemon is running for `root`, and where its socket is.
 pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
-    let socket = socket_for(&root);
+    let socket = socket_for(&root)?;
     let daemon = block_on(crate::status::observe_daemon(&socket));
     let headline = match daemon.state {
         crate::status::DaemonState::Running => "daemon running for",
@@ -71,7 +71,7 @@ pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError>
 /// the socket, since a socket that came up while another start held the claim is that start's work.
 pub(crate) fn start(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
-    let socket = socket_for(&root);
+    let socket = socket_for(&root)?;
     if live(&socket) {
         return Ok(already_running(&root, &socket));
     }
@@ -284,7 +284,7 @@ fn arrivals(dir: &Path) -> usize {
 /// Stops the daemon for `root`, or reports that none was running.
 pub(crate) fn shutdown(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
-    let socket = socket_for(&root);
+    let socket = socket_for(&root)?;
     match block_on(stop(&socket)) {
         Ok(StopOutcome::Stopped) => Ok(CommandOutcome::success(format!(
             "ktsense: daemon stopped for {}\n",
@@ -302,7 +302,7 @@ pub(crate) fn shutdown(root: &Path) -> Result<CommandOutcome, CommandError> {
 /// from help because it is an implementation detail of `start`, not a command to invoke by hand.
 pub(crate) fn serve(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
-    let socket = socket_for(&root);
+    let socket = socket_for(&root)?;
     let config = DaemonConfig::new(socket, idle_timeout());
     let initialize = InitializeConfig {
         root_uri: file_uri(&root),
@@ -335,13 +335,19 @@ fn reason_label(reason: StopReason) -> &'static str {
 
 /// The socket a root's daemon listens on, resolved exactly as the daemon crate resolves it so the two
 /// halves cannot disagree about where to meet. The environment is read here, at the edge.
-pub(crate) fn socket_for(root: &Path) -> PathBuf {
+///
+/// Fallible because a socket path is a fixed-size address rather than a pathname: a runtime directory
+/// deep enough to overflow one is answered from a short base instead, and when even that cannot yield
+/// a bindable path the command says so rather than leaving a `bind` to fail where the caller has
+/// nothing to explain it with.
+pub(crate) fn socket_for(root: &Path) -> Result<PathBuf, CommandError> {
     let root = canonical_root(root);
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    socket_path(&socket_dir(runtime.as_deref(), &home), &root)
+    resolve_socket_path(runtime.as_deref(), &home, &short_socket_base(), &root)
+        .map_err(|error| failure(format!("ktsense: {error}")))
 }
 
 /// Resolves the root before it is used as a daemon's identity, so `.`, a relative path and an
@@ -409,6 +415,26 @@ fn failure(message: String) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ktsense_daemon::{COMPANION_RESERVE, MAX_SOCKET_PATH, SOCKET_BUDGET};
+
+    /// The socket budget reserves room for the companion files a start binds beside a socket, and
+    /// this is the file it means. A socket placed exactly at the budget must still leave room for the
+    /// last generation of its own claim, because a socket that fits while its claim does not is what
+    /// failed on macOS CI: a 101-byte socket bound, and its 108-byte `.start0` did not (KT-66).
+    #[test]
+    fn the_longest_claim_name_still_fits_a_socket_placed_at_the_budget() {
+        let at_budget = PathBuf::from("x".repeat(SOCKET_BUDGET));
+        let longest = claim_path(&at_budget, MAX_CLAIM_GENERATIONS - 1);
+
+        assert_eq!(
+            (
+                longest.as_os_str().len() - at_budget.as_os_str().len(),
+                longest.as_os_str().len() <= MAX_SOCKET_PATH,
+            ),
+            (COMPANION_RESERVE, true)
+        );
+    }
 
     /// The occupancy decision holds on every platform, because the errno a kernel picks for "that
     /// path is already there" is not the same everywhere. Both readings mean a claim is held or was

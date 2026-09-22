@@ -417,14 +417,14 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 private,
                 kdoc,
             };
-            routing::route(&base, &daemon::socket_for(&base), command, format)
+            routing::route(&base, &daemon::socket_for(&base)?, command, format)
         }
         Command::Deps { level } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             let command = routing::RoutedCommand::Deps {
                 level: DepLevel::from(level).into(),
             };
-            routing::route(&base, &daemon::socket_for(&base), command, format)
+            routing::route(&base, &daemon::socket_for(&base)?, command, format)
         }
         Command::Symbols {
             query,
@@ -438,7 +438,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         Command::Map { budget } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
             let command = routing::RoutedCommand::Map { budget };
-            routing::route(&base, &daemon::socket_for(&base), command, format)
+            routing::route(&base, &daemon::socket_for(&base)?, command, format)
         }
         Command::Trace {
             symbol,
@@ -455,7 +455,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 limit,
                 wait_index,
             };
-            routing::route(&base, &daemon::socket_for(&base), command, format)
+            routing::route(&base, &daemon::socket_for(&base)?, command, format)
         }
         Command::Daemon { action } => {
             let base = root.unwrap_or_else(|| PathBuf::from("."));
