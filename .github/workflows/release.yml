@@ -202,6 +202,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ubuntu-24.04, which ubuntu-latest now resolves to, still ships Homebrew under /home/linuxbrew
+      # but no longer puts it on PATH, so this job's first `brew` call died with `command not found`
+      # and exit 127 before any formula logic ran (KT-68). The image's own note recommends sourcing
+      # `brew shellenv`; that sets only the calling shell, and `brew` is called from six separate
+      # steps below, so the prefix goes to $GITHUB_PATH instead. Darwin runners have brew on PATH
+      # already and skip this.
+      - name: Put the image's Homebrew on PATH
+        if: runner.os == 'Linux'
+        run: |
+          # Asserted rather than installed. The image already carries Homebrew, so installing it
+          # again would cost a bootstrap per run and, worse, move brew under the job, which is what
+          # the HOMEBREW_NO_AUTO_UPDATE note above exists to prevent. An image that drops Homebrew
+          # outright then fails at a step named for the cause instead of at the formula commands.
+          brew_bin=/home/linuxbrew/.linuxbrew/bin/brew
+          test -x "$brew_bin"
+          # `brew --prefix`, not `eval "$(brew shellenv)"`: shellenv's variable set is not stable
+          # across Homebrew majors, 7 having dropped the unconditional MANPATH export that 6 had,
+          # while --prefix is. PATH is all that is needed regardless, since brew derives
+          # HOMEBREW_PREFIX, HOMEBREW_CELLAR and HOMEBREW_REPOSITORY from its own path.
+          prefix="$("$brew_bin" --prefix)"
+          printf '%s\n' "$prefix/bin" "$prefix/sbin" >> "$GITHUB_PATH"
+          "$brew_bin" --version
+
       # Re-derived from the same helper the build job uses rather than passed along as a job output:
       # the output of a matrix job is whichever leg finishes last, which is not worth depending on.
       - name: Resolve the release version
