@@ -250,6 +250,21 @@ impl Lifecycle {
     }
 
     fn run(&self, args: &[&str], extra_env: &[(&str, &str)]) -> Run {
+        let output = self
+            .command(extra_env)
+            .args(args)
+            .output()
+            .expect("binary runs");
+        Run {
+            code: output.status.code(),
+            stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+            stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+        }
+    }
+
+    /// One `ktsense` invocation against this harness: its own runtime directory, its own replay
+    /// engine, its own copy of the fixture as the root.
+    fn command(&self, extra_env: &[(&str, &str)]) -> Command {
         let mut command = Command::cargo_bin("ktsense").expect("binary builds");
         command
             .current_dir(WORKSPACE_ROOT)
@@ -261,12 +276,39 @@ impl Lifecycle {
         for (name, value) in extra_env {
             command.env(name, value);
         }
-        let output = command.args(args).output().expect("binary runs");
-        Run {
-            code: output.status.code(),
-            stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
-            stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
-        }
+        command
+    }
+
+    /// Releases `parties` starts into one barrier and waits for every one of them. Each participant
+    /// records its arrival after its own liveness check and before it arbitrates, so all of them are
+    /// inside the window the arbitration has to settle rather than merely launched close together.
+    /// The arrival count is returned because it is what proves the barrier engaged at all: with the
+    /// seam unset no participant records anything and the count is zero.
+    fn race_to_start(&self, parties: usize, barrier: &Path) -> (Vec<Run>, usize) {
+        let racing: Vec<_> = (0..parties)
+            .map(|_| self.start_held_at(barrier, parties))
+            .collect();
+        let runs = racing.into_iter().map(finished).collect();
+        (runs, arrivals(barrier))
+    }
+
+    /// Spawns one `daemon start` that records its arrival at `barrier` and waits there, after its own
+    /// liveness check and before it arbitrates, until `parties` arrivals exist. A test that supplies
+    /// one of those arrivals itself decides what the world looks like by the time this start gets to
+    /// arbitrate.
+    fn start_held_at(&self, barrier: &Path, parties: usize) -> std::process::Child {
+        self.command(&[
+            (
+                "KTSENSE_START_BARRIER_DIR",
+                barrier.to_str().expect("utf-8 barrier"),
+            ),
+            ("KTSENSE_START_BARRIER_PARTIES", &parties.to_string()),
+        ])
+        .args(["daemon", "start"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start spawns")
     }
 
     fn act(&self, action: &str) -> Run {
@@ -366,6 +408,45 @@ fn link_count(path: &Path) -> u64 {
     std::fs::metadata(path)
         .map(|meta| meta.nlink())
         .unwrap_or_default()
+}
+
+/// How many starts recorded their arrival at a barrier. Zero means the seam never engaged, which is
+/// why a race test asserts this count rather than assuming the overlap it asked for.
+fn arrivals(barrier: &Path) -> usize {
+    std::fs::read_dir(barrier)
+        .map(|entries| entries.count())
+        .unwrap_or_default()
+}
+
+/// Waits for one spawned start and reads what it reported.
+fn finished(racer: std::process::Child) -> Run {
+    let output = racer.wait_with_output().expect("start finishes");
+    Run {
+        code: output.status.code(),
+        stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+    }
+}
+
+/// Everything sharing the daemon's socket directory, with the socket's own name replaced by a label
+/// so an expectation can name it without knowing the per-root hash. Anything a start left behind
+/// still appears under its real name, so this is how "the losing attempt survives" would show up.
+fn socket_dir_contents(socket: &Path) -> Vec<String> {
+    let own = socket.file_name().expect("the socket has a name");
+    let mut names: Vec<String> = std::fs::read_dir(socket.parent().expect("socket has a parent"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| {
+            if entry.file_name() == own {
+                "the daemon socket".to_string()
+            } else {
+                entry.file_name().to_string_lossy().into_owned()
+            }
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 /// KT-30: a socket left behind by a dead daemon is unlinked and rebound, not mistaken for a live one.
@@ -614,6 +695,200 @@ fn on_linux_a_reused_start_adds_no_process_and_a_stop_empties_the_table() {
         started.stdout,
         started.stderr,
         again.stdout
+    );
+}
+
+/// How many times the concurrent-start race runs inside one test. A race is settled by a mechanism,
+/// not by luck, but one pass still shows less than a handful; the count stays small so the default
+/// suite remains quick on a host shared with other builds. Heavier repetition belongs in a load run.
+const RACES: usize = 3;
+
+/// What one race is judged on. Named fields rather than a row of anonymous values, because the
+/// expectation below is a claim about behaviour and has to read as one.
+#[derive(Debug, PartialEq, Eq)]
+struct Race {
+    arrived_together: usize,
+    said_it_started_the_daemon: usize,
+    said_one_was_already_running: usize,
+    exits: Vec<Option<i32>>,
+    quiet: bool,
+    socket_answered: bool,
+    beside_the_socket: Vec<String>,
+    stopped: Option<i32>,
+    left_behind: Vec<String>,
+}
+
+/// KT-61: two starts released together settle to one daemon, and each is told the truth about which
+/// of them produced it.
+///
+/// The overlap is forced rather than hoped for. Both processes record their arrival at a barrier after
+/// their own liveness check and before either arbitrates, so neither can leave that point until both
+/// have reached it and both are provably inside the window the arbitration must settle. The arrival
+/// count is asserted because it is the only thing that distinguishes this from two launches that
+/// missed each other: with the seam inert it is zero.
+///
+/// Outcomes are counted from anchored messages across both results, so exactly one start claims the
+/// daemon and exactly one reports the winner's. A loser that watched the winner's socket come up and
+/// called that its own work fails here, and so does a loser that reports a bind failure instead of a
+/// success. The socket directory holding nothing but the daemon socket is what proves the losing
+/// attempt left no claim behind, and holding nothing at all after the stop is what proves the winner
+/// released its own.
+#[test]
+fn concurrent_starts_settle_to_one_daemon_and_exactly_one_start_owns_it() {
+    let observed: Vec<Race> = (0..RACES)
+        .map(|race| {
+            let lifecycle = Lifecycle::new();
+            let barrier = lifecycle.home.path().join(format!("barrier{race}"));
+
+            let (runs, arrived_together) = lifecycle.race_to_start(2, &barrier);
+            let socket = lifecycle.socket();
+            let while_running = (
+                socket.exists() && !refused(&socket),
+                socket_dir_contents(&socket),
+            );
+
+            let stopped = lifecycle.act("stop");
+            let emptied = settle(
+                || socket_dir_contents(&socket),
+                |contents| contents.is_empty(),
+            );
+            Race {
+                arrived_together,
+                said_it_started_the_daemon: counted(&runs, "ktsense: daemon started for"),
+                said_one_was_already_running: counted(&runs, "a daemon is already running for"),
+                exits: runs.iter().map(|run| run.code).collect(),
+                quiet: runs.iter().all(|run| run.stderr.is_empty()),
+                socket_answered: while_running.0,
+                beside_the_socket: while_running.1,
+                stopped: stopped.code,
+                left_behind: emptied,
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        observed,
+        (0..RACES)
+            .map(|_| Race {
+                arrived_together: 2,
+                said_it_started_the_daemon: 1,
+                said_one_was_already_running: 1,
+                exits: vec![Some(0), Some(0)],
+                quiet: true,
+                socket_answered: true,
+                beside_the_socket: vec!["the daemon socket".to_string()],
+                stopped: Some(0),
+                left_behind: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+fn counted(runs: &[Run], message: &str) -> usize {
+    runs.iter()
+        .filter(|run| run.stdout.contains(message))
+        .count()
+}
+
+/// KT-61: a start that crossed its own liveness check before any daemon existed still reports the
+/// daemon it finds rather than claiming it, when it only gets to arbitrate after another start has
+/// already finished.
+///
+/// This interleaving is neither of the two the other tests cover. KT-30's second start sees a live
+/// socket at its own liveness check and returns there, and a racing start contends for a claim the
+/// winner is holding. Here the held start passes its liveness check with nothing running, and by the
+/// time it is released the winner has bound the socket and released the claim, so nothing stands in
+/// the way of taking a claim and spawning a second engine. What stops it is that arbitration re-reads
+/// liveness rather than trusting the check the start made before waiting.
+///
+/// The barrier is filled by the test itself: the held start is one arrival of two, and the test
+/// supplies the second once the winner is up. The arrival counted before the winner ran is asserted,
+/// because it is what proves the held start really was past its liveness check by then, which is the
+/// whole point of the ordering.
+#[test]
+fn a_start_that_arbitrates_after_the_winner_finished_reports_the_winner_rather_than_itself() {
+    let lifecycle = Lifecycle::new();
+    let barrier = lifecycle.home.path().join("barrier");
+
+    let held = lifecycle.start_held_at(&barrier, 2);
+    let waiting_before_any_daemon = settle(|| arrivals(&barrier), |arrived| *arrived >= 1);
+    let winner = lifecycle.act("start");
+    std::fs::write(barrier.join("released-by-the-test"), b"").expect("release the held start");
+    let late = finished(held);
+    let socket = lifecycle.socket();
+
+    assert_eq!(
+        (
+            waiting_before_any_daemon,
+            (
+                winner.code,
+                winner.stdout.contains("ktsense: daemon started for")
+            ),
+            (
+                late.code,
+                late.stdout.contains("a daemon is already running for"),
+                late.stdout.contains("ktsense: daemon started for"),
+                late.stderr.clone(),
+            ),
+            socket.exists() && !refused(&socket),
+            socket_dir_contents(&socket),
+        ),
+        (
+            1,
+            (Some(0), true),
+            (Some(0), true, false, String::new()),
+            true,
+            vec!["the daemon socket".to_string()],
+        ),
+        "the winner said: {}{}\nthe late start said: {}{}",
+        winner.stdout,
+        winner.stderr,
+        late.stdout,
+        late.stderr
+    );
+}
+
+/// KT-61, Linux only: the race costs one daemon and one engine child, not two of either.
+///
+/// This is the half that cannot be read from messages. A losing start that spawned its own engine
+/// before discovering it had lost would show up here as a second child, whether or not it was ever
+/// reaped, and the census is taken as soon as both starts return rather than settled towards the
+/// expected answer, so a duplicate that dies quickly is still caught. The stop then has to empty the
+/// table of both, which is polled, because a loaded host takes longer to reap a child.
+///
+/// Gated to Linux for the same reason as the other census test: `ps -e -ww -o args=` is not verified
+/// on macOS, and no macOS run should be read as having made this proof.
+#[cfg(target_os = "linux")]
+#[test]
+fn on_linux_concurrent_starts_leave_one_daemon_and_one_engine_child() {
+    let lifecycle = Lifecycle::new();
+    let barrier = lifecycle.home.path().join("barrier");
+
+    let (runs, arrived_together) = lifecycle.race_to_start(2, &barrier);
+    let population = lifecycle.population();
+    let served = lifecycle.serve_one_request();
+    let after_a_request = lifecycle.population();
+
+    let stopped = lifecycle.act("stop");
+    let remaining = settle(|| lifecycle.population(), |census| census == &(0, 0));
+
+    assert_eq!(
+        (
+            arrived_together,
+            counted(&runs, "ktsense: daemon started for"),
+            counted(&runs, "a daemon is already running for"),
+            population,
+            served,
+            after_a_request,
+            stopped.code,
+            remaining,
+        ),
+        (2, 1, 1, (1, 1), (Some(0), Some(1)), (1, 1), Some(0), (0, 0)),
+        "the racing starts said: {}",
+        runs.iter()
+            .map(|run| format!("[{}{}]", run.stdout, run.stderr))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
 }
 
