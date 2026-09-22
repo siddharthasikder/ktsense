@@ -149,22 +149,13 @@ impl<'a> Extractor<'a> {
             DeclKind::Class
         };
 
-        let (visibility, mut modifiers) = self.modifiers_of(node);
+        let mut declaration = self.declared(node, kind, "type_identifier");
         if keywords.contains(&"enum") {
-            modifiers.push(Modifier::Enum);
+            declaration.modifiers.push(Modifier::Enum);
         }
         if keywords.contains(&"fun") && kind == DeclKind::Interface {
-            modifiers.push(Modifier::Fun);
+            declaration.modifiers.push(Modifier::Fun);
         }
-
-        let name_node = self.first_child_of_kind(node, "type_identifier");
-        let mut declaration = Declaration::new(
-            kind,
-            name_node.map(|n| self.text(n)).unwrap_or_default(),
-            self.line_of(name_node.unwrap_or(node)),
-        )
-        .with_visibility(visibility)
-        .with_modifiers(modifiers);
 
         self.attach_type_parameters(&mut declaration, node);
         if let Some(constructor) = self.first_child_of_kind(node, "primary_constructor") {
@@ -181,17 +172,25 @@ impl<'a> Extractor<'a> {
         declaration
     }
 
-    fn object_of(&self, node: Node<'_>, depth: usize) -> Declaration {
+    /// A declaration of `kind`, named by `node`'s first `name_kind` child and positioned on that
+    /// name's own line, carrying `node`'s visibility and modifiers.
+    ///
+    /// The name falls back to empty and the line to the node's own, because the grammar gives an
+    /// unnamed companion object no `type_identifier` at all and a skeleton still has to place it.
+    fn declared(&self, node: Node<'_>, kind: DeclKind, name_kind: &str) -> Declaration {
         let (visibility, modifiers) = self.modifiers_of(node);
-        let name_node = self.first_child_of_kind(node, "type_identifier");
-        let mut declaration = Declaration::new(
-            DeclKind::Object,
+        let name_node = self.first_child_of_kind(node, name_kind);
+        Declaration::new(
+            kind,
             name_node.map(|n| self.text(n)).unwrap_or_default(),
             self.line_of(name_node.unwrap_or(node)),
         )
         .with_visibility(visibility)
-        .with_modifiers(modifiers);
+        .with_modifiers(modifiers)
+    }
 
+    fn object_of(&self, node: Node<'_>, depth: usize) -> Declaration {
+        let mut declaration = self.declared(node, DeclKind::Object, "type_identifier");
         declaration.supertypes = self.supertypes_of(node);
         declaration.doc = self.doc_of(node);
         declaration.children = self.body_of(node, depth);
@@ -275,16 +274,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn type_alias(&self, node: Node<'_>) -> Declaration {
-        let (visibility, modifiers) = self.modifiers_of(node);
-        let name_node = self.first_child_of_kind(node, "type_identifier");
-        let mut declaration = Declaration::new(
-            DeclKind::TypeAlias,
-            name_node.map(|n| self.text(n)).unwrap_or_default(),
-            self.line_of(name_node.unwrap_or(node)),
-        )
-        .with_visibility(visibility)
-        .with_modifiers(modifiers);
-
+        let mut declaration = self.declared(node, DeclKind::TypeAlias, "type_identifier");
         self.attach_type_parameters(&mut declaration, node);
         // The aliased type sits after the name; rendering it as the "return type" keeps one field
         // doing one job, and `typealias P = (User) -> Boolean` reads correctly.
