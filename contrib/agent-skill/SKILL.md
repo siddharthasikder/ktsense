@@ -64,8 +64,9 @@ the answer `index: partial`. A partial answer is a real answer about the files i
 is not a complete list: treat "no callers" under `index: partial` as "none found yet", never as
 "none exist". Under `index: complete` the list is the whole workspace. If you need completeness and
 got `partial`, wait and ask again rather than reporting the weaker answer as though it were the
-stronger one. Until `ktsense_status` itself ships (see the last section), the `index:` line on a
-trace answer is the same signal after the fact rather than before it.
+stronger one. Asking first is the better habit, but the `index:` line on a trace answer carries the
+same signal after the fact, so a `partial` marker tells you the index is still building even when you
+did not check beforehand.
 
 ## Reading the results
 
@@ -101,10 +102,19 @@ surface while editing, rather than reading the whole file.
 Answering "is this safe to delete", `trace_kotlin_symbol` under `index: complete` is the evidence you
 want. Under `index: partial` it is not, and saying so is better than being wrong.
 
-## Not yet shipped
+## The two tools that landed last
 
-`explain_kotlin_symbol` and `ktsense_status` are catalogued and callable, and at the time of writing
-each returns a tool error saying the underlying command is not implemented yet. Until they land, get
-the same information the long way: `trace_kotlin_symbol` plus `get_kotlin_outline` in place of
-`explain_kotlin_symbol`, and the `index:` marker on a trace answer in place of `ktsense_status`. If a
-call returns `is not implemented yet`, that is this gap and not a misconfiguration.
+`explain_kotlin_symbol` and `ktsense_status` both answer for real: `ktsense_status` since KT-36 and
+`explain_kotlin_symbol` since KT-35, whose `context` command was the last one the surface advertised
+without implementing. No tool returns `is not implemented yet` today, so advice to substitute other
+tools for these two, including in older copies of this file, is out of date.
+
+Reach for `explain_kotlin_symbol` when you are orienting yourself around one unfamiliar symbol and
+would otherwise call `find_kotlin_symbol`, `get_kotlin_outline` and `trace_kotlin_symbol` in turn: it
+answers with the declaration, the outline of its file, its direct callers and its implementors in one
+budgeted bundle, and carries the same `index:` marker a trace does. Reach for `trace_kotlin_symbol`
+instead when you need every reference site, or callers deeper than one level.
+
+Reach for `ktsense_status` first when another tool fails, to learn whether the engine is installed and
+version-compatible, and before a trace you intend to rely on, to learn whether the index has settled.
+A missing engine is reported rather than raised: absence is the state you called it to learn.
