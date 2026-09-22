@@ -8,15 +8,17 @@
 //! Every outcome is reported in the text, not only in the exit code. An agent that asked for a daemon
 //! and got one already running needs to be told that, because "already running" and "just started"
 //! lead to different next steps even though both are successes. Two starts released together are
-//! settled by a claim taken before either spawns an engine, so exactly one of them owns the attempt
-//! and each is told which one it was.
+//! settled by one atomic claim taken before either spawns an engine, so exactly one of them owns the
+//! attempt and each is told which one it was.
 
+use std::fs::File;
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+use rustix::fs::{flock, FlockOperation};
 
 use ktsense_daemon::{
     resolve_socket_path, run, short_socket_base, status, stop, DaemonConfig, Liveness, StopOutcome,
@@ -40,10 +42,11 @@ const IDLE_SECS_ENV: &str = "KTSENSE_DAEMON_IDLE_SECS";
 const CLAIM_DIR_MODE: u32 = 0o700;
 const CLAIM_MODE: u32 = 0o600;
 
-/// How many abandoned claims one root tolerates before a start refuses rather than walking on. One
-/// is left behind per claimant that died without releasing, so reaching this means something is
-/// killing starts repeatedly and a truthful failure beats an unbounded search.
-const MAX_CLAIM_GENERATIONS: u32 = 64;
+/// Suffix of the one file a start locks to claim a root, appended to that root's socket path. One
+/// file and not a series: the lock on it is what decides the winner, and a second path to try is
+/// exactly what let two starts believe they had both won (KT-71). Six bytes, inside the
+/// `COMPANION_RESERVE` the socket budget keeps free for it.
+const CLAIM_SUFFIX: &str = ".start";
 
 /// Reports whether a daemon is running for `root`, and where its socket is.
 pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError> {
@@ -69,6 +72,8 @@ pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError>
 /// reports the winner's daemon without having paid for an engine of its own, so there is no losing
 /// child to orphan and no second bind to lose. Attribution follows from the claim rather than from
 /// the socket, since a socket that came up while another start held the claim is that start's work.
+/// One atomic operation grants that claim, so what a start reports and what a start spawns come from
+/// the same decision and cannot disagree (KT-71).
 pub(crate) fn start(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
     let socket = socket_for(&root)?;
@@ -111,8 +116,8 @@ enum Arbitration {
 
 /// Arbitrates this start against every other start for the same root, returning once this process
 /// holds the claim or once a daemon is live, whichever comes first. A claimant that dies releases its
-/// claim, because the kernel closes the listener behind it, so a crashed start cannot lock a root out
-/// of ever starting again.
+/// claim, because the kernel drops the lock behind it, so a crashed start cannot lock a root out of
+/// ever starting again.
 ///
 /// Liveness is read twice, at the top of the loop and again once a claim is granted. The first lets a
 /// waiting start return as soon as the daemon it asked for exists, rather than waiting for the winner
@@ -152,74 +157,86 @@ fn claim_the_start(socket: &Path) -> Result<Arbitration, CommandError> {
     }
 }
 
-/// The right to start one root's daemon, held for as long as the listener is open. Nothing ever
-/// accepts on it: its existence is the claim, and connecting to it is how another start learns
-/// whether the holder is still alive.
+/// The right to start one root's daemon, held for as long as the lock is held. Nothing ever reads or
+/// writes the file: the lock on it is the claim, and the kernel dropping that lock is how another
+/// start learns the holder is gone.
 struct StartClaim {
-    _listener: UnixListener,
+    _locked: File,
     path: PathBuf,
 }
 
-/// Releases the claim. The file is removed as well as the listener closed, so the next start binds
-/// this same generation instead of walking past a file nobody owns.
+/// Releases the claim, removing the file before closing the descriptor that locks it. That order is
+/// deliberate: closing first would free the lock, and the file this then removed could already be the
+/// next start's claim. Removing first means the only claim a release can remove is its own, and an
+/// acquirer that locked the removed file sees it is no longer linked.
 impl Drop for StartClaim {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
-/// Binds the first free generation of this root's claim, or reports that a live claimant holds one.
+/// Locks this root's claim, or reports that another start holds it.
 ///
-/// A listening socket rather than a lock file, because its owner's death releases it: the kernel
-/// closes the listener, and the file left behind then refuses connections, which is exactly what
-/// tells the next start that the claim was abandoned rather than held.
+/// One atomic operation decides both facts a start needs: `flock` either grants the claim or reports
+/// that it is held, and the kernel releases it when the holder's descriptor closes, which a death
+/// does. Nothing has to *observe* whether the holder is still alive, and that is the whole point. The
+/// previous mechanism bound a listening socket per claim and probed the occupant with a connect, then
+/// moved to the next of 64 generations when the probe did not answer. A probe cannot tell a dead
+/// holder from a live one between its own `bind(2)` and `listen(2)`, from one that released mid-probe,
+/// or, on a BSD kernel, from one whose never-accepted backlog has filled: each of those minted a
+/// second claim beside the first, after which both starts spawned a daemon and both reported that they
+/// had started it. That is KT-71, seen on macOS CI where the gap between two syscalls is wide enough
+/// to land in.
 ///
-/// Generations exist because nothing here may unlink another process's claim. Two starts that both
-/// found the same abandoned claim would each remove what they found, and the second removal would
-/// take the first's fresh claim, leaving two owners and the double spawn this arbitration exists to
-/// prevent. Moving to the next generation instead leaves the decision to `bind` alone, which is
-/// atomic. The cost is one dead socket file per claimant that died, in a directory the system clears
-/// between logins.
+/// A file that exists but is unlocked is takeable in place, so there is no abandoned claim to step
+/// over and no second path to create. A file whose link count has reached zero was removed by the
+/// holder it belonged to while this call had it open, which means the lock just acquired is not on the
+/// claim this root's path names; that is reported as held, and the next attempt creates the file
+/// afresh. The link count answers this rather than a comparison of inode numbers, because a number
+/// can be reused and a positive link count cannot be: only this one path is ever linked.
 fn take_claim(socket: &Path) -> io::Result<Option<StartClaim>> {
     prepare_claim_dir(socket)?;
-    for generation in 0..MAX_CLAIM_GENERATIONS {
-        let path = claim_path(socket, generation);
-        match UnixListener::bind(&path) {
-            Ok(listener) => {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(CLAIM_MODE))?;
-                return Ok(Some(StartClaim {
-                    _listener: listener,
-                    path,
-                }));
-            }
-            Err(error) if names_a_path_already_there(&error) => {
-                if UnixStream::connect(&path).is_ok() {
-                    return Ok(None);
-                }
-            }
-            Err(error) => return Err(error),
-        }
+    let path = claim_path(socket);
+    let locked = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .mode(CLAIM_MODE)
+        .open(&path)?;
+    if let Err(errno) = flock(&locked, FlockOperation::NonBlockingLockExclusive) {
+        let error = io::Error::from(errno);
+        return if held_by_another_start(&error) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        format!("{MAX_CLAIM_GENERATIONS} abandoned start claims already sit beside this socket"),
-    ))
+    if !still_names_the_claim(&locked)? {
+        return Ok(None);
+    }
+    Ok(Some(StartClaim {
+        _locked: locked,
+        path,
+    }))
 }
 
-/// Whether a failed `bind` means this generation's file is already there, which is a contended or
-/// abandoned claim, as opposed to a filesystem refusal the start has to report.
+/// Whether the file this start locked is still the one its root's claim path names. A holder removes
+/// its claim before closing the descriptor that locks it, so a lock granted on a file with no names
+/// left is a lock on a claim that has already been released and replaced.
+fn still_names_the_claim(locked: &File) -> io::Result<bool> {
+    Ok(locked.metadata()?.nlink() > 0)
+}
+
+/// Whether a failed lock means another start holds the claim, as opposed to a filesystem refusal the
+/// start has to report.
 ///
-/// Linux answers `EADDRINUSE`. A BSD-derived kernel may answer `EEXIST` for the same condition, and
-/// the two are the same fact about the same path, so both are read as occupancy rather than the
-/// arbitration resting on which errno a platform chose. Reading only one of them turns the other
-/// platform's contended claim into a failed start: on macOS CI one of two starts released together
-/// exited 1 where every Linux run conceded (KT-65), and a claim that is merely held must never end a
-/// start that would otherwise have been told about the winner's daemon.
-fn names_a_path_already_there(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::AddrInUse | io::ErrorKind::AlreadyExists
-    )
+/// A claim that is merely held must never end a start that would otherwise have been told about the
+/// winner's daemon: on macOS CI one of two starts released together exited 1 where every Linux run
+/// conceded, because the platform reported contention with an errno the code did not recognise
+/// (KT-65). `EAGAIN` and `EWOULDBLOCK` are the same value on both platforms and std maps both to one
+/// kind, so this rests on the kind rather than on which name a kernel header chose.
+fn held_by_another_start(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
 }
 
 /// Creates the socket directory when a start is the first thing to need it, owner-only as it is
@@ -238,11 +255,11 @@ fn prepare_claim_dir(socket: &Path) -> io::Result<()> {
         .create(dir)
 }
 
-/// Where one generation of a root's claim lives: beside that root's daemon socket, so it inherits
-/// both the owner-only directory and the per-root identity the socket name already carries.
-fn claim_path(socket: &Path, generation: u32) -> PathBuf {
+/// Where a root's claim lives: beside that root's daemon socket, so it inherits both the owner-only
+/// directory and the per-root identity the socket name already carries.
+fn claim_path(socket: &Path) -> PathBuf {
     let mut name = socket.as_os_str().to_os_string();
-    name.push(format!(".start{generation}"));
+    name.push(CLAIM_SUFFIX);
     PathBuf::from(name)
 }
 
@@ -418,58 +435,70 @@ mod tests {
 
     use ktsense_daemon::{COMPANION_RESERVE, MAX_SOCKET_PATH, SOCKET_BUDGET};
 
-    /// The socket budget reserves room for the companion files a start binds beside a socket, and
-    /// this is the file it means. A socket placed exactly at the budget must still leave room for the
-    /// last generation of its own claim, because a socket that fits while its claim does not is what
-    /// failed on macOS CI: a 101-byte socket bound, and its 108-byte `.start0` did not (KT-66).
+    /// The socket budget reserves room for the companion file a start puts beside a socket, and this
+    /// is the file it means. A socket placed exactly at the budget must still leave room for its own
+    /// claim, because a socket that fits while its claim does not is what failed on macOS CI: a
+    /// 101-byte socket bound, and its 108-byte claim did not (KT-66).
     #[test]
-    fn the_longest_claim_name_still_fits_a_socket_placed_at_the_budget() {
+    fn the_claim_name_still_fits_a_socket_placed_at_the_budget() {
         let at_budget = PathBuf::from("x".repeat(SOCKET_BUDGET));
-        let longest = claim_path(&at_budget, MAX_CLAIM_GENERATIONS - 1);
+
+        let claim = claim_path(&at_budget);
+        let suffix = claim.as_os_str().len() - at_budget.as_os_str().len();
 
         assert_eq!(
             (
-                longest.as_os_str().len() - at_budget.as_os_str().len(),
-                longest.as_os_str().len() <= MAX_SOCKET_PATH,
+                suffix,
+                suffix <= COMPANION_RESERVE,
+                claim.as_os_str().len() <= MAX_SOCKET_PATH,
             ),
-            (COMPANION_RESERVE, true)
+            (CLAIM_SUFFIX.len(), true, true)
         );
     }
 
-    /// The occupancy decision holds on every platform, because the errno a kernel picks for "that
-    /// path is already there" is not the same everywhere. Both readings mean a claim is held or was
-    /// abandoned, and both must be stepped over; a refusal that is neither has to end the start
-    /// rather than be mistaken for contention.
+    /// Contention must never end a start that would otherwise have been told about the winner's
+    /// daemon: on macOS CI one of two starts released together exited 1 where every Linux run
+    /// conceded, because the platform reported a held claim with an errno the code did not recognise
+    /// (KT-65). A refusal that is not contention has to end the start rather than be mistaken for it.
     #[test]
-    fn a_taken_claim_path_is_recognized_whichever_errno_the_platform_reports() {
-        let reads_as_taken =
-            |kind: io::ErrorKind| names_a_path_already_there(&io::Error::from(kind));
+    fn a_held_claim_is_recognized_as_contention_and_a_refusal_is_not() {
+        let reads_as_held = |kind: io::ErrorKind| held_by_another_start(&io::Error::from(kind));
 
         assert_eq!(
             (
-                reads_as_taken(io::ErrorKind::AddrInUse),
-                reads_as_taken(io::ErrorKind::AlreadyExists),
-                reads_as_taken(io::ErrorKind::PermissionDenied),
-                reads_as_taken(io::ErrorKind::NotFound),
+                reads_as_held(io::ErrorKind::WouldBlock),
+                reads_as_held(io::ErrorKind::PermissionDenied),
+                reads_as_held(io::ErrorKind::NotFound),
+                reads_as_held(io::ErrorKind::AddrInUse),
             ),
-            (true, true, false, false)
+            (true, false, false, false)
         );
     }
 
-    /// A claim blocks every other start for as long as it is held, and only for as long. The socket it
-    /// binds is the claim itself, so releasing it removes the file and frees the same generation for
-    /// the next start rather than pushing it onwards.
+    /// KT-71: one root has one claim, and locking it is the only thing that decides who owns the
+    /// start. Every state an arriving start can find is covered here, because the defect this replaces
+    /// was a fourth state - a claim whose holder could not be observed - that the old mechanism
+    /// answered by creating a second claim beside the first, after which both starts reported that
+    /// they had started the daemon.
+    ///
+    /// Nothing is present, so the first start is granted. The claim is then held, so the second is
+    /// refused rather than offered anything else, and the directory still holds exactly one claim.
+    /// Releasing removes the file, and a start after the release is granted that same path.
     #[test]
-    fn a_held_claim_blocks_another_start_and_releasing_it_frees_the_same_generation() {
+    fn one_root_has_one_claim_and_locking_it_is_what_decides_the_winner() {
         let home = tempfile::tempdir().expect("temp dir");
         let socket = home.path().join("root.sock");
-        let first_generation = claim_path(&socket, 0);
+        let claim = claim_path(&socket);
 
         let held = take_claim(&socket).expect("a first claim");
         let blocked = take_claim(&socket).expect("a second attempt");
-        let while_held = (held.is_some(), blocked.is_none(), first_generation.exists());
+        let while_held = (
+            held.as_ref().map(|claim| claim.path.clone()),
+            blocked.is_none(),
+            names_beside(&socket),
+        );
         drop(held);
-        let after_release = first_generation.exists();
+        let after_release = (claim.exists(), names_beside(&socket));
         let regranted = take_claim(&socket).expect("a claim after the release");
 
         assert_eq!(
@@ -477,42 +506,74 @@ mod tests {
                 while_held,
                 after_release,
                 regranted.as_ref().map(|claim| claim.path.clone()),
-                claim_path(&socket, 1).exists(),
             ),
-            ((true, true, true), false, Some(first_generation), false)
+            (
+                (Some(claim.clone()), true, vec![file_name(&claim)]),
+                (false, Vec::new()),
+                Some(claim),
+            )
         );
     }
 
-    /// The owner-recovery story, exercised. A start that was killed leaves its claim socket on disk
-    /// with nothing listening behind it, which is what dropping a listener without removing its file
-    /// reproduces, and the next start must be granted a claim rather than locked out of the root for
-    /// good. The abandoned file is stepped over rather than unlinked: two starts that both found it
-    /// would otherwise each remove what they found, and the second removal would take the first's
-    /// fresh claim.
+    /// The recovery story KT-61 wrote the claim for, exercised. A start that was killed leaves its
+    /// claim file on disk with no lock behind it, because the kernel drops the lock as the process
+    /// dies, and the next start must be granted rather than locked out of the root for good. A file
+    /// written without ever being locked is that state; nothing here kills a process, as nothing did
+    /// when the claim was a listener. It is granted in place, so no second claim can exist.
     #[test]
-    fn a_claim_abandoned_by_a_killed_start_is_stepped_over_rather_than_unlinked() {
+    fn a_claim_abandoned_by_a_killed_start_is_reclaimed_in_place() {
         let home = tempfile::tempdir().expect("temp dir");
         let socket = home.path().join("root.sock");
-        let abandoned = claim_path(&socket, 0);
-        drop(UnixListener::bind(&abandoned).expect("bind then abandon a claim"));
+        let claim = claim_path(&socket);
+        std::fs::write(&claim, b"").expect("a claim file with no lock behind it");
 
         let granted = take_claim(&socket).expect("a claim beside the abandoned one");
 
         assert_eq!(
             (
                 granted.as_ref().map(|claim| claim.path.clone()),
-                abandoned.exists(),
-                UnixStream::connect(&abandoned)
-                    .err()
-                    .map(|error| error.kind()),
+                names_beside(&socket),
                 take_claim(&socket).expect("a third attempt").is_none(),
             ),
-            (
-                Some(claim_path(&socket, 1)),
-                true,
-                Some(io::ErrorKind::ConnectionRefused),
-                true
-            )
+            (Some(claim.clone()), vec![file_name(&claim)], true)
         );
+    }
+
+    /// The guard on the release window. A holder removes its claim before closing the descriptor that
+    /// locks it, so a start that had the file open across that removal can be granted a lock on a file
+    /// the claim path no longer names. A link count of zero is what says so, and it cannot be fooled
+    /// by inode reuse the way a comparison of inode numbers can, because only the claim path is ever
+    /// linked.
+    #[test]
+    fn a_lock_on_a_file_the_claim_path_no_longer_names_is_not_the_claim() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let path = home.path().join("root.sock.start");
+        let opened = File::create(&path).expect("a claim file");
+
+        let while_linked = still_names_the_claim(&opened).expect("a link count");
+        std::fs::remove_file(&path).expect("remove it behind the open descriptor");
+        let after_removal = still_names_the_claim(&opened).expect("a link count");
+
+        assert_eq!((while_linked, after_removal), (true, false));
+    }
+
+    /// Everything sharing the claim's directory, so a test can say that a start created one file and
+    /// not a second one under another name.
+    fn names_beside(socket: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(socket.parent().expect("a parent"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn file_name(path: &Path) -> String {
+        path.file_name()
+            .expect("the claim has a name")
+            .to_string_lossy()
+            .into_owned()
     }
 }

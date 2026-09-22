@@ -23,6 +23,7 @@ ktsense-mcp = { workspace = true }
 ktsense-syntax = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

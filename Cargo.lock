@@ -539,6 +539,7 @@ dependencies = [
  "ktsense-lsp",
  "ktsense-mcp",
  "ktsense-syntax",
+ "rustix 0.38.44",
  "serde",
  "serde_json",
  "tempfile",

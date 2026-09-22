@@ -73,13 +73,25 @@ and compression testable from hand-built values.
 - **A daemon socket path is an address, not a pathname.** `sockaddr_un.sun_path` holds 104 bytes on
   Darwin and 108 on Linux, so `ktsense-daemon::SOCKET_BUDGET` applies the tightest of them on every
   platform: a budget that widened on Linux would make a macOS overflow unreproducible where the work
-  is done. The budget also reserves `COMPANION_RESERVE` bytes for the longest file a start binds
-  beside a socket, `<socket>.start63`, because the KT-66 failure was a 101-byte socket that bound and
+  is done. The budget also reserves `COMPANION_RESERVE` bytes for the longest file a start puts beside
+  a socket, its claim `<socket>.start`, because the KT-66 failure was a 101-byte socket that bound and
   a 108-byte claim that did not. A runtime directory too deep for that budget is answered from
   `/tmp/ktsense-<uid>/<key of the rejected directory>`; `resolve_socket_path` owns the precedence and
   is the only way to derive a socket path, since the CLI parent, the detached `daemon serve` child and
   every routed command must agree on one. Observed 2026-09-22 on macos-14 CI, where a `TempDir` under
   the per-user `TMPDIR` is already about fifty bytes deep.
+- **`UnixListener::bind` is `bind(2)` and then a separate `listen(2)`, so a socket path that exists is
+  not yet a socket that answers.** A connect in that gap is refused exactly as an abandoned socket is,
+  and the two cannot be told apart. `daemon start`'s arbitration used to decide whether a claim's
+  holder was alive by connecting to it, and read a refusal as death by moving to the next of 64 claim
+  generations; a probe landing in the holder's own gap therefore minted a second claim, and both starts
+  then spawned a daemon and both reported that they had started it (KT-71, macos-15 CI run
+  35762259473, one race in three; 1500 races on Linux never showed it). The claim is now one file held
+  under `flock`, so acquiring it is a single atomic decision and nothing observes whether the holder is
+  alive. **Never reintroduce a liveness probe into that path:** whatever a start reports must come from
+  the same operation that decides who spawns. The same rule retires the other way in: nothing accepts
+  on a claim, so every probe consumed a backlog slot permanently, and a BSD kernel refuses a connect
+  once that queue is full where Linux blocks.
 
 ## Accuracy honesty
 

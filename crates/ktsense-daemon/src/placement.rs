@@ -5,7 +5,9 @@
 //! does not: its per-user `TMPDIR` is around fifty bytes deep before anything is nested under it, so
 //! a test that derives `XDG_RUNTIME_DIR` from a temporary directory there reached a 101-byte socket
 //! path whose eight-byte `.start0` claim could not be bound at all, and the start failed with `path
-//! must be shorter than SUN_LEN` (KT-66, observed on macos-14 CI).
+//! must be shorter than SUN_LEN` (KT-66, observed on macos-14 CI). The claim is one shorter file now
+//! rather than one of sixty-four generations (KT-71), and the reserve still covers the longest of
+//! them so a budget widened here cannot reintroduce the failure.
 
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -26,10 +28,11 @@ use crate::{path_key, socket_dir, socket_path};
 /// KT-66 failure reached CI unnoticed in the first place.
 pub const MAX_SOCKET_PATH: usize = 103;
 
-/// Bytes kept free after a socket path for the companion files a start binds beside it. The longest
-/// is `daemon start`'s claim of the final generation, `<socket>.start63`. A socket path that fits
-/// while its own claim does not is the exact shape of the KT-66 failure, so the budget covers both
-/// rather than the socket alone.
+/// Bytes kept free after a socket path for the companion files a start puts beside it. The one it
+/// places today is `daemon start`'s claim, `<socket>.start`, at six bytes; the reserve stays at eight
+/// because that covered `<socket>.start63` when a claim had generations (KT-71 removed them) and
+/// narrowing a budget buys nothing. A socket path that fits while its own claim does not is the exact
+/// shape of the KT-66 failure, so the budget covers both rather than the socket alone.
 pub const COMPANION_RESERVE: usize = 8;
 
 /// Longest socket path a placement will choose, companions included.
