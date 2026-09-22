@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
+use ktsense_daemon::SOCKET_BUDGET;
 
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const FIXTURE: &str = "fixtures/multi-module";
@@ -204,6 +205,18 @@ fn settle<T>(mut observe: impl FnMut() -> T, settled: impl Fn(&T) -> bool) -> T 
     }
 }
 
+/// Where a harness puts its runtime directory under its own home. The shallow one is what every
+/// lifecycle test has always used.
+///
+/// The deep one is longer than `SOCKET_BUDGET` by itself, before the temporary home it hangs under is
+/// counted, so every socket path inside it overflows on every platform and no test resting on it has
+/// to reason about the prefix a host's `TMPDIR` contributes. It is deeper than the macOS runtime
+/// directory that exposed this, which was about seventy bytes; the shape is borrowed from there and
+/// the length is chosen to make the overflow unconditional.
+const SHALLOW_RUNTIME: &str = "run";
+const DEEP_RUNTIME: &str =
+    "var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/TemporaryItems/folders/tmp.AbCdEfGhIj/nested/run";
+
 /// One daemon and everything it touches, under a single temporary directory: a copy of the fixture as
 /// its workspace root, a symlink to the replay engine, and its own runtime directory.
 ///
@@ -216,13 +229,24 @@ fn settle<T>(mut observe: impl FnMut() -> T, settled: impl Fn(&T) -> bool) -> T 
 /// behind to make the next test's start or stale-socket assertion lie.
 struct Lifecycle {
     home: tempfile::TempDir,
+    runtime: PathBuf,
 }
 
 impl Lifecycle {
     fn new() -> Self {
-        let lifecycle = Self {
-            home: tempfile::tempdir().expect("temp home"),
-        };
+        Self::with_runtime_under_home(Path::new(SHALLOW_RUNTIME))
+    }
+
+    /// KT-66: the same harness with a runtime directory too deep for a Unix domain address, which is
+    /// the condition macOS reaches through its per-user `TMPDIR` and Linux never reaches by accident.
+    fn under_a_deep_runtime_dir() -> Self {
+        Self::with_runtime_under_home(&PathBuf::from(DEEP_RUNTIME))
+    }
+
+    fn with_runtime_under_home(relative: &Path) -> Self {
+        let home = tempfile::tempdir().expect("temp home");
+        let runtime = home.path().join(relative);
+        let lifecycle = Self { home, runtime };
         std::fs::create_dir_all(lifecycle.root()).expect("create the workspace root");
         copy_tree(Path::new(FIXTURE_ROOT), &lifecycle.root());
         std::os::unix::fs::symlink(fake_lsp(), lifecycle.engine()).expect("link the engine");
@@ -239,7 +263,7 @@ impl Lifecycle {
     }
 
     fn runtime(&self) -> PathBuf {
-        self.home.path().join("run")
+        self.runtime.clone()
     }
 
     /// The file a routed request asks about, inside this harness's own copy of the fixture, so no
@@ -869,6 +893,111 @@ fn a_start_that_arbitrates_after_the_winner_finished_reports_the_winner_rather_t
         winner.stderr,
         late.stdout,
         late.stderr
+    );
+}
+
+/// KT-66: a runtime directory too deep for a Unix domain address still gets a daemon, and the socket
+/// it gets is one the kernel will accept.
+///
+/// Runs on every platform, and forces on Linux what only macOS produces by accident. A `sockaddr_un`
+/// holds 104 bytes on Darwin, and a temporary directory under the per-user `TMPDIR` there is already
+/// around fifty bytes deep, so a socket derived from one came to 101 bytes and its eight-byte claim did
+/// not fit at all: `daemon start` failed with `path must be shorter than SUN_LEN`.
+///
+/// The overflow is forced rather than hoped for, and proven without recomputing the daemon's naming:
+/// the runtime directory alone is longer than the budget, so every path inside it is too, whatever a
+/// host's temporary prefix adds and whatever the socket is called. A budget wide enough to accept it
+/// would fail that assertion rather than quietly turn the rest of this into a test of nothing.
+///
+/// What proves the placement works is not the reported path but a request served through it:
+/// `serve_one_request` forbids the in-process fallback, so the count only rises if a claim was bound,
+/// a daemon bound the socket, and a client connected to it.
+#[test]
+fn a_deep_runtime_dir_gets_a_socket_short_enough_to_bind_and_serve() {
+    let deep = Lifecycle::under_a_deep_runtime_dir();
+    let runtime = deep.runtime();
+    let socket = PathBuf::from(deep.act("status").socket());
+
+    let started = deep.act("start");
+    let served = deep.serve_one_request();
+    let stopped = deep.act("stop");
+
+    assert_eq!(
+        (
+            runtime.as_os_str().len() > SOCKET_BUDGET,
+            socket.starts_with(&runtime),
+            socket.as_os_str().len() <= SOCKET_BUDGET,
+            (started.code, started.stderr.clone()),
+            served,
+            (stopped.code, stopped.stderr.clone()),
+        ),
+        (
+            true,
+            false,
+            true,
+            (Some(0), String::new()),
+            (Some(0), Some(1)),
+            (Some(0), String::new()),
+        ),
+        "the deep runtime dir was {} bytes and the socket landed at {}\nstart said: {}{}",
+        runtime.as_os_str().len(),
+        socket.display(),
+        started.stdout,
+        started.stderr
+    );
+}
+
+/// KT-66: the start arbitration settles the same way under a deep runtime directory as under a shallow
+/// one, because that is the case it was observed failing in.
+///
+/// Run 1 of the same macOS CI job failed the concurrent-start race with one start exiting 1, and
+/// KT-65 reasoned that to an errno a contended claim might answer with, having measured the socket path
+/// at about a hundred characters and dismissed its length as constant across races. The socket was
+/// within the limit; its `.start0` claim was not, so the failing bind was the claim's and the exit was
+/// honest. This is that race with the length restored to the picture: nothing about the arbitration
+/// changes, so the whole record the shallow race asserts has to hold here unaltered.
+#[test]
+fn concurrent_starts_under_a_deep_runtime_dir_settle_to_one_daemon() {
+    let lifecycle = Lifecycle::under_a_deep_runtime_dir();
+    let barrier = lifecycle.home.path().join("barrier");
+
+    let (runs, arrived_together) = lifecycle.race_to_start(2, &barrier);
+    let socket = lifecycle.socket();
+    let while_running = (
+        socket.exists() && !refused(&socket),
+        socket_dir_contents(&socket),
+    );
+    let stopped = lifecycle.act("stop");
+    let emptied = settle(
+        || socket_dir_contents(&socket),
+        |contents| contents.is_empty(),
+    );
+
+    assert_eq!(
+        Race {
+            arrived_together,
+            said_it_started_the_daemon: counted(&runs, "ktsense: daemon started for"),
+            said_one_was_already_running: counted(&runs, "a daemon is already running for"),
+            exits: runs.iter().map(|run| run.code).collect(),
+            quiet: runs.iter().all(|run| run.stderr.is_empty()),
+            socket_answered: while_running.0,
+            beside_the_socket: while_running.1,
+            stopped: stopped.code,
+            left_behind: emptied,
+        },
+        Race {
+            arrived_together: 2,
+            said_it_started_the_daemon: 1,
+            said_one_was_already_running: 1,
+            exits: vec![Some(0), Some(0)],
+            quiet: true,
+            socket_answered: true,
+            beside_the_socket: vec!["the daemon socket".to_string()],
+            stopped: Some(0),
+            left_behind: Vec::new(),
+        },
+        "what the starts said:\n{}",
+        transcript(0, &runs)
     );
 }
 

@@ -96,9 +96,27 @@ fn neutralize_root_hashes(text: &str) -> String {
     out
 }
 
+/// A runtime directory shallow enough that a socket derived from it is placed inside it on every
+/// platform.
+///
+/// The goldens below pin the socket as `<runtime>/ktsense/<root-hash>.sock`, and that is the
+/// placement only a runtime directory within the socket budget gets: a deeper one is answered from a
+/// short per-uid base instead, correctly, and the golden would then not match. A default temporary
+/// directory is a handful of bytes deep on Linux and around sixty on macOS, close enough to the
+/// budget that the pinned shape would be a property of the host rather than of this test, so the
+/// shallow base is chosen here deliberately (KT-66).
+fn runtime_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("ktsense-status.")
+        .tempdir_in(SHALLOW_TEMP_BASE)
+        .expect("temp dir")
+}
+
+const SHALLOW_TEMP_BASE: &str = "/tmp";
+
 #[test]
 fn status_without_a_daemon_is_pinned_in_both_formats() {
-    let temp = tempfile::tempdir().expect("temp dir");
+    let temp = runtime_dir();
     let engine = fake_lsp();
     let md = status(temp.path(), &engine, &["--root", FIXTURE, "status"]);
     let json = status(
@@ -129,7 +147,7 @@ fn status_without_a_daemon_is_pinned_in_both_formats() {
 /// A leftover socket file and a missing engine are both states to report, not reasons to fail.
 #[test]
 fn a_stale_socket_and_a_missing_engine_are_reported_with_exit_zero() {
-    let temp = tempfile::tempdir().expect("temp dir");
+    let temp = runtime_dir();
     let engine = fake_lsp();
     let absent = status(temp.path(), &engine, &["--root", FIXTURE, "status"]);
     let socket = absent
@@ -180,7 +198,7 @@ fn a_running_daemon_reports_uptime_a_settled_index_and_a_moving_request_count() 
     use std::time::{Duration, Instant};
 
     const FIXTURE: &str = "fixtures/multi-module";
-    let temp = tempfile::tempdir().expect("temp dir");
+    let temp = runtime_dir();
     let real = PathBuf::from("kmp-lsp");
     let lifecycle =
         |action: &str| status(temp.path(), &real, &["--root", FIXTURE, "daemon", action]);
