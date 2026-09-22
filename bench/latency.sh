@@ -46,12 +46,14 @@
 #                 reported as a daemon number.
 #
 #                 `outline`, `deps`, `trace` and `map` each have a daemon path.
-#                 `symbols` is exempt by design: its backend is the engine's
-#                 command-mode `find`, and `workspace/symbol` is fuzzy and not
-#                 root-scoped on this engine, so a warm session has nothing better
-#                 to offer. `trace` still pays that same command-mode `find` to
-#                 resolve its symbol even on the daemon path, so its daemon row is
-#                 not purely warm-session time; the `find` cost dominates it.
+#                 `symbols` has none: it is not routed (Fork A), so there is no
+#                 daemon number to report and its row says so rather than
+#                 repeating the in-process one under a second name. Its
+#                 in-process row is still worth reading next to `trace`, because
+#                 it is exactly one command-mode `find`: the subprocess a routed
+#                 `trace` used to pay to resolve its symbol and, since KT-60,
+#                 answers from the daemon's warm index instead. The `trace`
+#                 daemon row is therefore warm-session time.
 #
 # Corpus integrity
 #                 Running kmp-lsp over a Gradle project triggers an Eclipse

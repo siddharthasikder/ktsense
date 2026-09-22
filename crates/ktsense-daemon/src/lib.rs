@@ -9,6 +9,7 @@
 mod client;
 mod engine;
 mod server;
+mod symbols;
 mod wire;
 
 pub use client::{verify_protocol, Client, ClientError, ProtocolMismatch};
@@ -17,6 +18,7 @@ pub use server::{
     probe, run, status, stop, DaemonConfig, DaemonError, Liveness, StopOutcome, StopReason,
     DEFAULT_IDLE_TIMEOUT,
 };
+pub use symbols::{resolve_from_warm_index, Inconclusive, WarmResolution};
 pub use wire::{read_frame, write_frame, ClientFrame, ServerFrame, WireError, MAX_FRAME};
 
 use std::path::{Path, PathBuf};

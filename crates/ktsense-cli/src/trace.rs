@@ -6,6 +6,13 @@
 //! the declaration, repeat references at each caller for every further level of `--depth`, then
 //! shut the session down. The phase the wait reached travels into the answer as its `index`
 //! marker, so a list read off a still-building index is presented as the lower bound it is.
+//!
+//! A routed trace shares all of that but neither of the two subprocesses. The session is the
+//! daemon's own warm one, and the candidates come from that session's index through
+//! [`ktsense_daemon::resolve_from_warm_index`] rather than from a command-mode `find` child, which
+//! rebuilds the engine's whole index per invocation and cost more than the rest of a warm trace put
+//! together. Both paths then hand their candidates to the same [`select_candidate`], so the
+//! ambiguity contract, `--pick` and the no-such-symbol error are the same code whichever answered.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,7 +23,7 @@ use ktsense_core::{
     build_trace, callers_of, render_trace_markdown, Definition, FileSkeleton, GroupingOptions,
     IndexCompleteness, Location, RelatedDeclaration, TraceInput, TraceReport,
 };
-use ktsense_daemon::WarmEngine;
+use ktsense_daemon::{WarmEngine, WarmResolution};
 use ktsense_lsp::{
     wait_for_index, DeclarationScope, FilePosition, IndexPhase, InitializeConfig, LspClient,
     LspError, SiteLocation, SymbolCandidate,
@@ -92,22 +99,25 @@ pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, Command
     }
 }
 
-/// The daemon-side `trace`: resolve the name the same way, then answer from the daemon's own warm
-/// session rather than launching a second engine child. The core flow, [`Session::run`], is shared
-/// with the fresh path, so the two answers cannot drift. Resolution still shells out to command-mode
-/// `find` (Fork A exempts symbols, and `workspace/symbol` is fuzzy and not root-scoped), so a routed
-/// trace still pays that subprocess even with the warm session answering the engine requests.
+/// The daemon-side `trace`: resolve the name and answer from the daemon's own warm session rather
+/// than launching a second engine child. The core flow, [`Session::run`], is shared with the fresh
+/// path, so the two answers cannot drift.
+///
+/// Resolution happens after the index wait rather than before it, because the warm resolver can only
+/// be trusted once the engine reports its index complete: a half-built index answers with a subset of
+/// the declarations, which would change the candidate set rather than merely delay it.
 pub(crate) async fn trace_warm(
     engine: &WarmEngine,
     request: TraceRequest<'_>,
 ) -> Result<CommandOutcome, CommandError> {
-    match resolve_candidate(&request).await? {
+    let index = await_warm_index(engine, request.wait).await;
+    let candidates = warm_declarations(engine, &request, index).await?;
+    match select_candidate(&request, candidates)? {
         Resolution::Ambiguous(outcome) => Ok(outcome),
         Resolution::Ready {
             candidate,
             definition,
         } => {
-            let index = await_warm_index(engine, request.wait).await;
             let report = Session::new(request.root, request.limit)
                 .run(
                     engine.client(),
@@ -121,6 +131,34 @@ pub(crate) async fn trace_warm(
             present(&report, request.format).map(CommandOutcome::success)
         }
     }
+}
+
+/// Every declaration of the requested name, read from the daemon's warm index when that index can
+/// answer the name completely and from command-mode `find` when it cannot.
+///
+/// The warm lookup replaces a `find` subprocess that rebuilds the engine's whole index per
+/// invocation, which is most of what a warm trace used to cost. It is not a wider replacement: the
+/// engine caps a `workspace/symbol` response, and a name its index holds no declaration for is one
+/// `find` answers from its own text-search fallback, so both cases fall back here rather than
+/// narrowing the candidate set. The fallback is silent because the answer is the same either way;
+/// only its cost differs.
+async fn warm_declarations(
+    engine: &WarmEngine,
+    request: &TraceRequest<'_>,
+    index: IndexCompleteness,
+) -> Result<Vec<SymbolCandidate>, CommandError> {
+    if index == IndexCompleteness::Complete {
+        match ktsense_daemon::resolve_from_warm_index(engine.client(), request.root, request.symbol)
+            .await
+        {
+            WarmResolution::Declarations(candidates) => return Ok(candidates),
+            WarmResolution::Inconclusive(reason) => tracing::debug!(
+                "resolving {} through command-mode find: {reason:?}",
+                request.symbol
+            ),
+        }
+    }
+    found_by_command_mode(request).await
 }
 
 pub(crate) fn resolve(request: &TraceRequest<'_>) -> Result<Traced, CommandError> {
@@ -157,9 +195,26 @@ enum Resolution {
 }
 
 async fn resolve_candidate(request: &TraceRequest<'_>) -> Result<Resolution, CommandError> {
-    let candidates = ktsense_lsp::run_symbols(request.root, request.symbol)
+    select_candidate(request, found_by_command_mode(request).await?)
+}
+
+/// Every declaration the engine's command-mode `find` reports for the name. This is the resolution
+/// the in-process path always uses, and the one a routed trace falls back to.
+async fn found_by_command_mode(
+    request: &TraceRequest<'_>,
+) -> Result<Vec<SymbolCandidate>, CommandError> {
+    ktsense_lsp::run_symbols(request.root, request.symbol)
         .await
-        .map_err(|error| CommandError::passthrough(&error))?;
+        .map_err(|error| CommandError::passthrough(&error))
+}
+
+/// Narrows candidates to the one declaration to trace. Both paths route through here, so the
+/// ambiguity contract, `--pick`, and the error for a name that matched nothing are stated once and
+/// cannot differ between them.
+fn select_candidate(
+    request: &TraceRequest<'_>,
+    candidates: Vec<SymbolCandidate>,
+) -> Result<Resolution, CommandError> {
     match symbols::select(
         request.root,
         request.symbol,
