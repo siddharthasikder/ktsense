@@ -168,3 +168,180 @@ jobs:
             dist/${{ steps.stage.outputs.name }}.tar.gz
             dist/${{ steps.stage.outputs.name }}.tar.gz.sha256
           if-no-files-found: error
+
+  # Installs the Homebrew formula against the artifact this run just built, through a temporary tap
+  # whose URL points at that tarball. It deliberately does not run `brew install ktsense` from the
+  # checked-in URLs: no GitHub Release exists yet and Formula/ktsense.rb carries OWNER plus deadbeef
+  # placeholders on purpose, so the real URLs, and any `--online` audit of them, only become
+  # meaningful once the repository is pushed and a release is cut.
+  formula-test:
+    name: brew ${{ matrix.target }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          # aarch64-unknown-linux-musl is absent on purpose, mirroring that entry's
+          # `runnable: false` above: it is cross-built on an x64 runner, so nothing in this workflow
+          # can execute it. Installing it here would exercise extraction and never run the binary.
+    env:
+      # Auto-update costs minutes and can move brew under the job. HOMEBREW_NO_INSTALL_FROM_API is
+      # deliberately not set: it force-taps homebrew/core, 1.4 GB measured locally, and no formula
+      # from core is needed here.
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+      HOMEBREW_NO_ENV_HINTS: 1
+      TAP: ktsense-local/release-test
+    steps:
+      - uses: actions/checkout@v7
+
+      # Re-derived from the same helper the build job uses rather than passed along as a job output:
+      # the output of a matrix job is whichever leg finishes last, which is not worth depending on.
+      - name: Resolve the release version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_INPUT_VERSION: ${{ inputs.version }}
+          PUSHED_TAG: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            raw="$MANUAL_INPUT_VERSION"
+          else
+            raw="$PUSHED_TAG"
+          fi
+          version="$(scripts/release-version.sh "$raw")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      # No run-id and no token input, so this resolves to an artifact of the current run and cannot
+      # silently fall back to some earlier release. v8 is the major that pairs with
+      # actions/upload-artifact@v7 above: it checks the content type before unzipping, which is what
+      # v7's direct uploads need.
+      - name: Download the artifact this run built
+        uses: actions/download-artifact@v8
+        with:
+          name: ktsense-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: artifact
+
+      - name: Verify the artifact checksum before extracting anything
+        id: artifact
+        working-directory: artifact
+        env:
+          NAME: ktsense-${{ steps.version.outputs.version }}-${{ matrix.target }}
+        run: |
+          ls -l
+          if command -v sha256sum > /dev/null 2>&1; then
+            sha256sum --check "$NAME.tar.gz.sha256"
+          else
+            shasum -a 256 --check "$NAME.tar.gz.sha256"
+          fi
+          sha="$(awk '{ print $1; exit }' "$NAME.tar.gz.sha256")"
+          printf 'sha256=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+          printf 'tarball=%s\n' "$PWD/$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Derive a temporary tap formula that points at that tarball
+        env:
+          TARGET: ${{ matrix.target }}
+          SHA256: ${{ steps.artifact.outputs.sha256 }}
+          TARBALL: ${{ steps.artifact.outputs.tarball }}
+        run: |
+          dir="$(brew --repository)/Library/Taps/${TAP%%/*}/homebrew-${TAP##*/}"
+          mkdir -p "$dir/Formula"
+          # Only this target's url and hash are repointed at the local tarball. The other three
+          # blocks keep their placeholder url and deadbeef hash, so a wrongly selected platform
+          # block fails the install loudly instead of quietly installing this tarball anyway.
+          awk -v triple="$TARGET" -v url="file://$TARBALL" -v sha="$SHA256" '
+              index($0, "ktsense-#{RELEASE}-" triple ".tar.gz") {
+                  match($0, /^ */)
+                  printf "%surl \"%s\"\n", substr($0, 1, RLENGTH), url
+                  pending = 1
+                  next
+              }
+              pending && $1 == "sha256" {
+                  match($0, /^ */)
+                  printf "%ssha256 \"%s\"\n", substr($0, 1, RLENGTH), sha
+                  pending = 0
+                  next
+              }
+              { print }
+          ' Formula/ktsense.rb > "$dir/Formula/ktsense.rb"
+          # grep -c exits 1 on no match, which would abort the step before it could report; keep the
+          # count and let the comparison below do the failing.
+          local_urls="$(grep -c 'url "file://' "$dir/Formula/ktsense.rb" || true)"
+          local_shas="$(grep -c "sha256 \"$SHA256\"" "$dir/Formula/ktsense.rb" || true)"
+          placeholder_url='url "https://github.com/OWNER/'
+          placeholders="$(grep -cF "$placeholder_url" "$dir/Formula/ktsense.rb" || true)"
+          printf 'repointed %s url and %s sha256 line, left %s placeholder urls\n' \
+            "$local_urls" "$local_shas" "$placeholders"
+          if [ "$local_urls" != 1 ] || [ "$local_shas" != 1 ] || [ "$placeholders" != 3 ]; then
+            echo "the rewrite did not repoint exactly the $TARGET url and hash" >&2
+            exit 1
+          fi
+          git diff --quiet -- Formula/ktsense.rb
+
+      - name: 1 of 5, tap
+        run: |
+          brew tap | grep -Fx "$TAP"
+          # Homebrew 7 gates third-party taps behind tap trust. A tap with no remote is trusted
+          # implicitly, and brews older than 7 have no `brew trust` at all, so ask only when it
+          # exists rather than relying on either behaviour.
+          if brew help trust > /dev/null 2>&1; then
+            brew trust --formula "$TAP/ktsense"
+          fi
+          brew info --formula "$TAP/ktsense"
+
+      - name: 2 of 5, install
+        run: brew install --formula "$TAP/ktsense"
+
+      - name: The install carries this run's release version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          brew list --versions ktsense | tee /dev/stderr | grep -Fqx "ktsense $VERSION"
+          ktsense --version | tee /dev/stderr | grep -Fxq "ktsense $VERSION"
+
+      - name: 3 of 5, the installed binary outlines Kotlin
+        run: |
+          ktsense outline fixtures/tiny-app/src/main/kotlin/app/service/UserService.kt \
+            | tee /dev/stderr | grep -Fq 'fun createUser'
+
+      # `brew test` takes the formula positionally and rejects --formula, unlike install and audit.
+      - name: 4 of 5, brew test
+        run: brew test "$TAP/ktsense"
+
+      # No --online. The url under test is a local file, and auditing the real release urls needs a
+      # published release, which this run cannot produce.
+      - name: 5 of 5, brew audit --strict
+        run: brew audit --formula --strict "$TAP/ktsense"
+
+      - name: The install ships the archive's libexec and finds the engine through it
+        env:
+          TARBALL: ${{ steps.artifact.outputs.tarball }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prefix="$(brew --cellar ktsense)/$VERSION"
+          # Compared against the archive rather than a hardcoded list, so the x86_64-apple-darwin
+          # tarball's deliberately absent kmp-jar-indexer cannot be manufactured here.
+          archived="$(tar tzf "$TARBALL" | sed -n 's:^[^/]*/libexec/::p' | grep . | LC_ALL=C sort)"
+          installed="$(ls "$prefix/libexec" | LC_ALL=C sort)"
+          printf 'archived: %s\ninstalled: %s\n' "$archived" "$installed"
+          if [ "$archived" != "$installed" ]; then
+            echo "the installed libexec does not match the archive's libexec" >&2
+            exit 1
+          fi
+          # Discovery resolves the engine at <exe-dir>/../libexec/kmp-lsp. Going through the brew
+          # symlink on PATH, which is what a user types, so an install whose engine fell back to
+          # PATH instead of the keg fails here rather than at a user's first query.
+          mkdir -p "$RUNNER_TEMP/engine-check"
+          engine="$(ktsense --format json status --root "$RUNNER_TEMP/engine-check" \
+            | sed -n 's/.*"binary": "\(.*\)".*/\1/p')"
+          case "$engine" in
+            "$prefix"/*) printf 'engine resolved inside the keg: %s\n' "$engine" ;;
+            *) printf 'engine resolved outside the keg: %s\n' "$engine" >&2; exit 1 ;;
+          esac
