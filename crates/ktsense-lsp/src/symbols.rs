@@ -40,7 +40,8 @@ pub struct SymbolCandidate {
     pub line: u32,
     /// 1-based column of the declaration name. [`SymbolResolver::find`] corrects the column
     /// `find --json` reports on a cold cache, where it can point at the keyword before the name
-    /// (`fun save` at the `fun`); the engine's own column is kept when the source cannot be read.
+    /// (`fun save` at the `fun`); the engine's own column selects among repeats of the name on the
+    /// line and is kept when the source cannot be read.
     pub col: u32,
 }
 
@@ -182,9 +183,11 @@ fn parse_find(captured: &Captured) -> Result<Vec<SymbolCandidate>, PassthroughEr
 /// Corrects every candidate's column to its declaration name, reading each unique file at most once
 /// per call. A file is read through `read` the first time a candidate names it and the result, text
 /// or failure, is reused for every later candidate sharing that path, so an ambiguous match across
-/// three overrides of one file reads it once, not three times. The engine's reported column is kept
-/// when the source cannot be read or the name is absent, so a location ktsense cannot verify stays
-/// honest. The cache lives only for this call, so no read outlives the request that made it.
+/// three overrides of one file reads it once, not three times. Each candidate is relocated against
+/// its own reported column, which is what distinguishes two candidates that share a line and a name
+/// from each other. The engine's reported column is kept when the source cannot be read or the name
+/// is absent, so a location ktsense cannot verify stays honest. The cache lives only for this call,
+/// so no read outlives the request that made it.
 fn correct_columns<F>(candidates: Vec<SymbolCandidate>, mut read: F) -> Vec<SymbolCandidate>
 where
     F: FnMut(&Path) -> Option<String>,
@@ -196,10 +199,16 @@ where
             let source = sources
                 .entry(candidate.file.clone())
                 .or_insert_with(|| read(Path::new(&candidate.file)));
-            if let Some(column) = source
-                .as_deref()
-                .and_then(|text| name_column_in_source(text, candidate.line, &candidate.name))
-            {
+            if let Some(column) = source.as_deref().and_then(|text| {
+                name_column_in_source(
+                    text,
+                    ReportedPosition {
+                        line: candidate.line,
+                        column: candidate.col,
+                    },
+                    &candidate.name,
+                )
+            }) {
                 candidate.col = column;
             }
             candidate
@@ -207,35 +216,89 @@ where
         .collect()
 }
 
-/// The 1-based column of the first whole-word occurrence of `name` on 1-based `line` of the file at
-/// `path`, or `None` when the file cannot be read or `name` is not present on that line.
+/// Where the engine said a declaration is: a 1-based line and a 1-based **character** column, the
+/// units every ktsense column is expressed in. The two same-typed numbers travel as one value so a
+/// caller cannot transpose them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportedPosition {
+    pub line: u32,
+    pub column: u32,
+}
+
+/// The 1-based character column of the whole-word occurrence of `name` on the reported line of the
+/// file at `path` that lies nearest the reported column, or `None` when the file cannot be read or
+/// `name` is not a whole word on that line.
 ///
 /// This corrects the column `find --json` reports: on a cold cache it takes a text-search path and
 /// has been observed to report the column of the keyword before the name (`fun save` at the `fun`,
 /// `val CallLogging` at the `v`), and a position request built from that column reads the keyword
 /// rather than the declaration.
-pub fn name_column(path: &Path, line: u32, name: &str) -> Option<u32> {
+///
+/// Nearest rather than first, because one declaration line can carry the same identifier twice.
+/// ktor's `public value class TypeOfService(public val value: UByte)` declares `value` as a property
+/// and also spells it as a soft keyword eight columns in, and the engine points at the property. The
+/// first occurrence is then the location ktsense reports and builds its position requests from, and
+/// it is not the declaration.
+///
+/// Nearest rather than an exact match, because the reported column is only near the name, and in no
+/// consistent unit. Measured on 0.26.0 against five readings of one repeated-name declaration: the
+/// reported column was 4 columns before the name on an ASCII line, and 2, 2, 8 and 12 columns past it
+/// on lines carrying astral-plane text, differing between the cold and the warm answer for the same
+/// declaration. Nearest chose the declared name in all five; an exact match would have chosen nothing
+/// in four of them (KT-64, 2026-09-22). Occurrences equidistant from the reported column resolve to
+/// the earlier one, so the choice is deterministic rather than dependent on scan order.
+pub fn name_column_near(path: &Path, reported: ReportedPosition, name: &str) -> Option<u32> {
     let source = std::fs::read_to_string(path).ok()?;
-    name_column_in_source(&source, line, name)
+    name_column_in_source(&source, reported, name)
 }
 
-/// The 1-based character column of the first whole-word occurrence of `name` on 1-based `line` of
-/// already-read `source`, or `None` when the line or the name is absent. The column counts
-/// characters, not bytes, so a name preceded by multibyte text reports the column an editor shows
-/// rather than a byte offset.
-fn name_column_in_source(source: &str, line: u32, name: &str) -> Option<u32> {
-    let text = source.lines().nth(line.checked_sub(1)? as usize)?;
-    let offset = whole_word_offset(text, name)?;
-    u32::try_from(text[..offset].chars().count() + 1).ok()
+/// The 1-based character column of the **first** whole-word occurrence of `name` on 1-based `line`
+/// of the file at `path`, or `None` when the file cannot be read or `name` is not present there.
+///
+/// Retained for callers that hold no reported column; it is [`name_column_near`] anchored at column
+/// 1, which selects the first occurrence exactly, since occurrence columns are at least 1 and
+/// ascend in source order. A caller that does hold the engine's column should pass it to
+/// [`name_column_near`] instead: without one, a name repeated on the declaration line cannot be
+/// disambiguated and this function keeps picking the leftmost occurrence.
+pub fn name_column(path: &Path, line: u32, name: &str) -> Option<u32> {
+    name_column_near(
+        path,
+        ReportedPosition {
+            line,
+            column: FIRST_COLUMN,
+        },
+        name,
+    )
 }
 
-/// Byte offset of `name` in `text` where it is not part of a longer identifier, so `save` is not
-/// found inside `saveAll`.
-fn whole_word_offset(text: &str, name: &str) -> Option<usize> {
+/// The leftmost column any line can have, and so the anchor that reduces nearest-selection to
+/// first-occurrence selection.
+const FIRST_COLUMN: u32 = 1;
+
+/// The 1-based character column of the whole-word occurrence of `name` nearest the reported column
+/// on the reported line of already-read `source`, or `None` when the line or the name is absent.
+/// Columns count characters, not bytes and not UTF-16 units, so a name preceded by astral-plane
+/// text reports the column an editor shows and is compared against the engine's column in the same
+/// units.
+fn name_column_in_source(source: &str, reported: ReportedPosition, name: &str) -> Option<u32> {
+    let text = source.lines().nth(reported.line.checked_sub(1)? as usize)?;
+    // `min_by_key` keeps the first of several equal minima, which is the earlier occurrence.
+    whole_word_columns(text, name).min_by_key(|column| column.abs_diff(reported.column))
+}
+
+/// Every 1-based character column of `text` where `name` stands as a whole word, in source order.
+fn whole_word_columns<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = u32> + 'a {
+    whole_word_offsets(text, name)
+        .filter_map(|offset| u32::try_from(text[..offset].chars().count() + 1).ok())
+}
+
+/// Byte offsets of `name` in `text` where it is not part of a longer identifier, so `save` is not
+/// found inside `saveAll`, in source order.
+fn whole_word_offsets<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
     let is_identifier = |character: char| character.is_alphanumeric() || character == '_';
     text.match_indices(name)
         .map(|(offset, _)| offset)
-        .find(|&offset| {
+        .filter(move |&offset| {
             let before = text[..offset].chars().next_back();
             let after = text[offset + name.len()..].chars().next();
             !before.is_some_and(is_identifier) && !after.is_some_and(is_identifier)
@@ -261,6 +324,10 @@ mod tests {
             line,
             col,
         }
+    }
+
+    fn at(line: u32, column: u32) -> ReportedPosition {
+        ReportedPosition { line, column }
     }
 
     #[test]
@@ -324,17 +391,18 @@ mod tests {
 
     #[test]
     fn the_name_is_located_as_a_whole_word_not_inside_a_longer_identifier() {
+        let first = |text: &str, name: &str| whole_word_offsets(text, name).next();
         let observed = (
-            whole_word_offset("    fun save(order: Order): OrderId", "save"),
-            whole_word_offset(
+            first("    fun save(order: Order): OrderId", "save"),
+            first(
                 "    fun saveAll(all: List<Order>): Int = all.map(::save).size",
                 "save",
             ),
-            whole_word_offset(
+            first(
                 "public val CallLogging: ApplicationPlugin<CallLoggingConfig>",
                 "CallLogging",
             ),
-            whole_word_offset("    fun saveAll(): Int", "save"),
+            first("    fun saveAll(): Int", "save"),
         );
         assert_eq!(observed, (Some(8), Some(51), Some(11), None));
     }
@@ -342,8 +410,11 @@ mod tests {
     #[test]
     fn the_name_column_is_none_when_the_source_cannot_be_read() {
         assert_eq!(
-            name_column(Path::new("/no/such/OrderRepository.kt"), 4, "save"),
-            None
+            (
+                name_column(Path::new("/no/such/OrderRepository.kt"), 4, "save"),
+                name_column_near(Path::new("/no/such/OrderRepository.kt"), at(4, 9), "save"),
+            ),
+            (None, None)
         );
     }
 
@@ -351,10 +422,83 @@ mod tests {
     fn a_multibyte_prefix_yields_a_character_column_not_a_byte_column() {
         assert_eq!(
             (
-                name_column_in_source("val 日本 = save()", 1, "save"),
-                whole_word_offset("val 日本 = save()", "save"),
+                name_column_in_source("val 日本 = save()", at(1, FIRST_COLUMN), "save"),
+                whole_word_offsets("val 日本 = save()", "save").next(),
             ),
             (Some(10), Some(13)),
+        );
+    }
+
+    /// ktor's `TypeOfService` line, with four astral-plane characters inserted before the property so
+    /// its character column (56) differs from its UTF-16 column (60) and its byte column (68). The
+    /// soft keyword at column 8 is the occurrence the pre-KT-64 locator returned.
+    const REPEATED: &str = "public value class TypeOfService(/* 𝕊𝕊𝕊𝕊 */ public val value: UByte)";
+
+    #[test]
+    fn a_repeated_name_resolves_to_the_occurrence_nearest_the_reported_column() {
+        let near = |column| name_column_in_source(REPEATED, at(1, column), "value");
+
+        let observed = (
+            whole_word_columns(REPEATED, "value").collect::<Vec<_>>(),
+            near(56),
+            near(60),
+            near(68),
+            near(45),
+            near(8),
+            near(1),
+        );
+        assert_eq!(
+            observed,
+            (
+                vec![8, 56],
+                Some(56),
+                Some(56),
+                Some(56),
+                Some(56),
+                Some(8),
+                Some(8),
+            )
+        );
+    }
+
+    #[test]
+    fn occurrences_equidistant_from_the_reported_column_resolve_to_the_earlier_one() {
+        let near = |column| name_column_in_source(REPEATED, at(1, column), "value");
+
+        let observed = (near(31), near(32), near(33));
+        assert_eq!(observed, (Some(8), Some(8), Some(56)));
+    }
+
+    #[test]
+    fn an_astral_letter_or_underscore_abutting_the_name_is_not_a_whole_word() {
+        let near = |text| name_column_in_source(text, at(1, 7), "value");
+
+        let observed = (
+            near("val 𝕊value = 1"),
+            near("val value𝕊 = 1"),
+            near("val _value = 1"),
+            near("val value_ = 1"),
+            near("val 𝕊 value = 1"),
+        );
+        assert_eq!(observed, (None, None, None, None, Some(7)));
+    }
+
+    #[test]
+    fn the_reported_column_chooses_the_repeat_while_the_columnless_call_keeps_the_first() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/RepeatedName.kt");
+
+        let observed = (
+            name_column_near(&fixture, at(3, 56), "value"),
+            name_column_near(&fixture, at(3, 8), "value"),
+            name_column(&fixture, 3, "value"),
+            name_column_near(&fixture, at(3, 56), "TypeOfService"),
+            name_column_near(&fixture, at(99, 56), "value"),
+        );
+        assert_eq!(
+            observed,
+            (Some(56), Some(8), Some(8), Some(20), None),
+            "fixture {}",
+            fixture.display()
         );
     }
 
@@ -369,6 +513,7 @@ mod tests {
                 "package shop\n    fun save(order: Order): OrderId",
             ),
             ("/r/B.kt", "\n\n\nval 日本 = save()"),
+            ("/r/C.kt", REPEATED),
         ]);
         let reads = RefCell::new(BTreeMap::<String, usize>::new());
         let read = |path: &Path| {
@@ -384,6 +529,8 @@ mod tests {
                 candidate("save", "/r/missing.kt", 1, 7),
                 candidate("save", "/r/missing.kt", 1, 7),
                 candidate("save", "/r/B.kt", 4, 1),
+                candidate("value", "/r/C.kt", 1, 45),
+                candidate("value", "/r/C.kt", 1, 5),
             ],
             read,
         );
@@ -404,10 +551,13 @@ mod tests {
                     ("/r/missing.kt".to_string(), 1, 7),
                     ("/r/missing.kt".to_string(), 1, 7),
                     ("/r/B.kt".to_string(), 4, 10),
+                    ("/r/C.kt".to_string(), 1, 56),
+                    ("/r/C.kt".to_string(), 1, 8),
                 ],
                 BTreeMap::from([
                     ("/r/A.kt".to_string(), 1),
                     ("/r/B.kt".to_string(), 1),
+                    ("/r/C.kt".to_string(), 1),
                     ("/r/missing.kt".to_string(), 1),
                 ]),
             )

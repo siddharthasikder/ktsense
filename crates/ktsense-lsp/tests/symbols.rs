@@ -133,6 +133,30 @@ async fn the_reported_keyword_column_is_corrected_to_the_declaration_name() {
 }
 
 #[tokio::test]
+async fn a_repeated_declaration_name_is_corrected_to_the_reported_occurrence() {
+    let repeated = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/RepeatedName.kt")
+        .to_string_lossy()
+        .into_owned();
+    // The engine points at the property, as it does for ktor's TypeOfService; the soft keyword
+    // eight columns in is the occurrence a first-match locator would return.
+    let stdout = format!(
+        r#"[{{"file":"{repeated}","line":3,"col":56,"name":"value"}},
+           {{"file":"{repeated}","line":3,"col":8,"name":"value"}}]"#
+    );
+
+    let candidates = find_replay("value", &stdout, "", 0)
+        .await
+        .expect("two matches");
+
+    let observed: Vec<(u32, u32)> = candidates
+        .iter()
+        .map(|candidate| (candidate.line, candidate.col))
+        .collect();
+    assert_eq!(observed, vec![(3, 56), (3, 8)]);
+}
+
+#[tokio::test]
 async fn a_name_matching_nothing_is_an_empty_result_not_an_error() {
     let candidates = find_replay("NoSuchSymbol", "", "", 1)
         .await
