@@ -88,16 +88,45 @@ struct Parity {
 }
 
 #[cfg(feature = "real-lsp")]
-fn parity(runtime_dir: &Path, root: &str, args: &[&str]) -> Parity {
+fn parity(runtime_dir: &Path, root: &str, args: &[&str]) -> (Parity, String) {
     let via_daemon = routed(runtime_dir, root, "KTSENSE_REQUIRE_DAEMON", args);
     let in_process = routed(runtime_dir, root, "KTSENSE_NO_DAEMON", args);
-    Parity {
+    let record = Parity {
         identical: via_daemon.stdout == in_process.stdout,
         daemon_code: via_daemon.code,
         in_process_code: in_process.code,
         both_silent: via_daemon.stderr.is_empty() && in_process.stderr.is_empty(),
         produced_output: !via_daemon.stdout.is_empty(),
-    }
+    };
+    (record, transcript(args, &via_daemon, &in_process))
+}
+
+/// What each path wrote for one case. A record of booleans and exit codes cannot say why a path
+/// failed, and the message is the only place the failing path's own words survive, so a run that
+/// resolves a name on one path and not the other reports which resolution step gave up rather than
+/// only that the two disagreed.
+#[cfg(feature = "real-lsp")]
+fn transcript(args: &[&str], via_daemon: &Run, in_process: &Run) -> String {
+    let side = |label: &str, run: &Run| {
+        format!(
+            "    {label}: exit {:?}\n      stdout: {}\n      stderr: {}",
+            run.code,
+            first_line(&run.stdout),
+            run.stderr.trim()
+        )
+    };
+    format!(
+        "  case `{}`:\n{}\n{}",
+        args.join(" "),
+        side("daemon", via_daemon),
+        side("in-process", in_process)
+    )
+}
+
+/// The first line of an answer, which identifies it without pasting a whole trace into a failure.
+#[cfg(feature = "real-lsp")]
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("<empty>")
 }
 
 /// `KTSENSE_REQUIRE_DAEMON=1` with no daemon listening must fail rather than fall back, and it must
@@ -182,10 +211,10 @@ fn routed_trace_and_map_match_the_in_process_answers_byte_for_byte() {
         // Path neutrality: an absolute root must yield the same fixture-relative answer.
         (absolute_root.as_str(), vec!["map", "--budget", "4000"]),
     ];
-    let observed: Vec<Parity> = cases
+    let (observed, transcripts): (Vec<Parity>, Vec<String>) = cases
         .iter()
         .map(|(root, args)| parity(runtime.path(), root, args))
-        .collect();
+        .unzip();
 
     let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", FIXTURE]);
 
@@ -198,7 +227,9 @@ fn routed_trace_and_map_match_the_in_process_answers_byte_for_byte() {
     };
     assert_eq!(
         (observed, stopped.code),
-        (vec![expected; cases.len()], Some(0))
+        (vec![expected; cases.len()], Some(0)),
+        "what each path said:\n{}",
+        transcripts.join("\n")
     );
 }
 
@@ -232,13 +263,15 @@ fn a_routed_ambiguous_trace_exits_three_through_the_daemon() {
             .map(str::to_string)
             .collect();
         found.sort();
-        (run.code, found)
+        ((run.code, found), run.stderr)
     };
 
-    let save_via_daemon = locations(SYMBOL, "KTSENSE_REQUIRE_DAEMON");
-    let save_in_process = locations(SYMBOL, "KTSENSE_NO_DAEMON");
-    let locals_via_daemon = locations(LOCAL_SYMBOL, "KTSENSE_REQUIRE_DAEMON");
-    let locals_in_process = locations(LOCAL_SYMBOL, "KTSENSE_NO_DAEMON");
+    let (save_via_daemon, save_daemon_stderr) = locations(SYMBOL, "KTSENSE_REQUIRE_DAEMON");
+    let (save_in_process, save_in_process_stderr) = locations(SYMBOL, "KTSENSE_NO_DAEMON");
+    let (locals_via_daemon, locals_daemon_stderr) =
+        locations(LOCAL_SYMBOL, "KTSENSE_REQUIRE_DAEMON");
+    let (locals_in_process, locals_in_process_stderr) =
+        locations(LOCAL_SYMBOL, "KTSENSE_NO_DAEMON");
 
     let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", FIXTURE]);
 
@@ -267,7 +300,14 @@ fn a_routed_ambiguous_trace_exits_three_through_the_daemon() {
             stopped.code,
         ),
         (expected_save, expected_locals, true, true, Some(0)),
-        "save via daemon: {save_via_daemon:?} / locals via daemon: {locals_via_daemon:?}"
+        "save via daemon: {save_via_daemon:?} stderr: {}\n\
+         save in-process: {save_in_process:?} stderr: {}\n\
+         locals via daemon: {locals_via_daemon:?} stderr: {}\n\
+         locals in-process: {locals_in_process:?} stderr: {}",
+        save_daemon_stderr.trim(),
+        save_in_process_stderr.trim(),
+        locals_daemon_stderr.trim(),
+        locals_in_process_stderr.trim()
     );
 }
 
