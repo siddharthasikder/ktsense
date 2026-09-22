@@ -39,12 +39,32 @@ and compression testable from hand-built values.
   `fixtures/multi-module` silently searches the whole ktsense repository: `refs save` returns 6 sites
   with the root and 9 without, the extra 3 coming from the unrelated `tiny-app` fixture. A widened
   root does not fail, it just answers about the wrong code.
-- **Do not trust the column `find --json` reports.** On a cold cache the command takes its
-  text-search path and has been observed to report the column of the keyword before the name
-  (`public val CallLogging` at the `v`, column 8, where the indexed path says 12). A references
-  request at that position answers with every use of the keyword: 14,702 sites on ktor instead of
-  31, under an honest `index: complete`. `trace` locates the name on the reported line itself and
-  falls back to the engine's column only when the name is not there (KT-24, 2026-09-18).
+- **A cold-cache `find` execs `rg`, and answers nothing at all without it.** `find` defaults to
+  `--fast`, which upstream's own help describes as "use rg/fd only; never load index (default when no
+  cache)". It really does exec `rg`: measured on `fixtures/multi-module` from a cold cache, `find save
+  --json --root …` reports 3 declarations with `rg` on `PATH`, **0** with only `fd`, **0** with
+  neither, and 3 with neither once `kmp-lsp index` has run. With no `rg` it writes empty stdout, empty
+  stderr and exit 1, which is the same shape as "matched nothing", so a missing `rg` is
+  indistinguishable from an absent symbol. GitHub's `ubuntu-24.04` runner ships neither tool. An
+  engine session does **not** warm the cache `find` reads: the two key differently (a session wrote
+  `…/kmp-lsp/8b95b6dd308fc328/index.bin` where `find --root fixtures/multi-module` looked for
+  `…/b1912a32462f5c84/index.bin`), so a `find` spawned after an index is complete is still a cold
+  `find`. `trace` therefore never reports absence on an empty command-mode `find` alone: it asks the
+  session's own index before agreeing (KT-67, 2026-09-22).
+- **`refs`, and the session's `textDocument/references`, need `rg` too.** This one has no ktsense
+  workaround and degrades both paths equally, so it is not a divergence but a host requirement.
+  Measured on `fixtures/multi-module` with the index complete: `refs save` reports 6 sites with `rg`
+  on `PATH` and **0** without, and a `trace` answers `Callers (3)` / `Usages (6 sites in 6 files)`
+  with it against `Callers (0)` / `Usages (1 site in 1 file)` without, identically through the warm
+  daemon and in process. `outline` and `map` are unaffected, being tree-sitter and a directory walk.
+  The `real-lsp` CI job therefore installs `ripgrep`: without it that job measures a crippled engine
+  (KT-67, 2026-09-22).
+- **Do not trust the column `find --json` reports.** On a cold cache that same text-search path has
+  been observed to report the column of the keyword before the name (`public val CallLogging` at the
+  `v`, column 8, where the indexed path says 12). A references request at that position answers with
+  every use of the keyword: 14,702 sites on ktor instead of 31, under an honest `index: complete`.
+  `trace` locates the name on the reported line itself and falls back to the engine's column only when
+  the name is not there (KT-24, 2026-09-18).
 - A `find` that matches nothing **exits 0 with empty output**. Absence cannot be read from the exit
   status; ktsense supplies its own non-zero for "no such symbol".
 

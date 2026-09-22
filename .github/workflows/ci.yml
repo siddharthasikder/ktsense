@@ -111,6 +111,23 @@ jobs:
       - name: Engine reports the pinned version
         run: kmp-lsp --version | tee /dev/stderr | grep -F "${{ steps.pin.outputs.version }}"
 
+      # `kmp-lsp` shells out to `rg` for two of its features, and the runner image ships neither
+      # `ripgrep` nor `fd-find`: its `find` defaults to `--fast` ("use rg/fd only") on a cold cache,
+      # and `refs`, plus the `textDocument/references` its LSP session answers, needs `rg` warm or
+      # cold. Without it both answer empty and exit 0, which is upstream's own shape for "matched
+      # nothing", so the engine-dependent assertions here would be measuring a crippled engine
+      # rather than the pinned one. Measured on `fixtures/multi-module`: 6 reference sites with `rg`,
+      # 0 without, on the warm session and in command mode alike (KT-67).
+      #
+      # This is not what makes name resolution work. `trace` resolves a name the cold `find` missed
+      # from its session's own index, and `tests/trace.rs` proves that against the fake with no
+      # engine and no `rg` at all, in the install-free suite. `rg` is here for the engine's
+      # reference enumeration, which ktsense cannot supply for it.
+      - name: Install ripgrep, which the engine execs for find and references
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ripgrep
+
       - name: Test with the engine
         run: cargo test --workspace --locked --features ktsense-cli/real-lsp,ktsense-lsp/real-lsp
 
