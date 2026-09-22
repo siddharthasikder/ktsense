@@ -43,16 +43,14 @@ pub const LSP_BINARY: &str = "kmp-lsp";
 ///
 /// The `libexec` entry is what a Homebrew install resolves to, so a brewed ktsense finds the
 /// upstream binary shipped alongside it before falling back to whatever is on `PATH`. The caller
-/// supplies the environment override and the executable path, keeping this decision pure.
-pub fn discovery_order(
-    env_override: Option<PathBuf>,
-    current_exe: Option<PathBuf>,
-) -> Vec<PathBuf> {
+/// supplies the environment override and the executable path, keeping this decision pure; pass the
+/// real executable rather than a link to it, as [`locate_binary_from`] does.
+pub fn discovery_order(env_override: Option<PathBuf>, real_exe: Option<PathBuf>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(from_env) = env_override {
         candidates.push(from_env);
     }
-    if let Some(exe) = current_exe {
+    if let Some(exe) = real_exe {
         if let Some(bin_dir) = exe.parent() {
             candidates.push(bin_dir.join("../libexec").join(LSP_BINARY));
         }
@@ -83,10 +81,23 @@ pub async fn launch() -> Result<LspClient, LspError> {
 /// The engine binary ktsense will use: the first existing candidate of [`discovery_order`], or the
 /// bare `PATH` name when none exists so the eventual spawn error names what was looked for.
 pub fn locate_binary() -> PathBuf {
-    let candidates = discovery_order(
+    locate_binary_from(
         std::env::var_os(LSP_PATH_ENV).map(PathBuf::from),
         std::env::current_exe().ok(),
-    );
+    )
+}
+
+/// [`locate_binary`] as a function of its two inputs, so discovery can be driven through a given
+/// install layout without touching the environment of the process asking.
+///
+/// `current_exe` is resolved to the real file before the `libexec` candidate is derived from it.
+/// Homebrew keeps the real binary in the Cellar and links it into the prefix `bin`, while the
+/// release archive keeps `libexec/kmp-lsp` beside the real binary, not beside the link. On macOS
+/// `current_exe` reports the link it was invoked through, so deriving from the link would look for a
+/// prefix-level `libexec` that Homebrew never creates: the Cellar-path invocation the formula test
+/// uses would find its engine while a normal `PATH` invocation would not.
+pub fn locate_binary_from(env_override: Option<PathBuf>, current_exe: Option<PathBuf>) -> PathBuf {
+    let candidates = discovery_order(env_override, current_exe.map(real_executable));
     let fallback = candidates
         .last()
         .cloned()
@@ -95,6 +106,13 @@ pub fn locate_binary() -> PathBuf {
         .into_iter()
         .find(|path| path.exists())
         .unwrap_or(fallback)
+}
+
+/// The real file behind an executable path, keeping the path as given when it cannot be resolved so
+/// an unresolvable executable still contributes the candidate it always did and `PATH` stays the
+/// honest last resort.
+fn real_executable(exe: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&exe).unwrap_or(exe)
 }
 
 #[cfg(test)]
