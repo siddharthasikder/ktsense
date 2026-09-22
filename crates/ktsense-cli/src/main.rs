@@ -15,7 +15,6 @@ mod status;
 mod symbols;
 mod trace;
 
-use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -23,9 +22,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ktsense_core::{
-    build_import_graph, build_repo_map, render_deps_dot, render_deps_markdown, render_map_markdown,
-    render_markdown, ByteRatioEstimator, DepLevel, FileSkeleton, ImportGraph, RenderOptions,
-    RepoMap, RepoMapInput,
+    build_import_graph, build_repo_map, fence_for, neutralize, render_deps_dot,
+    render_deps_markdown, render_map_markdown, render_markdown, ByteRatioEstimator, DepLevel,
+    FileSkeleton, ImportGraph, RenderOptions, RepoMap, RepoMapInput,
 };
 use ktsense_lsp::{CheckReport, DiagnoseReport, LspError, PassthroughError, Severity};
 
@@ -867,21 +866,14 @@ fn is_ignored_dir(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with('.') || IGNORED_DIRS.contains(&name))
 }
 
-/// Bidirectional-override codepoints (the "Trojan Source" set, CVE-2021-42574). They are Unicode
-/// category Cf, so `char::is_control` misses them, yet they reorder how text renders. The core
-/// renderer neutralizes the same set on skeleton output; passthrough text is likewise source
-/// derived and reaches an LLM reader, so it passes through an equivalent boundary rather than being
-/// emitted raw. Core's boundary is private to that crate, hence this local equivalent.
-const BIDIRECTIONAL_OVERRIDES: [char; 12] = [
-    '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}',
-    '\u{2069}', '\u{200E}', '\u{200F}', '\u{061C}',
-];
-
-const MIN_FENCE_BACKTICKS: usize = 3;
-
 /// Wraps engine-derived lines in a `text` code fence sized to survive any backtick run they carry,
 /// with each line neutralized first. A diagnostic message quoting source cannot then break out of
 /// the block or reorder what the reader sees.
+///
+/// The boundary itself is `ktsense_core::text`, shared with the skeleton renderer: passthrough text
+/// is source derived and reaches an LLM reader exactly as a rendered signature does, so both cross
+/// the same one. Until KT-69 this crate carried a byte-identical copy because core's version was
+/// private to that crate.
 fn fenced_block(lines: &[String]) -> String {
     let body: Vec<String> = lines
         .iter()
@@ -890,39 +882,6 @@ fn fenced_block(lines: &[String]) -> String {
     let joined = body.join("\n");
     let fence = fence_for(&joined);
     format!("{fence}text\n{joined}\n{fence}\n")
-}
-
-/// A fence one backtick longer than the longest backtick run in `body`, never shorter than
-/// [`MIN_FENCE_BACKTICKS`], so a backtick run inside the body sits as text instead of closing it.
-fn fence_for(body: &str) -> String {
-    let longest_run = body
-        .split(|character| character != '`')
-        .map(str::len)
-        .max()
-        .unwrap_or(0);
-    "`".repeat((longest_run + 1).max(MIN_FENCE_BACKTICKS))
-}
-
-/// Source-derived text made safe to embed in a line of Markdown: a line break, any other control
-/// character, or a bidirectional override becomes a visible `<U+XXXX>` marker; every other byte is
-/// left untouched. Backtick runs are the fence's job, not this one's.
-fn neutralize(text: &str) -> Cow<'_, str> {
-    if !text.contains(is_unsafe_in_output) {
-        return Cow::Borrowed(text);
-    }
-    let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        if is_unsafe_in_output(character) {
-            escaped.push_str(&format!("<U+{:04X}>", character as u32));
-        } else {
-            escaped.push(character);
-        }
-    }
-    Cow::Owned(escaped)
-}
-
-fn is_unsafe_in_output(character: char) -> bool {
-    character.is_control() || BIDIRECTIONAL_OVERRIDES.contains(&character)
 }
 
 #[cfg(test)]

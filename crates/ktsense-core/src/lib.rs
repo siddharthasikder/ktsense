@@ -16,6 +16,7 @@ pub mod render;
 pub mod repo_map;
 pub mod scc;
 pub mod skeleton;
+pub mod text;
 pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
@@ -35,6 +36,7 @@ pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
     MAX_NESTING_DEPTH,
 };
+pub use text::{fence_for, neutralize, MIN_FENCE_BACKTICKS};
 pub use trace::{
     build_trace, callers_of, CallerLevel, Definition, IndexCompleteness, RelatedDeclaration,
     TraceInput, TraceReport,
