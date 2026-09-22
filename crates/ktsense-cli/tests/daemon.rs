@@ -735,7 +735,7 @@ struct Race {
 /// released its own.
 #[test]
 fn concurrent_starts_settle_to_one_daemon_and_exactly_one_start_owns_it() {
-    let observed: Vec<Race> = (0..RACES)
+    let (observed, transcripts): (Vec<Race>, Vec<String>) = (0..RACES)
         .map(|race| {
             let lifecycle = Lifecycle::new();
             let barrier = lifecycle.home.path().join(format!("barrier{race}"));
@@ -752,19 +752,23 @@ fn concurrent_starts_settle_to_one_daemon_and_exactly_one_start_owns_it() {
                 || socket_dir_contents(&socket),
                 |contents| contents.is_empty(),
             );
-            Race {
-                arrived_together,
-                said_it_started_the_daemon: counted(&runs, "ktsense: daemon started for"),
-                said_one_was_already_running: counted(&runs, "a daemon is already running for"),
-                exits: runs.iter().map(|run| run.code).collect(),
-                quiet: runs.iter().all(|run| run.stderr.is_empty()),
-                socket_answered: while_running.0,
-                beside_the_socket: while_running.1,
-                stopped: stopped.code,
-                left_behind: emptied,
-            }
+            let transcript = transcript(race, &runs);
+            (
+                Race {
+                    arrived_together,
+                    said_it_started_the_daemon: counted(&runs, "ktsense: daemon started for"),
+                    said_one_was_already_running: counted(&runs, "a daemon is already running for"),
+                    exits: runs.iter().map(|run| run.code).collect(),
+                    quiet: runs.iter().all(|run| run.stderr.is_empty()),
+                    socket_answered: while_running.0,
+                    beside_the_socket: while_running.1,
+                    stopped: stopped.code,
+                    left_behind: emptied,
+                },
+                transcript,
+            )
         })
-        .collect();
+        .unzip();
 
     assert_eq!(
         observed,
@@ -780,8 +784,28 @@ fn concurrent_starts_settle_to_one_daemon_and_exactly_one_start_owns_it() {
                 stopped: Some(0),
                 left_behind: Vec::new(),
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        "what the starts said:\n{}",
+        transcripts.join("\n")
     );
+}
+
+/// Everything both starts of one race wrote, which is the only place a start that failed names the
+/// reason. Without it the record above says a start exited 1 and stops there, and a platform that
+/// refuses a contended claim with an unexpected errno cannot be told from one that could not spawn.
+fn transcript(race: usize, runs: &[Run]) -> String {
+    runs.iter()
+        .enumerate()
+        .map(|(start, run)| {
+            format!(
+                "  race {race} start {start}: exit {:?}\n    stdout: {}\n    stderr: {}",
+                run.code,
+                run.stdout.trim(),
+                run.stderr.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn counted(runs: &[Run], message: &str) -> usize {

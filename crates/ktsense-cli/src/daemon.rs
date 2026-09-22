@@ -192,7 +192,7 @@ fn take_claim(socket: &Path) -> io::Result<Option<StartClaim>> {
                     path,
                 }));
             }
-            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            Err(error) if names_a_path_already_there(&error) => {
                 if UnixStream::connect(&path).is_ok() {
                     return Ok(None);
                 }
@@ -204,6 +204,22 @@ fn take_claim(socket: &Path) -> io::Result<Option<StartClaim>> {
         io::ErrorKind::AlreadyExists,
         format!("{MAX_CLAIM_GENERATIONS} abandoned start claims already sit beside this socket"),
     ))
+}
+
+/// Whether a failed `bind` means this generation's file is already there, which is a contended or
+/// abandoned claim, as opposed to a filesystem refusal the start has to report.
+///
+/// Linux answers `EADDRINUSE`. A BSD-derived kernel may answer `EEXIST` for the same condition, and
+/// the two are the same fact about the same path, so both are read as occupancy rather than the
+/// arbitration resting on which errno a platform chose. Reading only one of them turns the other
+/// platform's contended claim into a failed start: on macOS CI one of two starts released together
+/// exited 1 where every Linux run conceded (KT-65), and a claim that is merely held must never end a
+/// start that would otherwise have been told about the winner's daemon.
+fn names_a_path_already_there(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::AddrInUse | io::ErrorKind::AlreadyExists
+    )
 }
 
 /// Creates the socket directory when a start is the first thing to need it, owner-only as it is
@@ -393,6 +409,26 @@ fn failure(message: String) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The occupancy decision holds on every platform, because the errno a kernel picks for "that
+    /// path is already there" is not the same everywhere. Both readings mean a claim is held or was
+    /// abandoned, and both must be stepped over; a refusal that is neither has to end the start
+    /// rather than be mistaken for contention.
+    #[test]
+    fn a_taken_claim_path_is_recognized_whichever_errno_the_platform_reports() {
+        let reads_as_taken =
+            |kind: io::ErrorKind| names_a_path_already_there(&io::Error::from(kind));
+
+        assert_eq!(
+            (
+                reads_as_taken(io::ErrorKind::AddrInUse),
+                reads_as_taken(io::ErrorKind::AlreadyExists),
+                reads_as_taken(io::ErrorKind::PermissionDenied),
+                reads_as_taken(io::ErrorKind::NotFound),
+            ),
+            (true, true, false, false)
+        );
+    }
 
     /// A claim blocks every other start for as long as it is held, and only for as long. The socket it
     /// binds is the claim itself, so releasing it removes the file and frees the same generation for
