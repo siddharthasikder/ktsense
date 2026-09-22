@@ -19,7 +19,10 @@ install the engine yourself for now. ktsense looks for it in three places, in or
 `KTSENSE_LSP_PATH`, then `libexec/kmp-lsp` beside the binary's own directory, then `kmp-lsp` on
 `PATH`. That middle location is where a packaged release carries its own copy, and the published
 `v0.0.1-rc.2` prerelease tarballs do carry one: each holds `bin/ktsense` beside `libexec/kmp-lsp`, so
-an unpacked tarball finds its engine with nothing configured. A source build brings no engine with it,
+an unpacked tarball finds its engine with nothing configured. Finding it is not the same as running
+it: that bundled engine is glibc-linked and needs glibc 2.28 or newer on Linux, where `ktsense` itself
+is musl-static, so on an older host the engine-backed tools fail while the tree-sitter ones answer
+(the README's install section has the measurement). A source build brings no engine with it,
 so for that one it is the first and third that matter. An override pointing at a file that does not
 exist does not fail: discovery skips the missing candidate and falls through to the bare name, so a
 typo in `KTSENSE_LSP_PATH` silently gets you whichever `kmp-lsp` is on `PATH` instead of an error.

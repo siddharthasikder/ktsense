@@ -38,6 +38,17 @@ beside `libexec/kmp-lsp`, plus `SKILL.md`, `LICENSE` and `LICENSE.kmp-lsp` at it
 and `libexec/` in their relative places: that is how the binary finds its bundled engine with nothing
 configured.
 
+**A Linux host needs glibc 2.28 or newer for the bundled engine.** `bin/ktsense` itself is
+musl-static and runs below that: measured from this tarball on Amazon Linux 2 (glibc 2.26, aarch64),
+`outline`, `deps` and `map` answer normally and `status` reports the engine as unavailable with an
+actionable message. `libexec/kmp-lsp` is glibc-linked and the loader refuses it below `GLIBC_2.28`,
+so `symbols`, `trace`, `check`, `diagnose`, `context` and the daemon fail there, each printing the
+loader's own line; `daemon start` reports only that nothing answered on its socket, after burning its
+full 30 s timeout, rather than naming the engine. `readelf -V` on the arm64 engine gives 2.28 as its
+highest version reference, from the single symbol `statx`, and the companion `libexec/kmp-jar-indexer`
+records a higher floor of `GLIBC_2.34`. On an older host, build an engine for it and point
+`KTSENSE_LSP_PATH` at that. macOS is unaffected (KT-72).
+
 ### Homebrew (not yet available)
 
 `Formula/ktsense.rb` in this repository is the intended install path:

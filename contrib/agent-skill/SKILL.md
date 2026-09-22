@@ -54,8 +54,9 @@ answers about the wrong code rather than failing.
 broken brace or the stray paren immediately instead of at the next build. Point it at the file you
 just touched, or at the directory if you touched several. Two things to know. It is a passthrough to
 the engine's own checker, so it needs `kmp-lsp` installed and fails without it: if it errors on every
-call rather than on the file you just changed, suspect a missing engine rather than your edit. And it
-is syntax only, so a clean check does not mean the code compiles and is not a substitute for building.
+call rather than on the file you just changed, suspect an engine that is missing or that this host
+cannot run, rather than your edit. And it is syntax only, so a clean check does not mean the code
+compiles and is not a substitute for building.
 
 **Call `ktsense_status` before a precision query you intend to rely on.** `trace_kotlin_symbol` and
 `explain_kotlin_symbol` answer from the reference index, and on a cold or large repository the index
@@ -115,6 +116,7 @@ answers with the declaration, the outline of its file, its direct callers and it
 budgeted bundle, and carries the same `index:` marker a trace does. Reach for `trace_kotlin_symbol`
 instead when you need every reference site, or callers deeper than one level.
 
-Reach for `ktsense_status` first when another tool fails, to learn whether the engine is installed and
-version-compatible, and before a trace you intend to rely on, to learn whether the index has settled.
+Reach for `ktsense_status` first when another tool fails, to learn whether the engine is present,
+usable on this host and version-compatible, and before a trace you intend to rely on, to learn whether
+the index has settled.
 A missing engine is reported rather than raised: absence is the state you called it to learn.
