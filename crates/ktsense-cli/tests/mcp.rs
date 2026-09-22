@@ -1,10 +1,18 @@
 //! A scripted MCP stdio session against `ktsense mcp`: initialize, tools/list, one fast tool call
 //! and one failing call, as newline-delimited JSON-RPC. This is the KT-31 proof that the transport,
 //! the catalogue and the delegation to the binary agree end to end; the per-tool snapshots are
-//! KT-34's. Only `outline` is called, which needs no engine, so this runs in the default suite.
+//! KT-34's.
+//!
+//! The session calls `find_kotlin_symbol` and `ktsense_status` as well as `outline`, so it needs an
+//! engine, and it gets the `fake_lsp` replay binary rather than whichever `kmp-lsp` happens to be on
+//! the developer's `PATH`. That is what keeps it in the install-free default suite: an absent
+//! ambient engine turns the scripted absence into a spawn failure, which is how this passed on every
+//! machine that had one and failed on the `fmt / clippy / test` runners that do not (KT-65).
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use assert_cmd::cargo::CommandCargoExt;
 use serde_json::{json, Value};
@@ -12,22 +20,64 @@ use serde_json::{json, Value};
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const FIXTURE: &str = "fixtures/multi-module";
 
+/// The session the server's own warm engine replays: the handshake, a completed index, then
+/// teardown. Announcing the index is what lets the warm-up finish; without it the server waits out
+/// its whole index-settle bound before answering anything. The `exit` step leaves the replay engine
+/// draining its stdin, because kmp-lsp 0.26.0 ends on stdin EOF rather than on `exit` (see
+/// AGENTS.md).
+const WARM_SESSION: &str = r#"{"steps":[
+  {"kind":"expect","method":"initialize","respond":{"result":{"capabilities":{}}}},
+  {"kind":"expect","method":"initialized"},
+  {"kind":"notify","method":"$/progress",
+   "params":{"token":"indexing","value":{"kind":"begin","title":"Indexing"}}},
+  {"kind":"notify","method":"$/progress","params":{"token":"indexing","value":{"kind":"end"}}},
+  {"kind":"expect","method":"shutdown","respond":{"result":null}},
+  {"kind":"expect","method":"exit"}
+]}"#;
+
+/// The fake sits next to the `ktsense` binary under test, both built into the same target dir. A
+/// workspace-wide `cargo test` has already built it; a package-scoped run has not, so it is built
+/// here on first use rather than letting the suite fail on a missing helper.
+fn fake_lsp() -> PathBuf {
+    static FAKE: OnceLock<PathBuf> = OnceLock::new();
+    FAKE.get_or_init(|| {
+        let path = Path::new(env!("CARGO_BIN_EXE_ktsense")).with_file_name("fake_lsp");
+        if !path.exists() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let status = Command::new(cargo)
+                .args(["build", "-p", "ktsense-lsp", "--bin", "fake_lsp"])
+                .current_dir(WORKSPACE_ROOT)
+                .status()
+                .expect("cargo runs");
+            assert!(status.success(), "building fake_lsp failed");
+        }
+        path
+    })
+    .clone()
+}
+
 struct Session {
     child: std::process::Child,
     reader: BufReader<std::process::ChildStdout>,
 }
 
 impl Session {
-    fn start() -> Self {
-        let mut child = Command::cargo_bin("ktsense")
-            .expect("binary builds")
+    /// Starts a server whose engine is `engine`, or whichever engine the discovery order finds when
+    /// that is `None`. A scripted case passes the replay binary; the `real-lsp` case below passes
+    /// `None` because the engine's own answers are its subject.
+    fn start(engine: Option<PathBuf>) -> Self {
+        let mut command = Command::cargo_bin("ktsense").expect("binary builds");
+        command
             .current_dir(WORKSPACE_ROOT)
             .args(["--root", FIXTURE, "mcp"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("server starts");
+            .stderr(Stdio::piped());
+        if let Some(engine) = engine {
+            command.env("KTSENSE_LSP_PATH", engine);
+            command.env("FAKE_LSP_SCRIPT", WARM_SESSION);
+        }
+        let mut child = command.spawn().expect("server starts");
         let reader = BufReader::new(child.stdout.take().expect("stdout"));
         Self { child, reader }
     }
@@ -67,7 +117,7 @@ use std::io::Read;
 
 #[test]
 fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
-    let mut session = Session::start();
+    let mut session = Session::start(Some(fake_lsp()));
 
     let init = session.request(
         1,
@@ -179,7 +229,7 @@ fn check_over_the_real_engine_reports_a_finding_and_a_clean_file_as_answers_not_
         )
     };
 
-    let mut session = Session::start();
+    let mut session = Session::start(None);
     session.request(
         1,
         "initialize",
