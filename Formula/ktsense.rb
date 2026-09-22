@@ -7,9 +7,10 @@ class Ktsense < Formula
   homepage "https://github.com/siddharthasikder/ktsense"
   license "MIT"
 
-  # The four sha256 values are placeholders: no release has been published yet, so no real artifact
-  # hash exists. They are deliberately one repeated non-hash so an install fails loudly instead of
-  # looking verified. scripts/bump-formula.sh (KT-44) rewrites them from the release .sha256 files.
+  # The four sha256 values are real artifact hashes for the release RELEASE names, validated against
+  # that release's .sha256 sidecars when they were written (KT-40a). Never hand-edit them: they are
+  # maintained by scripts/bump-formula.sh (KT-44), which rewrites all four from the sidecars of the
+  # release it is pointed at, so a hash and its URL can never drift apart.
   on_macos do
     on_arm do
       url "https://github.com/siddharthasikder/ktsense/releases/download/v#{RELEASE}/ktsense-#{RELEASE}-aarch64-apple-darwin.tar.gz"
