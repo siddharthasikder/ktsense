@@ -403,99 +403,86 @@ fn init_tracing() {
 
 fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
     let format = cli.format;
-    let root = cli.root;
+    let base = cli.root.unwrap_or_else(|| PathBuf::from("."));
     match cli.command {
         Command::Outline {
             file,
             private,
             kdoc,
-        } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            let command = routing::RoutedCommand::Outline {
+        } => route(
+            &base,
+            routing::RoutedCommand::Outline {
                 file,
                 private,
                 kdoc,
-            };
-            routing::route(&base, &daemon::socket_for(&base)?, command, format)
-        }
-        Command::Deps { level } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            let command = routing::RoutedCommand::Deps {
+            },
+            format,
+        ),
+        Command::Deps { level } => route(
+            &base,
+            routing::RoutedCommand::Deps {
                 level: DepLevel::from(level).into(),
-            };
-            routing::route(&base, &daemon::socket_for(&base)?, command, format)
-        }
+            },
+            format,
+        ),
         Command::Symbols {
             query,
             kind,
             limit,
             pick,
-        } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            symbols(&base, &query, kind, limit, pick.as_deref(), format)
-        }
-        Command::Map { budget } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            let command = routing::RoutedCommand::Map { budget };
-            routing::route(&base, &daemon::socket_for(&base)?, command, format)
-        }
+        } => symbols(&base, &query, kind, limit, pick.as_deref(), format),
+        Command::Map { budget } => route(&base, routing::RoutedCommand::Map { budget }, format),
         Command::Trace {
             symbol,
             pick,
             depth,
             limit,
             wait_index,
-        } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            let command = routing::RoutedCommand::Trace {
+        } => route(
+            &base,
+            routing::RoutedCommand::Trace {
                 symbol,
                 pick,
                 depth,
                 limit,
                 wait_index,
-            };
-            routing::route(&base, &daemon::socket_for(&base)?, command, format)
-        }
-        Command::Daemon { action } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            match action {
-                DaemonAction::Start => daemon::start(&base),
-                DaemonAction::Stop => daemon::shutdown(&base),
-                DaemonAction::Status => daemon::report_status(&base),
-                DaemonAction::Serve => daemon::serve(&base),
-            }
-        }
-        Command::Mcp => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            mcp_server(&base)
-        }
-        Command::Check { path } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            check(&base, &resolve_root(Some(&base), &path), format)
-        }
+            },
+            format,
+        ),
+        Command::Daemon { action } => match action {
+            DaemonAction::Start => daemon::start(&base),
+            DaemonAction::Stop => daemon::shutdown(&base),
+            DaemonAction::Status => daemon::report_status(&base),
+            DaemonAction::Serve => daemon::serve(&base),
+        },
+        Command::Mcp => mcp_server(&base),
+        Command::Check { path } => check(&base, &resolve_root(Some(&base), &path), format),
         Command::Diagnose { file } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
             diagnose(&base, &resolve_root(Some(&base), &file), format).map(CommandOutcome::success)
         }
         Command::Context {
             symbol,
             pick,
             budget,
-        } => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            context::context(context::ContextRequest {
-                root: &base,
-                symbol: &symbol,
-                pick: pick.as_deref(),
-                budget,
-                format,
-            })
-        }
-        Command::Status => {
-            let base = root.unwrap_or_else(|| PathBuf::from("."));
-            status::run(&base, format).map(CommandOutcome::success)
-        }
+        } => context::context(context::ContextRequest {
+            root: &base,
+            symbol: &symbol,
+            pick: pick.as_deref(),
+            budget,
+            format,
+        }),
+        Command::Status => status::run(&base, format).map(CommandOutcome::success),
     }
+}
+
+/// Answers a daemon-routable command, through the root's daemon when one is live and in-process
+/// otherwise. The socket is resolved here so every routed arm names one root and one lookup.
+fn route(
+    base: &Path,
+    command: routing::RoutedCommand,
+    format: Format,
+) -> Result<CommandOutcome, CommandError> {
+    routing::route(base, &daemon::socket_for(base)?, command, format)
 }
 
 /// Drives one bounded async engine invocation to completion on a dedicated current-thread runtime,
@@ -560,9 +547,7 @@ fn diagnose(root: &Path, file: &Path, format: Format) -> Result<String, CommandE
 fn render_check(report: &CheckReport, format: Format) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(check_markdown(report)),
-        Format::Json => serde_json::to_string_pretty(report)
-            .map(|json| format!("{json}\n"))
-            .map_err(CommandError::serialization),
+        Format::Json => as_json(report),
         Format::Dot => Err(CommandError::unsupported_format("check")),
     }
 }
@@ -570,11 +555,18 @@ fn render_check(report: &CheckReport, format: Format) -> Result<String, CommandE
 fn render_diagnose(report: &DiagnoseReport, format: Format) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(diagnose_markdown(report)),
-        Format::Json => serde_json::to_string_pretty(report)
-            .map(|json| format!("{json}\n"))
-            .map_err(CommandError::serialization),
+        Format::Json => as_json(report),
         Format::Dot => Err(CommandError::unsupported_format("diagnose")),
     }
+}
+
+/// One command answer as `--format json`: pretty-printed, with the trailing newline a shell caller
+/// expects. Every `--format json` arm renders through here, so the shape and the serialization
+/// failure message are stated once rather than per command.
+fn as_json<T: serde::Serialize>(value: &T) -> Result<String, CommandError> {
+    serde_json::to_string_pretty(value)
+        .map(|json| format!("{json}\n"))
+        .map_err(CommandError::serialization)
 }
 
 fn check_markdown(report: &CheckReport) -> String {
@@ -672,9 +664,7 @@ fn present(
 ) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(render_markdown(skeleton, options)),
-        Format::Json => serde_json::to_string_pretty(skeleton)
-            .map(|json| format!("{json}\n"))
-            .map_err(CommandError::serialization),
+        Format::Json => as_json(skeleton),
         Format::Dot => Err(CommandError::unsupported_format("outline")),
     }
 }
@@ -762,9 +752,7 @@ fn is_test_source(root: &Path, path: &Path) -> bool {
 fn present_map(map: &RepoMap, format: Format) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(render_map_markdown(map)),
-        Format::Json => serde_json::to_string_pretty(map)
-            .map(|json| format!("{json}\n"))
-            .map_err(CommandError::serialization),
+        Format::Json => as_json(map),
         Format::Dot => Err(CommandError::unsupported_format("map")),
     }
 }
@@ -773,9 +761,7 @@ fn present_deps(graph: &ImportGraph, format: Format) -> Result<String, CommandEr
     match format {
         Format::Md => Ok(render_deps_markdown(graph)),
         Format::Dot => Ok(render_deps_dot(graph)),
-        Format::Json => serde_json::to_string_pretty(graph)
-            .map(|json| format!("{json}\n"))
-            .map_err(CommandError::serialization),
+        Format::Json => as_json(graph),
     }
 }
 

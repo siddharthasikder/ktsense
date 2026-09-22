@@ -124,9 +124,7 @@ pub(crate) fn run(root: &Path, format: Format) -> Result<String, CommandError> {
     let report = collect(root)?;
     match format {
         Format::Md => Ok(render_markdown(&report)),
-        Format::Json => serde_json::to_string_pretty(&report)
-            .map(|text| text + "\n")
-            .map_err(CommandError::serialization),
+        Format::Json => crate::as_json(&report),
         Format::Dot => Err(CommandError::unsupported_format("status")),
     }
 }

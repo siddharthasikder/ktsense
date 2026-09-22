@@ -320,9 +320,7 @@ fn symbols_markdown(query: &str, resolved: &[ResolvedSymbol], hidden: Option<usi
 }
 
 fn symbols_json(resolved: &[ResolvedSymbol]) -> Result<String, CommandError> {
-    serde_json::to_string_pretty(resolved)
-        .map(|json| format!("{json}\n"))
-        .map_err(CommandError::serialization)
+    crate::as_json(&resolved)
 }
 
 #[cfg(test)]

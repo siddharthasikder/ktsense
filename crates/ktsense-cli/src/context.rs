@@ -72,9 +72,7 @@ pub(crate) fn context(request: ContextRequest<'_>) -> Result<CommandOutcome, Com
 fn present(bundle: &SymbolContext, format: Format) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(render_context_markdown(bundle)),
-        Format::Json => serde_json::to_string_pretty(bundle)
-            .map(|json| format!("{json}\n"))
-            .map_err(CommandError::serialization),
+        Format::Json => crate::as_json(bundle),
         Format::Dot => Err(CommandError::unsupported_format("context")),
     }
 }
