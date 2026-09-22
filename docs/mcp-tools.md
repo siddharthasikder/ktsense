@@ -62,11 +62,15 @@ its own measurement walked.
 
 `check_version` is called from exactly one place, `ktsense_lsp::launch()`, which is the LSP session
 path. `EngineCommand`, which backs the engine's command mode, performs no probe. So of the
-engine-backed tools only `trace_kotlin_symbol` refuses an incompatible engine major version;
-`find_kotlin_symbol` and `check_kotlin_syntax` will run against whatever binary discovery found.
-The server `instructions` say exactly that rather than claiming version safety across the board.
-`ktsense_status` reports the installed version and its compatibility, and never fails for a missing
-engine: absence is the state a caller runs it to learn.
+engine-backed tools `trace_kotlin_symbol` and `explain_kotlin_symbol` refuse an incompatible engine
+major version, the second of them because the bundle it builds is a depth-1 trace driven through the
+same fresh-session path rather than because it probes on its own; `find_kotlin_symbol` and
+`check_kotlin_syntax` will run against whatever binary discovery found. The server `instructions`
+scope the guarantee rather than claiming version safety across the board, but they still name
+`trace_kotlin_symbol` as the only guarded tool, which has understated it by one since KT-35 landed
+`context`. Correcting that sentence is a change to the instructions string in the catalogue, not to
+this page. `ktsense_status` reports the installed version and its compatibility, and never fails for a
+missing engine: absence is the state a caller runs it to learn.
 
 ## Needing an index and being shaped by one are different questions
 
@@ -206,7 +210,8 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
 
 - [x] Every tool states the question it answers, before any mention of how it works.
 - [x] Every tool states when to prefer it over `grep`, over reading the file, or over another tool.
-      `explain_kotlin_symbol` names the two tools to use instead of it while it is unimplemented.
+      `explain_kotlin_symbol` names `trace_kotlin_symbol` as the one to reach for instead when a
+      caller needs every reference site or callers deeper than one level.
 - [x] Every tool carries a `requires:` marker matching its catalogue entry and a `cost:` marker that
       states a figure or admits none was measured, both asserted by
       `every_listed_tool_is_catalogued_read_only_and_states_its_requirement_and_its_cost`. The cost
@@ -226,7 +231,9 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
 - [x] Every tool in the catalogue answers for real. `explain_kotlin_symbol` was a KT-35 stub when this
       page was written and is not one now, so the `pending_card` field that recorded that state is
       gone rather than left as an always-empty option.
-- [x] Version-check scope is stated where it is true, and not generalised.
+- [x] Version-check scope is stated where it is true, and not generalised. The instructions string
+      still names one guarded tool where there are two, which the section above records as an
+      outstanding catalogue fix.
 - [x] Every tool is annotated `readOnlyHint: true` and `openWorldHint: false`; none of them writes.
 - [x] Every tool declares an output schema, and all eight are identical.
 - [x] No em dashes.

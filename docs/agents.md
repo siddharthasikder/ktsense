@@ -17,23 +17,29 @@ You need the `ktsense` binary, and for most of the tools the `kmp-lsp` engine it
 Build the binary with `cargo build --release`, which leaves it at `target/release/ktsense`, and
 install the engine yourself for now. ktsense looks for it in three places, in order: the path in
 `KTSENSE_LSP_PATH`, then `libexec/kmp-lsp` beside the binary's own directory, then `kmp-lsp` on
-`PATH`. That middle location is where a packaged release will carry its own copy; until the release
-artifacts land, it is the first and third that matter. An override pointing at a file that does not
+`PATH`. That middle location is where a packaged release carries its own copy, and the published
+`v0.0.1-rc.2` prerelease tarballs do carry one: each holds `bin/ktsense` beside `libexec/kmp-lsp`, so
+an unpacked tarball finds its engine with nothing configured. A source build brings no engine with it,
+so for that one it is the first and third that matter. An override pointing at a file that does not
 exist does not fail: discovery skips the missing candidate and falls through to the bare name, so a
 typo in `KTSENSE_LSP_PATH` silently gets you whichever `kmp-lsp` is on `PATH` instead of an error.
 
 Three tools need no engine at all, because they are pure tree-sitter: `get_kotlin_outline`,
 `analyze_kotlin_dependencies` and `get_kotlin_repo_map`. Every other tool reaches the engine, and
-that includes `check_kotlin_syntax`, which is a passthrough to the engine's own checker even though
-it is marked `fast`. The `fast` and `needs_index` markers say whether a tool waits for the reference
-index, not whether it needs the engine binary. On a host without `kmp-lsp` a syntax check fails just
-as a trace does.
+that includes `check_kotlin_syntax`, which is a passthrough to the engine's own checker even though it
+waits for no index. Each tool description carries a three-state `requires:` marker that says which of
+those it is, `nothing`, `kmp-lsp`, or `kmp-lsp and a settled index`, and a separate `cost:` marker for
+what the call takes. That replaced KT-31's single `fast | needs_index` marker, which said only whether
+a tool waited for the reference index and was read as saying it needed no engine binary (KT-32). On a
+host without `kmp-lsp` a syntax check fails just as a trace does.
 
 The version ktsense is built against is pinned in `ktsense-lsp::PINNED_UPSTREAM_VERSION`, and it is
-probed only where a tool opens an engine session. Today that means `trace_kotlin_symbol` and the warm
-daemon: the located binary is run with `--version` and classified against the pin, so a matching major
-and minor starts silently, a different minor starts with a warning, and a different major or an
-unreadable version is refused before any session child is spawned. The one-shot passthroughs behind
+probed only where a tool opens an engine session. Today that means `trace_kotlin_symbol`,
+`explain_kotlin_symbol` and the warm daemon: the located binary is run with `--version` and classified
+against the pin, so a matching major and minor starts silently, a different minor starts with a
+warning, and a different major or an unreadable version is refused before any session child is
+spawned. `explain_kotlin_symbol` is guarded because the bundle it builds is a depth-1 trace driven
+through the same fresh-session path, not because it probes on its own. The one-shot passthroughs behind
 `check_kotlin_syntax` and `find_kotlin_symbol` do not probe at all, and neither does the symbol
 resolution `trace_kotlin_symbol` performs before it opens its session. A wrong-major engine is
 therefore refused for a trace and used without complaint for a syntax check, so do not read the pin as
@@ -183,8 +189,11 @@ symbol from that session rather than paying for a fresh one. The rest, `find_kot
 
 ## Troubleshooting
 
-A tool error reading `is not implemented yet` is a command that has not shipped rather than a
-misconfiguration. At the time of writing that covers `explain_kotlin_symbol` and `ktsense_status`.
+A tool error reading `is not implemented yet` would be a command that has not shipped rather than a
+misconfiguration, and no tool answers that today. All eight are implemented: `ktsense_status` since
+KT-36 and `explain_kotlin_symbol` since KT-35, whose `context` command was the last one the surface
+advertised without implementing. Exit code 70 has had no caller since, and stays in the contract for
+the next surface-first command.
 
 An answer marked `index: partial` means the reference index had not finished when the question was
 answered. It is a real answer about what was indexed, not a complete one. Ask again once the index has
