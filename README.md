@@ -208,7 +208,7 @@ Per-command wall time on ktor, comparing the in-process path against a warm daem
 ktor tag `3.0.1` at `205479f`, 1861 `.kt` files, and clean: zero duplicate sources under `bin/`, so
 no row is inflated by a Buildship import. The daemon was started and confirmed at `index: complete`
 before timing, so the daemon column is warm-session time. One minute load average ranged 1.57 to 2.17
-across the rows. A five-repetition run agreed within 6 ms on every row.*
+across the rows. A separate five-repetition run produced the same ordering; median differences were 0-9 ms on every row except daemon map, which differed by 86 ms (2190 versus 2276 ms).*
 
 Medians over nine timed repetitions after one discarded warm-up invocation, taken with the bash `time`
 keyword so nothing forks inside the measured span. `outline` is the corpus's largest file, 54 KB, so
