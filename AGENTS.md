@@ -48,6 +48,19 @@ and compression testable from hand-built values.
 - A `find` that matches nothing **exits 0 with empty output**. Absence cannot be read from the exit
   status; ktsense supplies its own non-zero for "no such symbol".
 
+## Platform limits
+
+- **A daemon socket path is an address, not a pathname.** `sockaddr_un.sun_path` holds 104 bytes on
+  Darwin and 108 on Linux, so `ktsense-daemon::SOCKET_BUDGET` applies the tightest of them on every
+  platform: a budget that widened on Linux would make a macOS overflow unreproducible where the work
+  is done. The budget also reserves `COMPANION_RESERVE` bytes for the longest file a start binds
+  beside a socket, `<socket>.start63`, because the KT-66 failure was a 101-byte socket that bound and
+  a 108-byte claim that did not. A runtime directory too deep for that budget is answered from
+  `/tmp/ktsense-<uid>/<key of the rejected directory>`; `resolve_socket_path` owns the precedence and
+  is the only way to derive a socket path, since the CLI parent, the detached `daemon serve` child and
+  every routed command must agree on one. Observed 2026-09-22 on macos-14 CI, where a `TempDir` under
+  the per-user `TMPDIR` is already about fifty bytes deep.
+
 ## Accuracy honesty
 
 Resolution is syntactic (tree-sitter), not type-checked. Never present a result as certain when it
