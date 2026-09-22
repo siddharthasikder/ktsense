@@ -13,6 +13,14 @@
 //! rebuilds the engine's whole index per invocation and cost more than the rest of a warm trace put
 //! together. Both paths then hand their candidates to the same [`select_candidate`], so the
 //! ambiguity contract, `--pick` and the no-such-symbol error are the same code whichever answered.
+//!
+//! The two paths reach for the same two resolvers in opposite orders, because they start from
+//! opposite assets. A routed trace already holds a settled index and no spare subprocess, so it asks
+//! the index first and falls back to `find`. A fresh trace holds a cheap subprocess and no session
+//! yet, so it asks `find` first, which is what lets an ambiguous name exit without a session at all,
+//! and only when `find` reports nothing does it open the session it was about to open anyway and ask
+//! that index before agreeing the name is absent. Neither path reports absence on the strength of a
+//! cold `find` alone.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -147,18 +155,37 @@ async fn warm_declarations(
     request: &TraceRequest<'_>,
     index: IndexCompleteness,
 ) -> Result<Vec<SymbolCandidate>, CommandError> {
-    if index == IndexCompleteness::Complete {
-        match ktsense_daemon::resolve_from_warm_index(engine.client(), request.root, request.symbol)
-            .await
-        {
-            WarmResolution::Declarations(candidates) => return Ok(candidates),
-            WarmResolution::Inconclusive(reason) => tracing::debug!(
+    match declarations_from_index(engine.client(), request, index).await {
+        Some(candidates) => Ok(candidates),
+        None => found_by_command_mode(request).await,
+    }
+}
+
+/// Every declaration of the requested name the given session's index holds under the root, or `None`
+/// when that index cannot answer the name and the caller must ask command-mode `find` instead.
+///
+/// Shared by the warm and the fresh path so the two resolve a name through the same request against
+/// the same kind of index, which is what keeps their candidate sets from drifting. An index short of
+/// complete is not asked at all: a half-built one answers with a subset of the declarations, which
+/// would change the candidate set rather than merely delay it.
+async fn declarations_from_index(
+    client: &LspClient,
+    request: &TraceRequest<'_>,
+    index: IndexCompleteness,
+) -> Option<Vec<SymbolCandidate>> {
+    if index != IndexCompleteness::Complete {
+        return None;
+    }
+    match ktsense_daemon::resolve_from_warm_index(client, request.root, request.symbol).await {
+        WarmResolution::Declarations(candidates) => Some(candidates),
+        WarmResolution::Inconclusive(reason) => {
+            tracing::debug!(
                 "resolving {} through command-mode find: {reason:?}",
                 request.symbol
-            ),
+            );
+            None
         }
     }
-    found_by_command_mode(request).await
 }
 
 pub(crate) fn resolve(request: &TraceRequest<'_>) -> Result<Traced, CommandError> {
@@ -168,14 +195,83 @@ pub(crate) fn resolve(request: &TraceRequest<'_>) -> Result<Traced, CommandError
 /// Resolves the name and, when it is unambiguous, answers from a fresh session. Async so it composes
 /// with the async resolver instead of nesting a runtime; [`resolve`] blocks on it for the synchronous
 /// callers.
+///
+/// Command-mode `find` is asked first and unconditionally, which is what keeps an ambiguous name
+/// answerable without opening a session at all. Only an empty answer is carried further, because an
+/// empty one is the single outcome the engine's cold path can get wrong.
 async fn resolve_in_process(request: &TraceRequest<'_>) -> Result<Traced, CommandError> {
-    match resolve_candidate(request).await? {
+    let found = found_by_command_mode(request).await?;
+    if found.is_empty() {
+        return resolved_against_a_fresh_index(request).await;
+    }
+    traced(request, select_candidate(request, found)?).await
+}
+
+/// The trace for an already-narrowed resolution, answered from a session of its own, or the candidate
+/// list to print when the name was ambiguous.
+async fn traced(
+    request: &TraceRequest<'_>,
+    resolution: Resolution,
+) -> Result<Traced, CommandError> {
+    match resolution {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
         Resolution::Ready {
             candidate,
             definition,
         } => {
             let report = collect_fresh(request, &candidate, definition)
+                .await
+                .map_err(CommandError::engine)?;
+            Ok(Traced::Resolved(report))
+        }
+    }
+}
+
+/// A name command-mode `find` reported nothing for, resolved against a fresh session's own index and
+/// answered from that same session.
+///
+/// An empty `find` is not proof of absence. On a cold cache the engine takes its `--fast` path, which
+/// is documented as "use rg/fd only" and really does exec `rg`: with no `rg` on `PATH` it searches
+/// nothing and writes empty stdout, empty stderr and exit 1, which is byte for byte the shape
+/// upstream uses for "matched nothing". Measured on `fixtures/multi-module` from a cold cache: 3
+/// declarations with `rg` on `PATH`, 0 without it, 0 with only `fd`, and 3 without either once
+/// `kmp-lsp index` has run. GitHub's `ubuntu-24.04` image ships neither tool, which is why the
+/// routed and in-process paths disagreed there and nowhere else (KT-67, 2026-09-22).
+///
+/// Waiting for the index and asking it, rather than re-asking `find`, is the only fix available: the
+/// engine's session and its command-mode `find` key their caches differently, so a `find` spawned
+/// after the index is complete is still a cold `find`. The session opened here is the one the trace
+/// then runs on, so confirming absence costs no extra engine process.
+async fn resolved_against_a_fresh_index(
+    request: &TraceRequest<'_>,
+) -> Result<Traced, CommandError> {
+    let (mut client, index) = open_fresh_session(request)
+        .await
+        .map_err(CommandError::engine)?;
+    let traced = indexed_trace(&client, request, index).await;
+    let _ = client.shutdown().await;
+    traced
+}
+
+/// Resolves the name from an open session's index and answers from that same session. An index that
+/// cannot answer the name leaves the candidate list empty, so the name is reported absent exactly as
+/// it was before this second opinion existed.
+async fn indexed_trace(
+    client: &LspClient,
+    request: &TraceRequest<'_>,
+    index: IndexCompleteness,
+) -> Result<Traced, CommandError> {
+    let candidates = declarations_from_index(client, request, index)
+        .await
+        .unwrap_or_default();
+    match select_candidate(request, candidates)? {
+        Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
+        Resolution::Ready {
+            candidate,
+            definition,
+        } => {
+            let report = Session::new(request.root, request.limit)
+                .run(client, &candidate, definition, request.depth, index)
                 .await
                 .map_err(CommandError::engine)?;
             Ok(Traced::Resolved(report))
@@ -194,12 +290,9 @@ enum Resolution {
     Ambiguous(CommandOutcome),
 }
 
-async fn resolve_candidate(request: &TraceRequest<'_>) -> Result<Resolution, CommandError> {
-    select_candidate(request, found_by_command_mode(request).await?)
-}
-
-/// Every declaration the engine's command-mode `find` reports for the name. This is the resolution
-/// the in-process path always uses, and the one a routed trace falls back to.
+/// Every declaration the engine's command-mode `find` reports for the name. This is the first
+/// resolution both paths reach for when they have no settled index, and the fallback a routed trace
+/// degrades to when its warm index cannot answer.
 async fn found_by_command_mode(
     request: &TraceRequest<'_>,
 ) -> Result<Vec<SymbolCandidate>, CommandError> {
@@ -236,13 +329,27 @@ fn select_candidate(
 }
 
 /// Launches a fresh engine, runs the whole session, and always tears it down, whatever the requests
-/// returned. The index wait happens here because a fresh session must build its index before it can
-/// answer; the warm path reads the daemon's already-tracked phase instead.
+/// returned.
 async fn collect_fresh(
     request: &TraceRequest<'_>,
     candidate: &SymbolCandidate,
     definition: Definition,
 ) -> Result<TraceReport, LspError> {
+    let (mut client, index) = open_fresh_session(request).await?;
+    let outcome = Session::new(request.root, request.limit)
+        .run(&client, candidate, definition, request.depth, index)
+        .await;
+    let _ = client.shutdown().await;
+    outcome
+}
+
+/// A fresh engine session with its index waited out, and the completeness that wait reached. The wait
+/// happens here because a fresh session must build its index before it can answer anything; the warm
+/// path reads the daemon's already-tracked phase instead. The caller owns the teardown, so one
+/// session can both resolve a name and answer about it.
+async fn open_fresh_session(
+    request: &TraceRequest<'_>,
+) -> Result<(LspClient, IndexCompleteness), LspError> {
     let mut client = ktsense_lsp::launch().await?;
     let config = InitializeConfig {
         root_uri: format!("file://{}", canonical(request.root).display()),
@@ -250,17 +357,7 @@ async fn collect_fresh(
     };
     client.initialize(&config).await?;
     let wait = wait_for_index(&mut client, request.wait.cap()).await;
-    let outcome = Session::new(request.root, request.limit)
-        .run(
-            &client,
-            candidate,
-            definition,
-            request.depth,
-            completeness(wait.phase),
-        )
-        .await;
-    let _ = client.shutdown().await;
-    outcome
+    Ok((client, completeness(wait.phase)))
 }
 
 /// The index completeness the daemon's warm session can honestly claim, waiting under the same

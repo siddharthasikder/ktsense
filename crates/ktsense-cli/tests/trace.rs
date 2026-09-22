@@ -67,11 +67,17 @@ fn uri(relative: &str) -> String {
 }
 
 fn trace(args: &[&str], find: &Value, script: &Value) -> Run {
+    trace_with_find(args, &find.to_string(), script)
+}
+
+/// `trace` with the engine's command-mode `find` stdout given verbatim rather than as a JSON value,
+/// so a test can hand it the empty stream a cold `--fast` `find` writes when it has no `rg` to run.
+fn trace_with_find(args: &[&str], find_stdout: &str, script: &Value) -> Run {
     let output = Command::cargo_bin("ktsense")
         .expect("binary builds")
         .current_dir(WORKSPACE_ROOT)
         .env("KTSENSE_LSP_PATH", fake_lsp())
-        .env("FAKE_CMD_STDOUT", find.to_string())
+        .env("FAKE_CMD_STDOUT", find_stdout)
         .env("FAKE_LSP_SCRIPT", script.to_string())
         .env("KTSENSE_INDEX_CAP_MS", SHORT_INDEX_CAP_MS)
         .args(["--root", FIXTURE, "trace"])
@@ -152,11 +158,15 @@ fn every_reference() -> Value {
 /// The session `trace` drives for the interface method: handshake, the given progress stream, the
 /// two requests at the declaration with their params pinned, then teardown.
 fn session(progress_stream: Vec<Value>, deeper: Vec<Value>) -> Value {
-    let mut steps = vec![
-        json!({ "kind": "expect", "method": "initialize", "respond": { "result": {} } }),
-        json!({ "kind": "expect", "method": "initialized" }),
-    ];
+    resolving_session(progress_stream, Vec::new(), deeper)
+}
+
+/// The same session with `lookup` inserted between the index and the positional requests, which is
+/// where a fresh trace sends its `workspace/symbol` when command-mode `find` answered with nothing.
+fn resolving_session(progress_stream: Vec<Value>, lookup: Vec<Value>, deeper: Vec<Value>) -> Value {
+    let mut steps = handshake();
     steps.extend(progress_stream);
+    steps.extend(lookup);
     steps.push(json!({
         "kind": "expect", "method": "textDocument/implementation",
         "params": at(REPOSITORY, 4, 9),
@@ -170,9 +180,44 @@ fn session(progress_stream: Vec<Value>, deeper: Vec<Value>) -> Value {
         "respond": { "result": every_reference() }
     }));
     steps.extend(deeper);
-    steps.push(json!({ "kind": "expect", "method": "shutdown", "respond": { "result": null } }));
-    steps.push(json!({ "kind": "expect", "method": "exit" }));
+    steps.extend(teardown());
     json!({ "steps": steps })
+}
+
+/// A session opened, waited on and torn down without being asked anything: what a fresh trace drives
+/// when `find` found nothing and the index never completes, so there is no index worth asking.
+fn unanswered_session(progress_stream: Vec<Value>) -> Value {
+    let mut steps = handshake();
+    steps.extend(progress_stream);
+    steps.extend(teardown());
+    json!({ "steps": steps })
+}
+
+fn handshake() -> Vec<Value> {
+    vec![
+        json!({ "kind": "expect", "method": "initialize", "respond": { "result": {} } }),
+        json!({ "kind": "expect", "method": "initialized" }),
+    ]
+}
+
+fn teardown() -> Vec<Value> {
+    vec![
+        json!({ "kind": "expect", "method": "shutdown", "respond": { "result": null } }),
+        json!({ "kind": "expect", "method": "exit" }),
+    ]
+}
+
+/// The one `workspace/symbol` exchange a fresh trace makes when `find` reported nothing: the exact
+/// name, answered with the interface method's LSP position, whose `character` is a 0-based UTF-16
+/// offset the resolver relocates onto the name.
+fn indexed_interface_method() -> Vec<Value> {
+    vec![json!({
+        "kind": "expect", "method": "workspace/symbol",
+        "params": { "query": "save" },
+        "respond": { "result": [
+            { "name": "save", "kind": 6, "location": location(REPOSITORY, 4, 9) }
+        ] }
+    })]
 }
 
 fn completed_index() -> Vec<Value> {
@@ -180,6 +225,11 @@ fn completed_index() -> Vec<Value> {
         progress(json!({ "kind": "begin", "title": "Indexing" })),
         progress(json!({ "kind": "end" })),
     ]
+}
+
+/// An index that begins and never reports an end, so the wait leaves it partial at the cap.
+fn unfinished_index() -> Vec<Value> {
+    vec![progress(json!({ "kind": "begin", "title": "Indexing" }))]
 }
 
 #[test]
@@ -206,14 +256,62 @@ fn json_carries_the_same_answer_with_the_index_marker_as_data() {
 
 #[test]
 fn an_index_that_never_finishes_is_answered_within_the_cap_and_marked_partial() {
-    let still_indexing = vec![progress(json!({ "kind": "begin", "title": "Indexing" }))];
     let run = trace(
         &["save"],
         &only_the_interface_method(),
-        &session(still_indexing, Vec::new()),
+        &session(unfinished_index(), Vec::new()),
     );
 
     insta::assert_snapshot!(record(&run));
+}
+
+/// KT-67: an empty command-mode `find` is not proof of absence. On a cold cache the engine takes its
+/// `--fast` path, documented as "use rg/fd only", and really does exec `rg`: with no `rg` on `PATH` it
+/// searches nothing and writes empty stdout with a silent stderr, which is byte for byte the shape it
+/// uses for a name that genuinely matched nothing. A fresh trace therefore asks the session's own
+/// index before agreeing, through the same `workspace/symbol` lookup a routed trace asks first, and
+/// reports absence only when that index cannot answer either. The third arm is that case: an index
+/// still building answers with a subset of the declarations, so it is not asked at all.
+#[test]
+fn a_name_an_empty_find_missed_is_resolved_from_the_index_unless_it_is_still_building() {
+    let confirmed = |find_stdout: &str| {
+        trace_with_find(
+            &["save"],
+            find_stdout,
+            &resolving_session(completed_index(), indexed_interface_method(), Vec::new()),
+        )
+    };
+    let silent_engine = confirmed("");
+    let empty_array = confirmed("[]");
+    let still_building = trace_with_find(&["save"], "", &unanswered_session(unfinished_index()));
+
+    let observed = |run: &Run| {
+        (
+            run.code,
+            run.stdout.contains("## Callers (3)"),
+            run.stderr.trim().to_string(),
+        )
+    };
+    assert_eq!(
+        (
+            observed(&silent_engine),
+            observed(&empty_array),
+            observed(&still_building),
+        ),
+        (
+            (Some(0), true, String::new()),
+            (Some(0), true, String::new()),
+            (
+                Some(1),
+                false,
+                "ktsense: no declaration named save".to_string()
+            ),
+        ),
+        "silent engine: {}\nempty array: {}\nstill building: {}",
+        record(&silent_engine),
+        record(&empty_array),
+        record(&still_building),
+    );
 }
 
 #[test]

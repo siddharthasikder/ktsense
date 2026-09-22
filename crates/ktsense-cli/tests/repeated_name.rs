@@ -156,7 +156,8 @@ fn progress(value: Value) -> Value {
 
 /// The session every arm drives: handshake, a completed index, then the two positional requests
 /// pinned to the parameter, then teardown. `warm_lookup` is the `workspace/symbol` step a routed
-/// trace adds before them and the in-process path never sends.
+/// trace adds before them, and one an in-process trace sends only when command-mode `find` reported
+/// nothing; here `find` reports the declaration, so the in-process arm never reaches it.
 fn script(uri: &str, warm_lookup: Vec<Value>) -> Value {
     let mut steps = vec![
         json!({ "kind": "expect", "method": "initialize",
