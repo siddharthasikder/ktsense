@@ -21,9 +21,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        # Linux stays pinned to ubuntu-24.04 until Ubuntu 26 is deliberately certified; macos-15
+        # keeps arm64 on a currently supported image.
+        os: [ubuntu-24.04, macos-15]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml is the single source of truth for channel,
       # components and targets; install exactly what it pins.
@@ -47,9 +49,9 @@ jobs:
   # sidecar exclusion and reproducibility are asserted directly. No network or real engine needed.
   packaging:
     name: release packaging script
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Release version validation accepts and rejects
         run: bash scripts/tests/release-version.test.sh
@@ -62,9 +64,9 @@ jobs:
   # explicit override, and recompilation when the override changes.
   build-version:
     name: build version injection
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install pinned toolchain
         run: |
@@ -81,9 +83,9 @@ jobs:
   # the install-free suite above stays fast and never depends on the network.
   real-lsp:
     name: real-lsp tests and compression gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install pinned toolchain
         run: |
@@ -135,7 +137,7 @@ jobs:
         run: cargo build -p ktsense-cli --release --locked
 
       - name: Restore the pinned corpora
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bench/repos
           key: bench-repos-${{ hashFiles('bench/clone.sh') }}

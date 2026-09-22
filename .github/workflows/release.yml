@@ -27,14 +27,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Linux runners are pinned to ubuntu-24.04 until Ubuntu 26 is deliberately certified.
         include:
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             builder: zigbuild
             runnable: true
           # ubuntu-latest is x64, so the aarch64 binary cannot be executed where it is built.
           - target: aarch64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             builder: zigbuild
             runnable: false
           # GitHub retired macos-13 on 2025-12-04 and macos-15-intel is the x86_64 label that
@@ -183,7 +184,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - target: aarch64-apple-darwin
             runner: macos-15
           - target: x86_64-apple-darwin
