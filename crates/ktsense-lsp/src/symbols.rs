@@ -202,10 +202,7 @@ where
             if let Some(column) = source.as_deref().and_then(|text| {
                 name_column_in_source(
                     text,
-                    ReportedPosition {
-                        line: candidate.line,
-                        column: candidate.col,
-                    },
+                    ReportedPosition::from_command_mode(candidate.line, candidate.col),
                     &candidate.name,
                 )
             }) {
@@ -216,13 +213,80 @@ where
         .collect()
 }
 
-/// Where the engine said a declaration is: a 1-based line and a 1-based **character** column, the
-/// units every ktsense column is expressed in. The two same-typed numbers travel as one value so a
-/// caller cannot transpose them.
+/// Where the engine said a declaration is, carrying the unit its column arrived in so the locator
+/// never compares a UTF-16 offset against a character column. The line and column travel as one
+/// value, so the two same-typed numbers cannot be transposed, and the conventions differ per
+/// constructor because the engine's two answers do: command-mode `find --json` reports a 1-based
+/// line and column, an LSP `Position` a 0-based pair whose column counts UTF-16 code units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReportedPosition {
-    pub line: u32,
-    pub column: u32,
+    line: u32,
+    column: ReportedColumn,
+}
+
+/// A reported column together with what it counts. A UTF-16 offset is a character column only on a
+/// line holding no astral-plane character, so the two cannot share a representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportedColumn {
+    /// A 1-based character column, as `find --json` reports.
+    Character(u32),
+    /// A 0-based UTF-16 code unit offset, as an LSP `Position` carries.
+    Utf16Offset(u32),
+}
+
+impl ReportedPosition {
+    /// A command-mode position: 1-based `line`, and `column` a 1-based character column, which is
+    /// what `find --json` reports and what [`SymbolCandidate`] carries.
+    pub fn from_command_mode(line: u32, column: u32) -> Self {
+        Self {
+            line,
+            column: ReportedColumn::Character(column),
+        }
+    }
+
+    /// An LSP position: 0-based `line`, and `character` a 0-based UTF-16 code unit offset, exactly as
+    /// a `Location.range.start` carries them. Both are converted rather than used as they arrive, the
+    /// line by one and the column against the source line the locator reads.
+    pub fn from_lsp(line: u32, character: u32) -> Self {
+        Self {
+            line: line.saturating_add(1),
+            column: ReportedColumn::Utf16Offset(character),
+        }
+    }
+
+    /// The 1-based line, whichever convention this position arrived in, so a caller that also needs
+    /// the line derives it here rather than converting a second time.
+    pub fn line(self) -> u32 {
+        self.line
+    }
+}
+
+impl ReportedColumn {
+    /// This column as a 1-based character column of `text`, so nearest selection compares like with
+    /// like.
+    fn in_character_columns(self, text: &str) -> u32 {
+        match self {
+            Self::Character(column) => column,
+            Self::Utf16Offset(units) => character_column_of_utf16(text, units),
+        }
+    }
+}
+
+/// The 1-based character column of `text` holding the 0-based UTF-16 offset `units`.
+///
+/// An offset inside a surrogate pair resolves to the character that pair encodes, and an offset past
+/// the end of the line to one column past its last character, so a position from a stale or
+/// differently-encoded view of the file stays far to the right instead of wrapping to the start.
+fn character_column_of_utf16(text: &str, units: u32) -> u32 {
+    let mut consumed = 0u32;
+    for (index, character) in text.chars().enumerate() {
+        let width = u32::try_from(character.len_utf16()).unwrap_or(1);
+        if units < consumed.saturating_add(width) {
+            return u32::try_from(index + 1).unwrap_or(u32::MAX);
+        }
+        consumed = consumed.saturating_add(width);
+    }
+    u32::try_from(text.chars().count() + 1).unwrap_or(u32::MAX)
 }
 
 /// The 1-based character column of the whole-word occurrence of `name` on the reported line of the
@@ -255,18 +319,16 @@ pub fn name_column_near(path: &Path, reported: ReportedPosition, name: &str) -> 
 /// The 1-based character column of the **first** whole-word occurrence of `name` on 1-based `line`
 /// of the file at `path`, or `None` when the file cannot be read or `name` is not present there.
 ///
-/// Retained for callers that hold no reported column; it is [`name_column_near`] anchored at column
-/// 1, which selects the first occurrence exactly, since occurrence columns are at least 1 and
-/// ascend in source order. A caller that does hold the engine's column should pass it to
-/// [`name_column_near`] instead: without one, a name repeated on the declaration line cannot be
-/// disambiguated and this function keeps picking the leftmost occurrence.
+/// For callers that hold no reported column, which on the `trace` path is a caller declaration
+/// reached by walking the report rather than by asking the engine. It is [`name_column_near`]
+/// anchored at character column 1, which selects the first occurrence exactly, since occurrence
+/// columns are at least 1 and ascend in source order. A caller that does hold the engine's column
+/// should pass it to [`name_column_near`] instead: without one, a name repeated on the declaration
+/// line cannot be disambiguated and this function keeps picking the leftmost occurrence.
 pub fn name_column(path: &Path, line: u32, name: &str) -> Option<u32> {
     name_column_near(
         path,
-        ReportedPosition {
-            line,
-            column: FIRST_COLUMN,
-        },
+        ReportedPosition::from_command_mode(line, FIRST_COLUMN),
         name,
     )
 }
@@ -278,12 +340,13 @@ const FIRST_COLUMN: u32 = 1;
 /// The 1-based character column of the whole-word occurrence of `name` nearest the reported column
 /// on the reported line of already-read `source`, or `None` when the line or the name is absent.
 /// Columns count characters, not bytes and not UTF-16 units, so a name preceded by astral-plane
-/// text reports the column an editor shows and is compared against the engine's column in the same
-/// units.
+/// text reports the column an editor shows, and the reported column is brought into those units
+/// before anything is compared.
 fn name_column_in_source(source: &str, reported: ReportedPosition, name: &str) -> Option<u32> {
     let text = source.lines().nth(reported.line.checked_sub(1)? as usize)?;
+    let anchor = reported.column.in_character_columns(text);
     // `min_by_key` keeps the first of several equal minima, which is the earlier occurrence.
-    whole_word_columns(text, name).min_by_key(|column| column.abs_diff(reported.column))
+    whole_word_columns(text, name).min_by_key(|column| column.abs_diff(anchor))
 }
 
 /// Every 1-based character column of `text` where `name` stands as a whole word, in source order.
@@ -327,7 +390,7 @@ mod tests {
     }
 
     fn at(line: u32, column: u32) -> ReportedPosition {
-        ReportedPosition { line, column }
+        ReportedPosition::from_command_mode(line, column)
     }
 
     #[test]
@@ -500,6 +563,41 @@ mod tests {
             "fixture {}",
             fixture.display()
         );
+    }
+
+    /// A line declaring `value` three times over, built so the three columns a caller might pass
+    /// disagree: the parameter's character column is 27, its 0-based UTF-16 offset is 35, and the
+    /// leftmost occurrence is a different declaration entirely, the function's own name.
+    const THREE: &str = "fun value(/* 𝕊𝕊𝕊𝕊𝕊𝕊𝕊𝕊𝕊 */ value: Int) = value";
+
+    #[test]
+    fn an_lsp_offset_is_converted_to_a_character_column_before_anything_is_compared() {
+        let observed = (
+            whole_word_columns(THREE, "value").collect::<Vec<_>>(),
+            name_column_in_source(THREE, ReportedPosition::from_lsp(0, 35), "value"),
+            name_column_in_source(THREE, at(1, 35), "value"),
+            name_column_in_source(THREE, at(1, 27), "value"),
+            ReportedPosition::from_lsp(0, 35).line(),
+            ReportedPosition::from_command_mode(1, 27).line(),
+        );
+        assert_eq!(
+            observed,
+            (vec![5, 27, 41], Some(27), Some(41), Some(27), 1, 1)
+        );
+    }
+
+    #[test]
+    fn a_utf16_offset_resolves_to_the_character_holding_it_and_clamps_past_the_line_end() {
+        let observed = (
+            character_column_of_utf16("val 𝕊 = save()", 0),
+            character_column_of_utf16("val 𝕊 = save()", 4),
+            character_column_of_utf16("val 𝕊 = save()", 5),
+            character_column_of_utf16("val 𝕊 = save()", 6),
+            character_column_of_utf16("val 𝕊 = save()", 10),
+            character_column_of_utf16("val 𝕊 = save()", 999),
+            character_column_of_utf16("", 3),
+        );
+        assert_eq!(observed, (1, 5, 5, 6, 10, 15, 1));
     }
 
     #[test]

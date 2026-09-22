@@ -69,8 +69,11 @@ pub enum Inconclusive {
 /// declaration: the engine's absolute path, its 1-based line, and the 1-based **character** column of
 /// the name located on that line. The column is relocated rather than taken from the response
 /// because an LSP position counts UTF-16 code units, which is not the character column ktsense
-/// presents and requests references at; the engine's own column survives only when the name cannot be
-/// found on its line, which keeps an unverifiable location honest instead of inventing one.
+/// presents and requests references at; the response's position is what the relocation searches
+/// nearest to, converted into character columns first, so a name repeated on its declaration line
+/// resolves to the occurrence the engine pointed at rather than the leftmost one. The engine's own
+/// column survives only when the name cannot be found on its line, which keeps an unverifiable
+/// location honest instead of inventing one.
 pub async fn resolve_from_warm_index(
     client: &LspClient,
     root: &Path,
@@ -118,14 +121,24 @@ fn declarations_in_root(
         .collect()
 }
 
+/// The candidate for one reported entry, with its column relocated to the declaration name.
+///
+/// The response's own position is where the search starts, not where the answer is taken from. It is
+/// handed to the locator as the LSP position it is, so the 0-based UTF-16 offset is converted against
+/// the source line rather than compared against character columns, and it decides which occurrence is
+/// chosen when the name appears more than once on its declaration line. The engine's column survives
+/// only when the name cannot be located there, which keeps a location ktsense cannot verify honest
+/// instead of inventing one; it is then the 1-based UTF-16 column, the same unverifiable value the
+/// warm path has always fallen back to.
 fn candidate_at(name: &str, entry: &ReportedSymbol, path: &Path) -> SymbolCandidate {
-    let line = entry.location.range.start.line + 1;
-    let reported_column = entry.location.range.start.character + 1;
+    let start = &entry.location.range.start;
+    let reported = ktsense_lsp::ReportedPosition::from_lsp(start.line, start.character);
     SymbolCandidate {
         name: name.to_string(),
         file: path.to_string_lossy().into_owned(),
-        line,
-        col: ktsense_lsp::name_column(path, line, name).unwrap_or(reported_column),
+        line: reported.line(),
+        col: ktsense_lsp::name_column_near(path, reported, name)
+            .unwrap_or_else(|| start.character.saturating_add(1)),
     }
 }
 
@@ -339,6 +352,36 @@ mod tests {
                 vec![("core/Ledger.kt".to_string(), 3, 5)],
                 vec![("core/Absent.kt".to_string(), 7, 13)],
             )
+        );
+    }
+
+    /// A name declared three times over on one line, so the warm lookup has to use the position the
+    /// response carried rather than the first match, and has to convert it first. `value` sits at
+    /// character columns 5, 27 and 41: the function's own name, the parameter the entry reports, and a
+    /// reference to it. Nine astral-plane characters stand before the parameter, so its 0-based UTF-16
+    /// offset is 35: read as a character column that is nearer the reference at 41 than the parameter
+    /// it names, and the leftmost match is a different declaration altogether.
+    #[test]
+    fn a_repeated_name_resolves_to_the_reported_occurrence_not_the_first_or_the_raw_offset() {
+        let fixture = Fixture::new();
+        let three = fixture.write(
+            "core/Three.kt",
+            "package shop\n\nfun value(/* 𝕊𝕊𝕊𝕊𝕊𝕊𝕊𝕊𝕊 */ value: Int) = value\n",
+        );
+
+        let at_the_parameter =
+            classify("value", &fixture.root, &[reported("value", &three, 3, 35)]);
+        let at_the_function = classify("value", &fixture.root, &[reported("value", &three, 3, 4)]);
+
+        assert_eq!(
+            (
+                observed(&at_the_parameter, &fixture.root),
+                observed(&at_the_function, &fixture.root),
+            ),
+            (
+                vec![("core/Three.kt".to_string(), 3, 27)],
+                vec![("core/Three.kt".to_string(), 3, 5)],
+            ),
         );
     }
 

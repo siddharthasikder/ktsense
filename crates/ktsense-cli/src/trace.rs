@@ -407,15 +407,21 @@ impl<'a> Session<'a> {
         name_position(&absolute, caller.line, name)
     }
 
-    /// Where to ask the engine about the resolved declaration. The engine's own column is not
-    /// trusted: on a cold cache its command-mode `find` takes a text-search path and has been
-    /// observed to report the column of the keyword before the name (`val CallLogging` at the
-    /// `v`), and a references request there answers with every use of the keyword, 14,702 sites on
-    /// ktor instead of 31. The name is located on the reported line instead, and the engine's
-    /// column is used only when the name cannot be found there.
+    /// Where to ask the engine about the resolved declaration: the candidate's own position, which is
+    /// already the declaration name's 1-based character column rather than the engine's raw one.
+    ///
+    /// Both producers relocate it before it arrives, `ktsense_lsp::SymbolResolver::find` for
+    /// command mode and the daemon's warm lookup for a routed trace, each against the column its own
+    /// engine answer reported. That is what makes the two paths agree, and it is also the only place
+    /// the reported column exists: relocating again here would have to do it without one and would
+    /// take the leftmost occurrence, which on a line like
+    /// `public value class TypeOfService(public val value: UByte)` is the soft keyword rather than the
+    /// declared property. The engine's own column is not trusted directly either: on a cold cache its
+    /// command-mode `find` takes a text-search path and has been observed to report the column of the
+    /// keyword before the name (`val CallLogging` at the `v`), and a references request there answers
+    /// with every use of the keyword, 14,702 sites on ktor instead of 31.
     fn declaration_position(&self, candidate: &SymbolCandidate) -> FilePosition {
-        name_position(Path::new(&candidate.file), candidate.line, &candidate.name)
-            .unwrap_or_else(|| candidate.to_file_position())
+        candidate.to_file_position()
     }
 
     fn sites(&mut self, locations: &[SiteLocation]) -> Vec<Location> {
@@ -448,6 +454,11 @@ impl<'a> Session<'a> {
 /// The zero-based LSP position of the first whole-word occurrence of `name` on 1-based `line` of
 /// the file at `path`, or `None` when the file cannot be read or the name is not on that line. The
 /// whole-word search is centralized in `ktsense-lsp` so the resolver and this command agree.
+///
+/// Used for a caller declaration reached by walking the report, which the engine never located by
+/// itself, so there is no reported column to disambiguate a name that appears twice on that line and
+/// the leftmost occurrence is the only available answer. A resolved candidate carries its own
+/// relocated column and goes through [`Session::declaration_position`] instead.
 fn name_position(path: &Path, line: u32, name: &str) -> Option<FilePosition> {
     let column = ktsense_lsp::name_column(path, line, name)?;
     Some(FilePosition {
