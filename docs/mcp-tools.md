@@ -25,9 +25,13 @@ this order:
 The marker KT-31 shipped was `cost: fast | needs_index`, and both halves of it were wrong.
 
 `fast` was read as "needs no engine". It does not mean that. `check_kotlin_syntax` is a passthrough
-to `kmp-lsp check`: it waits for no index, but on a host with no engine installed it fails on every
-call. A marker that only distinguishes "index" from "no index" sends an agent down that path and
-lets it conclude the tool is broken. `find_kotlin_symbol` is the same shape, over `kmp-lsp find`.
+to `kmp-lsp check`: it waits for no index, but on a host where the engine is unavailable it fails on
+every call. Unavailable covers two cases a tool call cannot tell apart: no engine installed, and an
+engine installed that this host's loader refuses as platform-incompatible (the README's requirements
+and install sections carry the measured account). Either way the catalogue still lists and describes
+the tool, so the failure arrives on every call rather than as a tool that is missing. A marker that
+only distinguishes "index" from "no index" sends an agent down that path and lets it conclude the tool
+is broken. `find_kotlin_symbol` is the same shape, over `kmp-lsp find`.
 
 `fast` was also read as "cheap", and KT-38 measured that as false. `analyze_kotlin_dependencies`
 needs neither engine nor index and takes about 1.7 seconds on ktor's 1861 files, because it parses

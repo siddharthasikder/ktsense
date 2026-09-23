@@ -80,7 +80,11 @@ that `check` needs the engine even though it does not wait for an index: it is a
 engine's own syntax checker. ktsense looks for the engine in three places in order:
 `KTSENSE_LSP_PATH`, then `libexec/kmp-lsp` beside the binary's own directory, then `kmp-lsp` on
 `PATH`. An override naming a file that does not exist does not fail; discovery falls through to
-`PATH`, so a typo silently gets you whichever engine is installed.
+`PATH`, so a typo silently gets you whichever engine is installed. Discovery finding the engine is not
+the same as this host being able to run it: a Linux host whose loader refuses the bundled,
+glibc-linked engine behaves like a host with none installed, and `status` reports an unrunnable engine
+as unavailable exactly as it reports a missing one. The glibc note in Install above is the measured
+account of which commands still answer there.
 
 **ripgrep.** This one is easy to miss because nothing announces it. The engine's reference search
 execs `rg`, and without it the search does not fail, it answers nothing. Measured on
