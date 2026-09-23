@@ -49,18 +49,36 @@ highest version reference, from the single symbol `statx`, and the companion `li
 records a higher floor of `GLIBC_2.34`. On an older host, build an engine for it and point
 `KTSENSE_LSP_PATH` at that. macOS is unaffected (KT-72).
 
-### Homebrew (not yet available)
-
-`Formula/ktsense.rb` in this repository is the intended install path:
+### Homebrew
 
 ```
 brew tap siddharthasikder/ktsense
+brew trust siddharthasikder/ktsense
 brew install ktsense
 ```
 
-**The tap is not published yet, so those two commands do not work today.** The formula is written and
-points at the `v0.0.1-rc.2` assets, but publishing the tap and proving an install end to end is
-outstanding work (KT-45). Until then, use a prerelease tarball or build from source.
+**The middle step is not optional on current Homebrew, and it is the step the two-command version of
+these instructions used to omit.** Measured on Homebrew 7.0.6: the tap clones, and then an
+unqualified `brew install ktsense` refuses the formula as untrusted and names the two ways to grant
+trust, either `brew trust --formula siddharthasikder/ktsense/ktsense` for this formula alone or
+`brew trust siddharthasikder/ktsense` for the whole tap. After that the same unqualified install
+succeeds, fetching the published `v0.0.1-rc.2` artifact, and `brew test` and `brew audit --strict`
+both pass (KT-45).
+
+That refusal is Homebrew's own safety decision about non-official taps, not a ktsense requirement.
+Granting trust says you have read `Formula/ktsense.rb` and the repository serving it and accept what
+they will run on your machine, so read them first. The record is written to `~/.homebrew/trust.json`,
+or under `$XDG_CONFIG_HOME/homebrew/` when that variable is set.
+
+Removing it all again, trust record included:
+
+```
+brew uninstall ktsense
+brew untrust --tap siddharthasikder/ktsense
+brew untap siddharthasikder/ktsense
+```
+
+A prerelease tarball remains the alternative if you would rather not add a tap at all.
 
 ### From source
 
