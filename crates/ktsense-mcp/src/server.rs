@@ -852,6 +852,12 @@ const INSTRUCTIONS: &str = "Kotlin code understanding for agents.\n\n\
      `check_kotlin_syntax` use the engine's command mode, which is not version-guarded.\n\n\
      Every result carries the answer as Markdown text plus `structuredContent` listing the files \
      and lines that answer cites, so following a result up needs no parsing of the prose.\n\n\
+     Pick the tool by the question. Several terms or a call-site pattern: `search_kotlin_text` with \
+     a `path`, since an unscoped search answers several times larger. One guard or branch inside a \
+     body: `explain_kotlin_symbol` with `match`. Callers of, or subtypes of, one declaration: \
+     `trace_kotlin_symbol` with a `Type.member` name. Files of a kind: `get_kotlin_repo_map` with \
+     `compact` and `path`. A partial name: `find_kotlin_symbol` with `contains`. A single literal \
+     in a file you already know is answered more cheaply by a plain text search.\n\n\
      Resolution is syntactic, never type-checked. A result is a candidate, not a proof, and type \
      errors are the compiler's job.";
 

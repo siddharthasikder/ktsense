@@ -20,15 +20,23 @@ the reference index carry a marker saying how complete that index was. Take both
 
 | Your question | Tool | Cost |
 |---|---|---|
-| What is this file's API surface? | `get_kotlin_outline` | fast |
-| Where is `Foo` declared? | `find_kotlin_symbol` | needs index |
-| Who calls or implements `Foo`? | `trace_kotlin_symbol` | needs index |
+| What is this file's API surface? (annotations and internals on request) | `get_kotlin_outline` | fast |
+| Where is `Foo` declared? A partial name such as every `*Handler`? | `find_kotlin_symbol` (`contains` for partial names) | needs index |
+| Who calls `Type.member`, or what extends or implements `Type`, Java included? | `trace_kotlin_symbol` | needs index |
 | What depends on what? Are there cycles? | `analyze_kotlin_dependencies` | fast |
-| I have never seen this repository | `get_kotlin_repo_map` | fast |
+| I have never seen this repository, or I want the files under one path | `get_kotlin_repo_map` (`compact` with `path` or `focus`) | fast |
 | Did my edit parse? | `check_kotlin_syntax` | fast |
-| Give me everything about `Foo` in one bundle | `explain_kotlin_symbol` | needs index |
-| Where does a regex or several terms appear as text (Kotlin and Java)? | `search_kotlin_text` | fast |
+| Give me everything about `Foo` in one bundle, or one branch of its body | `explain_kotlin_symbol` (`only` and `match` to narrow it) | needs index |
+| Where do several terms or a call-site pattern appear as text (Kotlin and Java)? | `search_kotlin_text` (pass `path`) | fast |
 | Is the index complete yet? | `ktsense_status` | fast |
+
+Picking the right tool matters more than any single tool. A 2026-10-04 replay of 107 questions real
+agent sessions had asked found that 28 of 41 ktsense losses were the session choosing a tool that
+could not answer the question. The common misses: asking `trace` or `find` about several terms at
+once, where `search_kotlin_text` answers; reading a whole `explain_kotlin_symbol` bundle to find one
+guard, where `match` returns just those lines; and searching without `path`, which made answers
+several times larger than a scoped text search. For one literal you can already spell in a file you
+already know, a plain text search stays the smaller answer.
 
 The markers say whether a tool waits for the reference index, not whether it needs the engine binary.
 A tool marked fast answers without waiting for an index and stays cheap to call repeatedly. A tool

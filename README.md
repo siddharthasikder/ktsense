@@ -40,14 +40,25 @@ file or a module arrives without the bodies. Specifically:
 
 | Question shape | Better tool | Why |
 |---|---|---|
-| Where is this exactly-named declaration | `grep` | measured: one call, no false positives |
-| Several concepts at once, or a text hit attributed to its declaration | `ktsense grep` | hits grouped by file and enclosing declaration, labelled production/test and code/comment/string; count equals `rg -c` |
-| What does this file or module declare, without bodies | `outline` | measured 85% to 89% fewer bytes than the source |
+| One literal you can spell, in a file you already know | `rg -n` | replay: 62 to 317 B where the smallest ktsense answer was about 240 B |
+| Where is this exactly-named declaration | `grep`, or `symbols` when the name is common | measured: one call, no false positives; `symbols` qualifies every candidate |
+| Several terms or call sites at once | `ktsense grep 'a\|b' --path <dir>` | hits grouped by file and enclosing declaration across Kotlin and Java, count equals `rg -c`; pass `--path`, because unscoped answers ran 3x to 8x the size of a scoped `rg` |
+| One guard, branch or line inside a long body | `context Type.member --only source --match <regex>` | the matched lines, numbered, under one location line |
+| Who calls this, or what breaks if it changes | `trace Type.member` | callers by enclosing declaration, production before tests; the dotted name avoids the ambiguous-name round trip |
+| What extends or implements this type, Java included | `trace <Type>` | direct and transitive subtypes with `via <parent>` |
+| What does this file declare, without bodies | `outline` (`--annotations` for DI wiring, `--private` for internals) | measured 85% to 89% fewer bytes than the source |
+| A partial name, such as every `*Handler` or a `customerId` property | `symbols --contains` | ranked, capped, constructor properties included |
+| Files of a kind, or declarations matching a name | `map --compact --path <segment>`, `map --compact --focus <regex>` | stops at what matched rather than filling the budget |
 | Orient me in an unfamiliar repository | `map` | one answer inside a token budget you set |
 | What imports what, and are there cycles | `deps` | an import graph, not a pile of matches |
-| Who implements this interface, or calls this, across files | `trace` | reference index, rather than a text match per call site |
-| This name is ambiguous | `symbols`, `trace` | every candidate is listed rather than one guessed |
+| A name nothing here declares: a library call, a Lombok accessor, a generated wrapper | `trace <name>` | text references across Kotlin and Java, each under its enclosing declaration; build first if the code is generated |
+| This name is ambiguous | `symbols`, `trace` | every candidate is listed; paste the suggested `--pick` on its own |
 | Did my edit parse | `check` | the engine's own checker, before the next build |
+
+The rows marked replay come from re-running all 107 questions real agent sessions had recorded
+through `kt-bench`, both arms, on build 6e747a5 (2026-10-04). With the command each session had
+chosen, ktsense won 44, tied 23 and lost 37 (3 neither). 28 of those losses were a command that could
+not answer the question; with the command this table now names, 9 became ktsense wins and 5 ties.
 
 Two honest limits on that table. The evaluation did **not** test the budgeted map, the ranked outline
 of an unfamiliar module, or a symbol ambiguous enough that a text search returns a hundred candidates,
