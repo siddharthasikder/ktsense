@@ -401,6 +401,15 @@ impl CommandError {
         }
     }
 
+    /// A declaration lookup found nothing, with the KT-104 generated-aware wording: whether
+    /// generated sources were searched or are absent and the build should be run.
+    fn no_symbol_scoped(query: &str, root: &Path) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: {}", no_symbol_message_scoped(query, root)),
+        }
+    }
+
     fn pick_missed(pick: &str) -> Self {
         Self {
             exit: Exit::Failure,
@@ -417,6 +426,23 @@ fn no_symbol_message(query: &str) -> String {
         "no declaration named {query} in this workspace; library and dependency declarations are \
          not searched, so use a text search for external types"
     )
+}
+
+/// The generated-aware not-found wording a declaration lookup prints (KT-104). When no generated
+/// Kotlin sources exist under `root`, a name the lookup could not find might simply not have been
+/// generated yet, so the message says so and points at the build; when generated sources do exist
+/// they were searched, so the message says that instead. Shared by `symbols`, `trace` and `context`
+/// so the three word a missing generated declaration the same way.
+pub(crate) fn no_symbol_message_scoped(query: &str, root: &Path) -> String {
+    let base = no_symbol_message(query);
+    if collect_generated_kotlin_files(root).is_empty() {
+        format!(
+            "{base}. No generated Kotlin sources were found under build/generated, so if {query} \
+             is generated, run the build and retry"
+        )
+    } else {
+        format!("{base}. Generated Kotlin sources under build/generated were also searched")
+    }
 }
 
 /// A completed command: the text to print on stdout and the status the process should end with.
@@ -635,6 +661,13 @@ fn symbols(
         ktsense_core::last_segment(query),
     ))
     .map_err(|error| CommandError::passthrough(&error))?;
+    // The engine's `find` does not see generated sources under `build`, so a name it answers with
+    // nothing is resolved from the workspace's own syntax index, which does (KT-104). That fallback
+    // also carries the generated-aware not-found wording when it finds nothing either.
+    if candidates.is_empty() && matches!(filter, symbols::PickFilter::None) {
+        return symbols::present_exact_from_syntax_index(root, query, kind, limit, format)
+            .map(CommandOutcome::from);
+    }
     symbols::present_symbols(root, query, candidates, kind, limit, filter, format)
         .map(CommandOutcome::from)
 }
@@ -971,6 +1004,87 @@ fn read_child_paths(directory: &Path) -> Result<Vec<PathBuf>, CommandError> {
         .collect()
 }
 
+/// The build-output subdirectories that hold Kotlin a declaration lookup should read even though
+/// `build` itself is ignored for every other traversal. KSP writes `build/generated/ksp/...` and
+/// kapt `build/generated/source/kapt/...`, both under `build/generated`; some plugins use
+/// `build/generated-src`. All four acceptance paths are reached by descending into these two
+/// children of any `build` directory.
+const GENERATED_DIRS: &[&str] = &["generated", "generated-src"];
+
+/// Every generated Kotlin file under `root`: a `.kt` beneath a module's `build/generated` or
+/// `build/generated-src`. This is the narrow opt-in walk the card calls for: `build` stays in
+/// [`IGNORED_DIRS`], so `map`, `outline` and `deps` never see a generated copy, and only a
+/// declaration lookup reaches here. It descends into `build` solely to reach the generated subtrees,
+/// never the compiled output beside them. Best effort: an unreadable directory contributes nothing
+/// rather than failing the lookup, because generated sources are a bonus a broken build must not
+/// deny the rest of the answer.
+pub(crate) fn collect_generated_kotlin_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        let Ok(mut children) = read_child_paths(&directory) else {
+            continue;
+        };
+        children.sort();
+        for child in children {
+            if !is_real_directory(&child) {
+                continue;
+            }
+            if is_build_dir(&child) {
+                collect_generated_under_build(&child, &mut files);
+            } else if depth < MAX_TRAVERSAL_DEPTH && !is_ignored_dir(&child) {
+                pending.push((child, depth + 1));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Collects every `.kt` under the generated subtrees of one `build` directory, leaving the compiled
+/// output beside them untouched.
+fn collect_generated_under_build(build_dir: &Path, files: &mut Vec<PathBuf>) {
+    for generated in GENERATED_DIRS {
+        collect_kotlin_under(&build_dir.join(generated), 0, files);
+    }
+}
+
+/// Appends every `.kt` beneath `directory`, recursively and symlink-free, bounded by the traversal
+/// depth. Unlike [`collect_kotlin_files`] this does not prune ignored directory names: a generated
+/// tree carries no `.git` or `target`, and a nested `build` under `build/generated` is still
+/// generated output worth reading.
+fn collect_kotlin_under(directory: &Path, depth: usize, files: &mut Vec<PathBuf>) {
+    if depth > MAX_TRAVERSAL_DEPTH {
+        return;
+    }
+    let Ok(children) = read_child_paths(directory) else {
+        return;
+    };
+    for child in children {
+        match fs::symlink_metadata(&child) {
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                collect_kotlin_under(&child, depth + 1, files)
+            }
+            Ok(metadata) if metadata.file_type().is_file() && has_kotlin_extension(&child) => {
+                files.push(child)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether `path` is a directory and not a symlink, so a walk neither follows a link out of the tree
+/// nor mistakes one for a real directory.
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
+}
+
+/// Whether a directory is a Gradle `build` output directory, the one place a declaration lookup
+/// descends past [`IGNORED_DIRS`] to reach generated sources.
+fn is_build_dir(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("build")
+}
+
 fn is_ignored_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1052,6 +1166,41 @@ mod tests {
             .collect();
 
         assert_eq!(walked, ["core/src/main/kotlin/shop/A.kt"]);
+    }
+
+    #[test]
+    fn the_generated_walk_reads_only_generated_subtrees_of_build_and_nothing_else() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("root");
+        let source = "package shop\n";
+        for relative in [
+            "core/src/main/kotlin/shop/Regular.kt",
+            "core/build/generated/ksp/main/kotlin/shop/GenKsp.kt",
+            "core/build/generated/source/kapt/main/shop/GenKapt.kt",
+            "app/build/generated-src/shop/GenSrc.kt",
+            "core/build/classes/kotlin/shop/Compiled.kt",
+            "core/build/tmp/shop/Scratch.kt",
+            ".git/hooks/shop/Hook.kt",
+        ] {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().expect("parent")).expect("create tree");
+            fs::write(&path, source).expect("write file");
+        }
+
+        let mut generated: Vec<String> = collect_generated_kotlin_files(&root)
+            .iter()
+            .map(|path| normalized_path(&root, path))
+            .collect();
+        generated.sort();
+
+        assert_eq!(
+            generated,
+            [
+                "app/build/generated-src/shop/GenSrc.kt",
+                "core/build/generated/ksp/main/kotlin/shop/GenKsp.kt",
+                "core/build/generated/source/kapt/main/shop/GenKapt.kt",
+            ]
+        );
     }
 
     #[test]

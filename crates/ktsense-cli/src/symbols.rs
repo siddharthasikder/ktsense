@@ -14,6 +14,7 @@
 //! filtering, and the presentation, so `trace` (KT-18) reuses the resolver without inheriting any
 //! of this policy.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use ktsense_core::{
@@ -51,6 +52,11 @@ pub(crate) struct ResolvedSymbol {
     /// and every non-data declaration keep byte-identical JSON.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) properties: Vec<NamedProperty>,
+    /// True for a declaration read from a generated-source directory under `build` (KT-104).
+    /// Rendered as a `(generated)` marker and, being defaulted-false and skipped when false, absent
+    /// from the JSON of every ordinary declaration so that answer stays byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) generated: bool,
 }
 
 impl ResolvedSymbol {
@@ -303,6 +309,9 @@ const DEFAULT_CONTAINS_LIMIT: usize = 50;
 /// candidates come from the workspace's own syntax skeletons, not the engine, so the answer states
 /// `source: syntax index` and never depends on the index being warm. A listing is the whole answer,
 /// so this exits successfully however many it found; only a query nothing contains is a failure.
+///
+/// The index includes generated sources under `build/generated` (KT-104), and a declaration from
+/// one is labelled `generated`.
 pub(crate) fn present_contained(
     root: &Path,
     query: &str,
@@ -310,18 +319,22 @@ pub(crate) fn present_contained(
     limit: Option<usize>,
     format: Format,
 ) -> Result<SymbolsOutcome, CommandError> {
-    let mut ranked = contained_declarations(query, gather_workspace_declarations(root)?);
+    let index = gather_syntax_index(root)?;
+    let mut ranked = contained_declarations(query, index.matches);
     if let Some(kind) = kind {
         ranked.retain(|found| kind_label(found.kind) == kind.label());
     }
     if ranked.is_empty() {
-        return Err(CommandError::no_symbol(query));
+        return Err(CommandError::no_symbol_scoped(query, root));
     }
 
     let total = ranked.len();
     let shown = limit.unwrap_or(DEFAULT_CONTAINS_LIMIT).min(total);
     ranked.truncate(shown);
-    let resolved: Vec<ResolvedSymbol> = ranked.into_iter().map(resolved_from_match).collect();
+    let resolved: Vec<ResolvedSymbol> = ranked
+        .into_iter()
+        .map(|found| resolved_from_match(found, &index.generated))
+        .collect();
 
     let text = match format {
         Format::Md => contains_markdown(query, &resolved, total - shown),
@@ -335,7 +348,60 @@ pub(crate) fn present_contained(
     })
 }
 
-fn resolved_from_match(found: SymbolMatch) -> ResolvedSymbol {
+/// The exact-name fallback for a `symbols <name>` the engine answered with nothing. The engine
+/// (kmp-lsp `find`) does not see generated sources under `build`, so this resolves the name from the
+/// workspace's own syntax index, which does (KT-104). The answer states `source: syntax index` and
+/// labels any generated declaration `generated`; a name nothing declares, even in generated sources,
+/// is the scoped not-found answer, which says whether generated code was searched or is absent.
+pub(crate) fn present_exact_from_syntax_index(
+    root: &Path,
+    query: &str,
+    kind: Option<KindFilter>,
+    limit: Option<usize>,
+    format: Format,
+) -> Result<SymbolsOutcome, CommandError> {
+    let index = gather_syntax_index(root)?;
+    let mut exact: Vec<SymbolMatch> = index
+        .matches
+        .into_iter()
+        .filter(|found| found.simple_name == query)
+        .collect();
+    exact.sort_by(|left, right| {
+        (&left.qualified_name, &left.path, left.line).cmp(&(
+            &right.qualified_name,
+            &right.path,
+            right.line,
+        ))
+    });
+    if let Some(kind) = kind {
+        exact.retain(|found| kind_label(found.kind) == kind.label());
+    }
+    if exact.is_empty() {
+        return Err(CommandError::no_symbol_scoped(query, root));
+    }
+
+    let total = exact.len();
+    let shown = limit.unwrap_or(DEFAULT_CONTAINS_LIMIT).min(total);
+    exact.truncate(shown);
+    let resolved: Vec<ResolvedSymbol> = exact
+        .into_iter()
+        .map(|found| resolved_from_match(found, &index.generated))
+        .collect();
+
+    let text = match format {
+        Format::Md => contains_markdown(query, &resolved, total - shown),
+        Format::Json => contains_json(&resolved, total - shown)?,
+        Format::Dot => return Err(CommandError::unsupported_format("symbols")),
+    };
+    Ok(SymbolsOutcome {
+        text,
+        exit: Exit::Success,
+        stderr: None,
+    })
+}
+
+fn resolved_from_match(found: SymbolMatch, generated: &HashSet<String>) -> ResolvedSymbol {
+    let is_generated = generated.contains(&found.path);
     ResolvedSymbol {
         fqn: found.qualified_name,
         kind: kind_label(found.kind).to_string(),
@@ -345,32 +411,54 @@ fn resolved_from_match(found: SymbolMatch) -> ResolvedSymbol {
         local: false,
         entries: Vec::new(),
         properties: Vec::new(),
+        generated: is_generated,
     }
 }
 
-/// Every named declaration in the workspace's Kotlin sources, as [`SymbolMatch`] values ready to
-/// rank. It walks the same tree `map` does, so build, target and bin copies are skipped; an
-/// unreadable or unparseable file is dropped rather than aborting the search.
-fn gather_workspace_declarations(root: &Path) -> Result<Vec<SymbolMatch>, CommandError> {
+/// The workspace's syntax index: every named declaration in its Kotlin sources as a [`SymbolMatch`],
+/// plus the display paths that came from a generated-source directory so a row can be labelled. It
+/// walks the same production tree `map` does (so `build`, `target` and `bin` are skipped), then adds
+/// the narrow generated opt-in walk on top (KT-104). An unreadable or unparseable file is dropped
+/// rather than aborting the search.
+struct SyntaxIndex {
+    matches: Vec<SymbolMatch>,
+    generated: HashSet<String>,
+}
+
+fn gather_syntax_index(root: &Path) -> Result<SyntaxIndex, CommandError> {
     let mut matches = Vec::new();
+    let mut generated = HashSet::new();
     for path in crate::collect_kotlin_files(root)? {
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let display = normalized_path(root, &path);
-        let Ok(skeleton) = ktsense_syntax::extract(display.clone(), &source) else {
-            continue;
-        };
-        let mut ancestors = Vec::new();
-        gather_declarations(
-            skeleton.package.as_deref(),
-            &display,
-            &skeleton.declarations,
-            &mut ancestors,
-            &mut matches,
-        );
+        collect_file_declarations(root, &path, &mut matches);
     }
-    Ok(matches)
+    for path in crate::collect_generated_kotlin_files(root) {
+        let before = matches.len();
+        collect_file_declarations(root, &path, &mut matches);
+        if matches.len() > before {
+            generated.insert(normalized_path(root, &path));
+        }
+    }
+    Ok(SyntaxIndex { matches, generated })
+}
+
+/// Appends every named declaration of one file to `out`. A file that cannot be read or parsed
+/// contributes nothing, so one broken file never denies the rest of the index.
+fn collect_file_declarations(root: &Path, path: &Path, out: &mut Vec<SymbolMatch>) {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let display = normalized_path(root, path);
+    let Ok(skeleton) = ktsense_syntax::extract(display.clone(), &source) else {
+        return;
+    };
+    let mut ancestors = Vec::new();
+    gather_declarations(
+        skeleton.package.as_deref(),
+        &display,
+        &skeleton.declarations,
+        &mut ancestors,
+        out,
+    );
 }
 
 fn gather_declarations(
@@ -523,6 +611,7 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
         local: false,
         entries: Vec::new(),
         properties: Vec::new(),
+        generated: false,
     };
     let Ok(source) = std::fs::read_to_string(&candidate.file) else {
         return bare();
@@ -544,6 +633,7 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
             local: false,
             entries: Vec::new(),
             properties: Vec::new(),
+            generated: false,
         },
         None => local_declaration(&display, &source, candidate).unwrap_or_else(bare),
     }
@@ -572,6 +662,7 @@ fn local_declaration(
         local: true,
         entries: Vec::new(),
         properties: Vec::new(),
+        generated: false,
     })
 }
 
@@ -702,17 +793,30 @@ fn rows(resolved: &[ResolvedSymbol]) -> Vec<String> {
     resolved
         .iter()
         .map(|symbol| {
-            let kind = if symbol.local {
-                format!("{} (local)", symbol.kind)
-            } else {
-                symbol.kind.clone()
-            };
             format!(
                 "{}  {}  {}:{}  {}",
-                symbol.fqn, kind, symbol.file, symbol.line, symbol.signature
+                symbol.fqn,
+                kind_with_markers(symbol),
+                symbol.file,
+                symbol.line,
+                symbol.signature
             )
         })
         .collect()
+}
+
+/// The kind column with its markers: `(local)` for a declaration inside a body and `(generated)`
+/// for one read from a generated-source directory. Both can hold at once in principle, so each is
+/// appended independently rather than chosen between.
+fn kind_with_markers(symbol: &ResolvedSymbol) -> String {
+    let mut kind = symbol.kind.clone();
+    if symbol.local {
+        kind.push_str(" (local)");
+    }
+    if symbol.generated {
+        kind.push_str(" (generated)");
+    }
+    kind
 }
 
 fn symbols_json(resolved: &[ResolvedSymbol]) -> Result<String, CommandError> {

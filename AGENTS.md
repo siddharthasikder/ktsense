@@ -67,6 +67,14 @@ and compression testable from hand-built values.
   the name is not there (KT-24, 2026-09-18).
 - A `find` that matches nothing **exits 0 with empty output**. Absence cannot be read from the exit
   status; ktsense supplies its own non-zero for "no such symbol".
+- **The engine does not index generated sources under `build`.** `find` execs `rg`, which honours
+  `.gitignore`, and a real Gradle project gitignores `build`, so KSP and kapt output under
+  `build/generated/**` and `build/generated-src/**` is invisible to an engine lookup. The default
+  traversal ignores `build` wholesale as well (so `map`, `outline` and `deps` never double-count a
+  generated copy), so declaration lookups add a **narrow opt-in walk** that descends into `build`
+  only to reach those generated subtrees: `collect_generated_kotlin_files` in `ktsense-cli`. An exact
+  `symbols` the engine misses falls back to that syntax index and labels the row `generated`;
+  `symbols --contains` reads it directly (KT-104). Do not widen this by un-ignoring `build`.
 
 ## Platform limits
 

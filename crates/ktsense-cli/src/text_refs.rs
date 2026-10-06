@@ -34,7 +34,7 @@ pub(crate) fn not_found_outcome(
     command: &str,
 ) -> Result<CommandOutcome, CommandError> {
     let references = build_text_references(symbol, &collect_text_sites(root, symbol)?, limit);
-    let text = present(symbol, references, format, command)?;
+    let text = present(symbol, references, format, command, root)?;
     Ok(CommandOutcome {
         text,
         exit: NOT_FOUND_EXIT,
@@ -57,17 +57,18 @@ fn present(
     references: TextReferences,
     format: Format,
     command: &str,
+    root: &Path,
 ) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(format!(
             "{}\n\n{}",
-            crate::no_symbol_message(symbol),
+            crate::no_symbol_message_scoped(symbol, root),
             render_text_references_markdown(&references)
         )),
         Format::Json => crate::as_json(&NotFoundAnswer {
             found: false,
             symbol,
-            message: crate::no_symbol_message(symbol),
+            message: crate::no_symbol_message_scoped(symbol, root),
             text_references: references,
         }),
         Format::Dot => Err(CommandError::unsupported_format(command)),
@@ -75,26 +76,40 @@ fn present(
 }
 
 /// Every whole-word text match of `symbol` in the workspace's Kotlin sources, classified by the
-/// syntax node it falls in. A file that cannot be read is skipped rather than failing the scan, the
-/// same rule the map and deps walks follow.
+/// syntax node it falls in. Generated sources under `build/generated` are scanned too, so a name
+/// that only a generated file uses still surfaces (KT-104). A file that cannot be read is skipped
+/// rather than failing the scan, the same rule the map and deps walks follow.
 fn collect_text_sites(root: &Path, symbol: &str) -> Result<Vec<Location>, CommandError> {
     let mut sites = Vec::new();
+    let mut scanned = std::collections::HashSet::new();
     for path in collect_kotlin_files(root)? {
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let matches = word_bounded_matches(&source, symbol);
-        if matches.is_empty() {
-            continue;
-        }
-        let coordinates: Vec<(u32, u32)> = matches.clone();
-        let kinds = ktsense_syntax::classify_reference_sites(&source, &coordinates);
-        let display = normalized_path(root, &path);
-        for ((line, _), kind) in matches.into_iter().zip(kinds) {
-            sites.push(Location::new(display.clone(), line).with_kind(kind));
+        scan_file_for_sites(root, &path, symbol, &mut sites);
+        scanned.insert(path);
+    }
+    for path in crate::collect_generated_kotlin_files(root) {
+        if scanned.insert(path.clone()) {
+            scan_file_for_sites(root, &path, symbol, &mut sites);
         }
     }
     Ok(sites)
+}
+
+/// Appends every classified whole-word site of `symbol` in one file. A file that cannot be read
+/// contributes nothing.
+fn scan_file_for_sites(root: &Path, path: &Path, symbol: &str, sites: &mut Vec<Location>) {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let matches = word_bounded_matches(&source, symbol);
+    if matches.is_empty() {
+        return;
+    }
+    let coordinates: Vec<(u32, u32)> = matches.clone();
+    let kinds = ktsense_syntax::classify_reference_sites(&source, &coordinates);
+    let display = normalized_path(root, path);
+    for ((line, _), kind) in matches.into_iter().zip(kinds) {
+        sites.push(Location::new(display.clone(), line).with_kind(kind));
+    }
 }
 
 /// Every whole-word occurrence of `symbol` in `source`, as a 1-based line and 1-based UTF-16 column,

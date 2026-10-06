@@ -235,6 +235,13 @@ Always pass `--root`, or run from inside the repository you mean. Upstream defau
 to the nearest enclosing `.git` directory rather than the working directory, and a root wider than you
 intended does not fail, it answers about the wrong code.
 
+A declaration lookup (`symbols` and `symbols --contains`) also reads generated Kotlin under a module's
+`build/generated` and `build/generated-src`, which the engine does not index, and labels those rows
+`generated`. An exact `symbols <name>` the engine answers with nothing falls back to the workspace's
+own syntax index, stating `source: syntax index`. `map` and `outline` keep their build-free view. When
+a lookup finds nothing, the answer says whether generated sources were searched or are absent and the
+build should be run.
+
 `--format json` is for tool chaining; the default Markdown is shaped for prompt injection.
 
 ### The warm daemon

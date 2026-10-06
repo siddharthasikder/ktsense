@@ -343,7 +343,9 @@ fn a_name_the_workspace_does_not_declare_lists_its_text_references() {
             String::new(),
             concat!(
                 "no declaration named mutableListOf in this workspace; library and dependency ",
-                "declarations are not searched, so use a text search for external types\n",
+                "declarations are not searched, so use a text search for external types. No ",
+                "generated Kotlin sources were found under build/generated, so if mutableListOf ",
+                "is generated, run the build and retry\n",
                 "\n",
                 "## Text references (1 site in 1 file)\n",
                 "precision: text match\n",

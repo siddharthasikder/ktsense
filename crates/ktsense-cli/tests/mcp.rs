@@ -199,7 +199,7 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
             json!(false),
             true,
             json!(true),
-            json!("ktsense: no declaration named ZzzNope in this workspace; library and dependency declarations are not searched, so use a text search for external types"),
+            json!("ktsense: no declaration named ZzzNope in this workspace; library and dependency declarations are not searched, so use a text search for external types. No generated Kotlin sources were found under build/generated, so if ZzzNope is generated, run the build and retry"),
             json!(false),
             true,
             Some(0),
