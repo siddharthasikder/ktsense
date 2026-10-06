@@ -123,11 +123,12 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
                 "context",
             )
         }
-        Traced::Resolved(report) => report,
+        Traced::Resolved(report) => *report,
     };
 
     let file = trace::skeleton_at(request.root, &report.definition.path);
     let source = trace::source_lines_at(request.root, &report.definition.path);
+    let annotated = trace::annotation_class_uses(request.root, &report.definition)?;
     let bundle = build_context(
         ContextInput {
             definition: report.definition.clone(),
@@ -137,6 +138,7 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
             source: source.as_deref(),
             source_match: request.source_match.as_ref().map(SourceMatch::as_core),
             callers: report.direct_callers(),
+            annotated: &annotated,
             implementors: &report.implementors,
             budget: request.budget,
         },

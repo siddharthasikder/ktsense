@@ -238,8 +238,8 @@ enum Command {
         #[arg(long, default_value_t = 2000)]
         budget: usize,
         /// Render only these comma-separated sections (source, callers, implementors, outline)
-        /// and spend the budget on them alone; the declaration line is always shown. Omit for the
-        /// full bundle.
+        /// and spend the budget on them alone; the declaration line is always shown. An
+        /// annotation's annotated declarations belong to callers. Omit for the full bundle.
         #[arg(long, value_enum, value_delimiter = ',')]
         only: Vec<ContextOnly>,
         /// Show only the Source lines matching this regular expression, plus --around context

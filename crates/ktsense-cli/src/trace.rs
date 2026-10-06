@@ -28,8 +28,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ktsense_core::{
-    build_trace, callers_of, render_trace_markdown, Definition, FileSkeleton, GroupingOptions,
-    IndexCompleteness, Location, RelatedDeclaration, SiteKind, TraceInput, TraceReport,
+    build_trace, callers_of, declaration_starting_at, render_trace_markdown, AnnotatedDeclaration,
+    AnnotatedDeclarations, Definition, FileSkeleton, GroupingOptions, IndexCompleteness, Location,
+    RelatedDeclaration, SiteKind, TraceInput, TraceReport,
 };
 use ktsense_daemon::{WarmEngine, WarmResolution};
 use ktsense_lsp::{
@@ -93,7 +94,7 @@ const UNBOUNDED_WAIT: Duration = Duration::from_secs(60 * 60 * 24);
 /// same ambiguity contract and drive the same session rather than each talking to the engine their
 /// own way.
 pub(crate) enum Traced {
-    Resolved(TraceReport),
+    Resolved(Box<TraceReport>),
     Ambiguous(CommandOutcome),
     /// The name resolved to no declaration under the root. `trace` and `context` answer this by
     /// listing where the name appears as text instead of failing with nothing (KT-94).
@@ -105,7 +106,7 @@ pub(crate) enum Traced {
 /// through [`resolve`].
 pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, CommandError> {
     match resolve(&request)? {
-        Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
+        Traced::Resolved(report) => present_resolved(*report, &request),
         Traced::Ambiguous(outcome) => Ok(outcome),
         Traced::NotFound => not_found(&request),
     }
@@ -123,7 +124,7 @@ pub(crate) async fn trace_warm(
     request: TraceRequest<'_>,
 ) -> Result<CommandOutcome, CommandError> {
     match resolve_warm(engine, &request).await? {
-        Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
+        Traced::Resolved(report) => present_resolved(*report, &request),
         Traced::Ambiguous(outcome) => Ok(outcome),
         Traced::NotFound => not_found(&request),
     }
@@ -155,7 +156,7 @@ pub(crate) async fn resolve_warm(
                 )
                 .await
                 .map_err(CommandError::engine)?;
-            Ok(Traced::Resolved(report))
+            Ok(Traced::Resolved(Box::new(report)))
         }
     }
 }
@@ -248,7 +249,7 @@ async fn traced(
             let report = collect_fresh(request, &candidate, definition)
                 .await
                 .map_err(CommandError::engine)?;
-            Ok(Traced::Resolved(report))
+            Ok(Traced::Resolved(Box::new(report)))
         }
     }
 }
@@ -301,7 +302,7 @@ async fn indexed_trace(
                 .run(client, &candidate, definition, request.depth, index)
                 .await
                 .map_err(CommandError::engine)?;
-            Ok(Traced::Resolved(report))
+            Ok(Traced::Resolved(Box::new(report)))
         }
     }
 }
@@ -718,6 +719,58 @@ fn read_source(root: &Path, path: &str) -> Option<String> {
         root.join(path)
     };
     fs::read_to_string(&absolute).ok()
+}
+
+/// Renders a resolved trace, first attaching the annotation use sites when the resolved declaration
+/// is an annotation class and at least one declaration carries it (KT-109). Shared by the fresh and
+/// warm resolved arms so a routed trace and an in-process one answer with the same bytes.
+fn present_resolved(
+    mut report: TraceReport,
+    request: &TraceRequest<'_>,
+) -> Result<CommandOutcome, CommandError> {
+    if let Some(annotated) = annotation_class_answer(request.root, &report.definition)? {
+        report = report.with_annotated(annotated);
+    }
+    present(&report, request.format).map(CommandOutcome::success)
+}
+
+/// The annotation use sites a resolved trace lists, or `None` when the resolved declaration is not
+/// an annotation class or nothing carries it. The non-empty guard keeps a trace of an annotation
+/// used nowhere byte-identical to one before this listing existed.
+fn annotation_class_answer(
+    root: &Path,
+    definition: &Definition,
+) -> Result<Option<AnnotatedDeclarations>, CommandError> {
+    let uses = annotation_class_uses(root, definition)?;
+    let name = ktsense_core::last_segment(&definition.qualified_name);
+    Ok((!uses.is_empty()).then(|| ktsense_core::build_annotated(name, &uses)))
+}
+
+/// Every declaration the resolved annotation class is written on, or an empty list when the resolved
+/// declaration is not an annotation class. Shared with `context`, so the two commands decide the
+/// same way whether a symbol is an annotation and scan for the same sites.
+pub(crate) fn annotation_class_uses(
+    root: &Path,
+    definition: &Definition,
+) -> Result<Vec<AnnotatedDeclaration>, CommandError> {
+    if !is_annotation_class(root, definition) {
+        return Ok(Vec::new());
+    }
+    crate::text_refs::collect_annotation_uses(
+        root,
+        ktsense_core::last_segment(&definition.qualified_name),
+    )
+}
+
+/// Whether the resolved declaration is an `annotation class`, read from its own file's skeleton. A
+/// file that cannot be read or parsed, or that declares nothing on the definition line, is answered
+/// `false`, so a trace that cannot confirm an annotation lists no use sites rather than guessing.
+fn is_annotation_class(root: &Path, definition: &Definition) -> bool {
+    let Some(skeleton) = skeleton_at(root, &definition.path) else {
+        return false;
+    };
+    declaration_starting_at(&skeleton, definition.line)
+        .is_some_and(|declaration| declaration.is_annotation_class())
 }
 
 fn present(report: &TraceReport, format: Format) -> Result<String, CommandError> {

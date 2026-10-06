@@ -5,9 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod annotations;
 pub mod classify;
 pub mod extract;
 
+pub use annotations::annotated_declarations;
 pub use classify::classify_reference_sites;
 pub use extract::{extract, locate_local, LocalDeclaration};
 

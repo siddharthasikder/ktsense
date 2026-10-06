@@ -24,6 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::annotated::AnnotatedDeclaration;
 use crate::budget::emit_within_budget;
 use crate::references::declaration_span_at;
 use crate::render::{context_caller_line, related_line, render_skeleton, RenderOptions};
@@ -83,6 +84,13 @@ impl<T> ContextSection<T> {
     /// Everything the section had to offer, whether or not it fit.
     pub fn available(&self) -> usize {
         self.items.len() + self.omitted
+    }
+
+    /// Whether the section carries nothing at all: no items and nothing dropped. The annotated
+    /// section is left out of the JSON in this case, so a non-annotation bundle serializes exactly
+    /// as it did before this section existed (KT-109).
+    pub fn is_absent(&self) -> bool {
+        self.items.is_empty() && self.omitted == 0
     }
 }
 
@@ -163,6 +171,11 @@ pub struct SymbolContext {
     /// The outline of the declaration's file, one balanced block per top-level declaration.
     pub file_outline: ContextSection<String>,
     pub callers: ContextSection<RelatedDeclaration>,
+    /// The declarations this symbol is written on as an annotation, present only when it resolved to
+    /// an annotation class and at least one declaration carries it (KT-109). Left out of the JSON
+    /// when absent, so a non-annotation bundle serializes exactly as before.
+    #[serde(skip_serializing_if = "ContextSection::is_absent")]
+    pub annotated: ContextSection<AnnotatedDeclaration>,
     pub implementors: ContextSection<RelatedDeclaration>,
     pub budget: usize,
     /// Conservative upper bound on the tokens the emitted content occupies, as
@@ -184,6 +197,7 @@ impl SymbolContext {
                 .map_or(0, |matched| matched.omitted_lines)
             + self.file_outline.omitted
             + self.callers.omitted
+            + self.annotated.omitted
             + self.implementors.omitted
     }
 }
@@ -204,6 +218,9 @@ pub struct ContextInput<'a> {
     /// bundle carries a [`MatchedSource`] instead of a [`SourceSection`].
     pub source_match: Option<SourceMatch<'a>>,
     pub callers: &'a [RelatedDeclaration],
+    /// The declarations the symbol is written on as an annotation, when it resolved to an annotation
+    /// class; empty otherwise. Offered to the budget after callers and before implementors (KT-109).
+    pub annotated: &'a [AnnotatedDeclaration],
     pub implementors: &'a [RelatedDeclaration],
     pub budget: usize,
 }
@@ -228,6 +245,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
         matched_source,
         file_outline: section(kept.file_outline, available.file_outline),
         callers: section(kept.callers, available.callers),
+        annotated: section(kept.annotated, available.annotated),
         implementors: section(kept.implementors, available.implementors),
         definition: input.definition,
         budget: input.budget,
@@ -402,6 +420,7 @@ enum Payload {
     SourceLine(SourceCandidate),
     FileOutline(String),
     Caller(RelatedDeclaration),
+    Annotated(AnnotatedDeclaration),
     Implementor(RelatedDeclaration),
 }
 
@@ -445,6 +464,10 @@ fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>
             text: context_caller_line(caller),
             payload: Payload::Caller(caller.clone()),
         }));
+        units.extend(input.annotated.iter().map(|declaration| Unit {
+            text: crate::render::annotated_context_line(declaration),
+            payload: Payload::Annotated(declaration.clone()),
+        }));
     }
     if input.sections.implementors {
         units.extend(input.implementors.iter().map(|implementor| Unit {
@@ -484,6 +507,7 @@ struct Available {
     source: usize,
     file_outline: usize,
     callers: usize,
+    annotated: usize,
     implementors: usize,
 }
 
@@ -494,6 +518,7 @@ impl Available {
             source: 0,
             file_outline: 0,
             callers: 0,
+            annotated: 0,
             implementors: 0,
         };
         for unit in units {
@@ -502,6 +527,7 @@ impl Available {
                 Payload::SourceLine(_) => counts.source += 1,
                 Payload::FileOutline(_) => counts.file_outline += 1,
                 Payload::Caller(_) => counts.callers += 1,
+                Payload::Annotated(_) => counts.annotated += 1,
                 Payload::Implementor(_) => counts.implementors += 1,
             }
         }
@@ -515,6 +541,7 @@ struct Kept {
     source: Vec<SourceCandidate>,
     file_outline: Vec<String>,
     callers: Vec<RelatedDeclaration>,
+    annotated: Vec<AnnotatedDeclaration>,
     implementors: Vec<RelatedDeclaration>,
 }
 
@@ -525,6 +552,7 @@ impl Kept {
             source: Vec::new(),
             file_outline: Vec::new(),
             callers: Vec::new(),
+            annotated: Vec::new(),
             implementors: Vec::new(),
         };
         for unit in units {
@@ -533,6 +561,7 @@ impl Kept {
                 Payload::SourceLine(candidate) => kept.source.push(candidate),
                 Payload::FileOutline(block) => kept.file_outline.push(block),
                 Payload::Caller(caller) => kept.callers.push(caller),
+                Payload::Annotated(declaration) => kept.annotated.push(declaration),
                 Payload::Implementor(implementor) => kept.implementors.push(implementor),
             }
         }
@@ -627,6 +656,7 @@ mod tests {
                 source: None,
                 source_match: None,
                 callers: &callers(),
+                annotated: &[],
                 implementors: &implementors(),
                 budget,
             },
@@ -744,6 +774,7 @@ mod tests {
                 source: None,
                 source_match: None,
                 callers: &callers(),
+                annotated: &[],
                 implementors: &implementors(),
                 budget: 10_000,
             },
@@ -819,6 +850,7 @@ mod tests {
                 source: Some(&source),
                 source_match: None,
                 callers: &[],
+                annotated: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -872,6 +904,7 @@ mod tests {
                 source: Some(&source),
                 source_match: None,
                 callers: &[],
+                annotated: &[],
                 implementors: &[],
                 budget,
             },
@@ -912,6 +945,7 @@ mod tests {
                 source: None,
                 source_match: None,
                 callers: &[],
+                annotated: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -946,6 +980,7 @@ mod tests {
                 source: Some(&source),
                 source_match: None,
                 callers: &callers(),
+                annotated: &[],
                 implementors: &implementors(),
                 budget: 10_000,
             },
@@ -1046,6 +1081,7 @@ mod tests {
                     around: 0,
                 }),
                 callers: &[],
+                annotated: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -1110,6 +1146,7 @@ mod tests {
                     around: 1,
                 }),
                 callers: &callers(),
+                annotated: &[],
                 implementors: &implementors(),
                 budget: 10_000,
             },
@@ -1154,6 +1191,7 @@ mod tests {
                 source: Some(&source),
                 source_match,
                 callers: &[],
+                annotated: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -1213,5 +1251,89 @@ mod tests {
                 (true, false, false),
             )
         );
+    }
+
+    fn annotated_sites() -> Vec<AnnotatedDeclaration> {
+        vec![
+            AnnotatedDeclaration::new("app/Reports.kt", 4, "app.SalesReport", DeclKind::Class),
+            AnnotatedDeclaration::new("app/Reports.kt", 8, "app.AuditReport", DeclKind::Class),
+        ]
+    }
+
+    /// When the symbol resolved to an annotation class, the bundle carries an `## Annotated` section
+    /// after the callers and before the implementors, counts its declarations, and stays within the
+    /// budget; a bundle given no annotation sites renders no such section (byte-identical default).
+    #[test]
+    fn the_annotated_section_sits_after_callers_within_budget_and_is_absent_when_empty() {
+        let file = repository_file();
+        let build_with = |sites: &[AnnotatedDeclaration]| {
+            build_context(
+                ContextInput {
+                    definition: definition(),
+                    index: IndexCompleteness::Complete,
+                    sections: ContextSections::all(),
+                    file: Some(&file),
+                    source: None,
+                    source_match: None,
+                    callers: &callers(),
+                    annotated: sites,
+                    implementors: &implementors(),
+                    budget: 10_000,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let with_sites = build_with(&annotated_sites());
+        let without = build_with(&[]);
+        let rendered = render_context_markdown(&with_sites);
+
+        let observed = (
+            with_sites.annotated.available(),
+            rendered.find("## Callers") < rendered.find("## Annotated"),
+            rendered.find("## Annotated") < rendered.find("## Implementors"),
+            rendered.contains("- app.SalesReport  class  app/Reports.kt:4"),
+            with_sites.token_upper_bound <= 10_000,
+            without.annotated.is_absent(),
+            render_context_markdown(&without).contains("## Annotated"),
+        );
+        assert_eq!(observed, (2, true, true, true, true, true, false));
+    }
+
+    /// An annotation's annotated declarations are its uses, so `--only` treats them as part of the
+    /// callers section: `--only callers` keeps them and `--only outline` leaves them out, as it does
+    /// every other section it was not asked for.
+    #[test]
+    fn only_shows_the_annotated_section_when_callers_are_asked_for() {
+        let file = repository_file();
+        let rendered_with = |sections: ContextSections| {
+            render_context_markdown(&build_context(
+                ContextInput {
+                    definition: definition(),
+                    index: IndexCompleteness::Complete,
+                    sections,
+                    file: Some(&file),
+                    source: None,
+                    source_match: None,
+                    callers: &callers(),
+                    annotated: &annotated_sites(),
+                    implementors: &implementors(),
+                    budget: 10_000,
+                },
+                &ByteRatioEstimator,
+            ))
+        };
+        let only = |callers: bool, outline: bool| ContextSections {
+            source: false,
+            outline,
+            callers,
+            implementors: false,
+        };
+
+        let observed = (
+            rendered_with(only(true, false)).contains("## Annotated"),
+            rendered_with(only(false, true)).contains("## Annotated"),
+        );
+
+        assert_eq!(observed, (true, false));
     }
 }

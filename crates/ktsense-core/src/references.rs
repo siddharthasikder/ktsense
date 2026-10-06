@@ -302,7 +302,7 @@ pub fn fully_qualified_enclosing(skeleton: &FileSkeleton, line: u32) -> Option<Q
 }
 
 /// The innermost declaration that starts exactly on `line`, when the skeleton has one.
-pub(crate) fn declaration_starting_at(skeleton: &FileSkeleton, line: u32) -> Option<&Declaration> {
+pub fn declaration_starting_at(skeleton: &FileSkeleton, line: u32) -> Option<&Declaration> {
     enclosing_chain(&skeleton.declarations, line, None)
         .into_iter()
         .rev()

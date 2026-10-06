@@ -430,11 +430,52 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
         append_usage_group(&mut out, group);
     }
 
+    if let Some(annotated) = &report.annotated {
+        if !annotated.is_empty() {
+            out.push('\n');
+            out.push_str(&render_annotated_markdown(annotated));
+        }
+    }
+
     out.push_str(
         "\nCallers are the declarations enclosing each reference site; the engine reports no call \
          hierarchy. Resolution is syntactic, not type-checked.\n",
     );
     out
+}
+
+/// Renders the declarations an annotation is written on (KT-109), grouped by file: each declaration
+/// as its fully-qualified name, kind and line, under the file that holds it. States
+/// `precision: syntax (matched by name)` because the attachment is a parse fact while the
+/// annotation's identity was matched by simple name, never resolved. Paths and names are neutralized
+/// on the way out like every other source-derived text.
+pub fn render_annotated_markdown(annotated: &crate::annotated::AnnotatedDeclarations) -> String {
+    let mut out = format!("## Annotated ({})\n", annotated.total);
+    out.push_str(&format!("precision: {}\n", annotated.precision));
+    for group in &annotated.groups {
+        out.push_str(&format!("\n{}\n", neutralize(&group.path)));
+        for member in &group.declarations {
+            out.push_str(&format!(
+                "- {}  {}  {}\n",
+                neutralize(&member.fqn),
+                annotated_kind_label(member.kind),
+                member.line
+            ));
+        }
+    }
+    out
+}
+
+/// The kind of an annotated declaration as a word for the listing: a declaration keyword where there
+/// is one, else the serde tag, so an enum entry or constructor still reads rather than printing an
+/// empty column.
+fn annotated_kind_label(kind: crate::skeleton::DeclKind) -> &'static str {
+    use crate::skeleton::DeclKind;
+    match kind {
+        DeclKind::EnumEntry => "enum entry",
+        DeclKind::Constructor => "constructor",
+        other => other.keyword(),
+    }
 }
 
 /// Renders the text-reference evidence for a name the workspace does not declare (KT-94): where the
@@ -595,6 +636,14 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
         append_context_lines(&mut out, &context.callers, context_caller_line);
     }
 
+    if context.annotated.available() > 0 {
+        out.push_str(&format!(
+            "\n## Annotated ({})\n",
+            context.annotated.available()
+        ));
+        append_context_lines(&mut out, &context.annotated, annotated_context_line);
+    }
+
     if context.sections.implementors {
         out.push_str(&format!(
             "\n## Implementors ({})\n",
@@ -713,10 +762,10 @@ fn append_context_blocks(out: &mut String, section: &ContextSection<String>, uni
 /// A list of related declarations, rendered by the same writer a trace uses, with the count the
 /// budget dropped. `- none` distinguishes "nothing found" from "nothing affordable". `line` renders
 /// each entry, so callers can carry a test label the trace conveys through a separate heading.
-fn append_context_lines(
+fn append_context_lines<T>(
     out: &mut String,
-    section: &ContextSection<RelatedDeclaration>,
-    line: impl Fn(&RelatedDeclaration) -> String,
+    section: &ContextSection<T>,
+    line: impl Fn(&T) -> String,
 ) {
     if section.items.is_empty() && section.omitted == 0 {
         out.push_str("- none\n");
@@ -764,6 +813,22 @@ fn append_caller_level(out: &mut String, level: &CallerLevel) {
         out.push_str(&format!("\n{test_heading} ({})\n", tests.len()));
         append_lines(out, &tests, |caller| related_line(caller));
     }
+}
+
+/// One annotated declaration as a `context` list line: its fully-qualified name, kind and location
+/// (KT-109). Carries the path inline because the context section is a flat list rather than
+/// grouped by file like the trace rendering, and is measured as the line the renderer emits so the
+/// budget never underestimates it.
+pub(crate) fn annotated_context_line(
+    declaration: &crate::annotated::AnnotatedDeclaration,
+) -> String {
+    format!(
+        "- {}  {}  {}:{}",
+        neutralize(&declaration.fqn),
+        annotated_kind_label(declaration.kind),
+        neutralize(&declaration.path),
+        declaration.line
+    )
 }
 
 /// One related declaration as a list line. Shared with [`crate::context`] so a caller reads

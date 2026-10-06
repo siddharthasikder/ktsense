@@ -238,6 +238,12 @@ impl Declaration {
         self
     }
 
+    /// True for an `annotation class`: a class carrying [`Modifier::Annotation`]. Decides whether
+    /// `trace` lists an annotation's use sites rather than its ordinary references (KT-109).
+    pub fn is_annotation_class(&self) -> bool {
+        self.kind == DeclKind::Class && self.modifiers.contains(&Modifier::Annotation)
+    }
+
     /// False only for a class Kotlin makes final: one that is not `open`, `abstract` or `sealed`.
     /// An `enum` class keeps entries with bodies as subclasses, and an `expect` class is completed
     /// by an `actual` elsewhere, so both count as subtypable. Every non-class kind is answered true,

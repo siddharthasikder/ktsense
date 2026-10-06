@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod annotated;
 pub mod budget;
 pub mod context;
 pub mod imports;
@@ -23,6 +24,10 @@ pub mod text_refs;
 pub mod text_search;
 pub mod trace;
 
+pub use annotated::{
+    build_annotated, AnnotatedDeclaration, AnnotatedDeclarations, AnnotatedGroup, AnnotatedMember,
+    ANNOTATION_PRECISION,
+};
 pub use budget::{emit_within_budget, BudgetedEmission};
 pub use context::{
     build_context, ContextInput, ContextSection, ContextSections, LineMatcher, MatchedLine,
@@ -32,13 +37,15 @@ pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportG
 pub use pick::{last_segment, match_pick, shortest_unique_suffix, PickMatch};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
-    fully_qualified_enclosing, group_references, is_test_source, EnclosingDeclaration,
-    GroupingOptions, Location, QualifiedEnclosing, Reference, ReferenceGroup, SiteKind,
+    declaration_starting_at, fully_qualified_enclosing, group_references, is_test_source,
+    EnclosingDeclaration, GroupingOptions, Location, QualifiedEnclosing, Reference, ReferenceGroup,
+    SiteKind,
 };
 pub use render::{
-    render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,
-    render_markdown, render_member_summary, render_skeleton, render_text_references_markdown,
-    render_text_search_markdown, render_trace_markdown, RenderOptions,
+    render_annotated_markdown, render_context_markdown, render_deps_dot, render_deps_markdown,
+    render_map_markdown, render_markdown, render_member_summary, render_skeleton,
+    render_text_references_markdown, render_text_search_markdown, render_trace_markdown,
+    RenderOptions,
 };
 pub use repo_map::{
     build_repo_map, FocusMatches, FocusSpec, MappedFile, NameMatcher, OmittedDirectory,

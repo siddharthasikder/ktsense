@@ -99,6 +99,11 @@ pub struct TraceReport {
     /// data so the answer accounts for every site (KT-83).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded_sites: Vec<ExcludedSite>,
+    /// The declarations this symbol is written on as an annotation, present only when the symbol
+    /// resolved to an annotation class and at least one declaration carries it (KT-109). Absent from
+    /// JSON otherwise, so a non-annotation trace serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotated: Option<crate::annotated::AnnotatedDeclarations>,
 }
 
 /// Everything `build_trace` needs, gathered by the caller from the engine and the parser.
@@ -127,6 +132,14 @@ impl TraceReport {
             .first()
             .map(|level| level.callers.as_slice())
             .unwrap_or_default()
+    }
+
+    /// Attaches the annotation use sites to the report, for a symbol that resolved to an annotation
+    /// class (KT-109). The caller attaches this only when at least one declaration carries the
+    /// annotation, so an annotation used nowhere leaves the report unchanged.
+    pub fn with_annotated(mut self, annotated: crate::annotated::AnnotatedDeclarations) -> Self {
+        self.annotated = Some(annotated);
+        self
     }
 }
 
@@ -162,6 +175,7 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
         sites: input.reference_sites.len(),
         usages,
         excluded_sites,
+        annotated: None,
     }
 }
 

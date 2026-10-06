@@ -14,7 +14,9 @@
 use std::path::Path;
 
 use ktsense_core::{
-    build_text_references, render_text_references_markdown, Location, TextReferences,
+    build_annotated, build_text_references, render_annotated_markdown,
+    render_text_references_markdown, AnnotatedDeclaration, AnnotatedDeclarations, Location,
+    TextReferences,
 };
 
 use crate::{collect_kotlin_files, normalized_path, CommandError, CommandOutcome, Exit, Format};
@@ -34,7 +36,16 @@ pub(crate) fn not_found_outcome(
     command: &str,
 ) -> Result<CommandOutcome, CommandError> {
     let references = build_text_references(symbol, &collect_text_sites(root, symbol)?, limit);
-    let text = present(symbol, references, format, command, root)?;
+    let uses = collect_annotation_uses(root, symbol)?;
+    let annotated = (!uses.is_empty()).then(|| build_annotated(symbol, &uses));
+    let text = present(
+        symbol,
+        annotated.as_ref(),
+        references,
+        format,
+        command,
+        root,
+    )?;
     Ok(CommandOutcome {
         text,
         exit: NOT_FOUND_EXIT,
@@ -43,32 +54,43 @@ pub(crate) fn not_found_outcome(
 }
 
 /// The not-found answer as `message` in JSON, absent otherwise, so a JSON consumer reads the same
-/// scope wording a Markdown reader does.
+/// scope wording a Markdown reader does. `annotated` carries the declarations the name is written on
+/// as an annotation when there are any, skipped otherwise so an undeclared name that annotates
+/// nothing serializes exactly as before (KT-109).
 #[derive(serde::Serialize)]
 struct NotFoundAnswer<'a> {
     found: bool,
     symbol: &'a str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotated: Option<&'a AnnotatedDeclarations>,
     text_references: TextReferences,
 }
 
 fn present(
     symbol: &str,
+    annotated: Option<&AnnotatedDeclarations>,
     references: TextReferences,
     format: Format,
     command: &str,
     root: &Path,
 ) -> Result<String, CommandError> {
     match format {
-        Format::Md => Ok(format!(
-            "{}\n\n{}",
-            crate::no_symbol_message_scoped(symbol, root),
-            render_text_references_markdown(&references)
-        )),
+        Format::Md => {
+            let mut out = crate::no_symbol_message_scoped(symbol, root);
+            out.push_str("\n\n");
+            if let Some(annotated) = annotated {
+                out.push_str(&render_annotated_markdown(annotated));
+                out.push('\n');
+            }
+            out.push_str(&render_text_references_markdown(&references));
+            Ok(out)
+        }
         Format::Json => crate::as_json(&NotFoundAnswer {
             found: false,
             symbol,
             message: crate::no_symbol_message_scoped(symbol, root),
+            annotated,
             text_references: references,
         }),
         Format::Dot => Err(CommandError::unsupported_format(command)),
@@ -110,6 +132,49 @@ fn scan_file_for_sites(root: &Path, path: &Path, symbol: &str, sites: &mut Vec<L
     for ((line, _), kind) in matches.into_iter().zip(kinds) {
         sites.push(Location::new(display.clone(), line).with_kind(kind));
     }
+}
+
+/// Every declaration in the workspace's Kotlin sources written with `@<annotation>`, found by the
+/// same traversal [`collect_text_sites`] uses, including generated sources (KT-104). Only files that
+/// mention the name as a whole word are parsed, so confirming the annotation stays cheap on a large
+/// repository where a handful of files carry it. The attachment itself is `ktsense-syntax`'s; this
+/// reads the files and defers to it, keeping the pure crate free of a parser and the filesystem.
+pub(crate) fn collect_annotation_uses(
+    root: &Path,
+    annotation: &str,
+) -> Result<Vec<AnnotatedDeclaration>, CommandError> {
+    let mut declarations = Vec::new();
+    let mut scanned = std::collections::HashSet::new();
+    for path in collect_kotlin_files(root)? {
+        scan_file_for_annotations(root, &path, annotation, &mut declarations);
+        scanned.insert(path);
+    }
+    for path in crate::collect_generated_kotlin_files(root) {
+        if scanned.insert(path.clone()) {
+            scan_file_for_annotations(root, &path, annotation, &mut declarations);
+        }
+    }
+    Ok(declarations)
+}
+
+/// Appends every declaration in one file written with `@<annotation>`. A file that cannot be read
+/// contributes nothing, and one that does not mention the name as a whole word is never parsed.
+fn scan_file_for_annotations(
+    root: &Path,
+    path: &Path,
+    annotation: &str,
+    declarations: &mut Vec<AnnotatedDeclaration>,
+) {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if word_bounded_matches(&source, annotation).is_empty() {
+        return;
+    }
+    let display = normalized_path(root, path);
+    declarations.extend(ktsense_syntax::annotated_declarations(
+        &display, &source, annotation,
+    ));
 }
 
 /// Every whole-word occurrence of `symbol` in `source`, as a 1-based line and 1-based UTF-16 column,
