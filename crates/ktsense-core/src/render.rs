@@ -424,6 +424,18 @@ fn append_focus_section(out: &mut String, map: &RepoMap) {
     }
 }
 
+/// The Markdown fence language for a definition's own source: `java` for a `.java` file, `kotlin`
+/// otherwise, so a Java signature or body is never fenced as Kotlin for a reader that highlights by
+/// it (KT-126). The engine resolves Kotlin, so a definition in a `.java` file is the only non-Kotlin
+/// case; a Kotlin path keeps `kotlin`, so Kotlin output is byte-identical.
+fn fence_language(path: &str) -> &'static str {
+    if path.ends_with(".java") {
+        "java"
+    } else {
+        "kotlin"
+    }
+}
+
 /// Renders a `trace` answer: the definition, then who implements it, who refers to it, and every
 /// site by file. The index marker comes first, before any list, because a reader who stops early
 /// must still have seen it: a `partial` answer is a lower bound, not the answer.
@@ -439,8 +451,9 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
     ));
     if !report.definition.signature.is_empty() {
         let fence = fence_for(&report.definition.signature);
+        let language = fence_language(&report.definition.path);
         out.push_str(&format!(
-            "\n{fence}kotlin\n{}\n{fence}\n",
+            "\n{fence}{language}\n{}\n{fence}\n",
             report.definition.signature
         ));
     }
@@ -710,6 +723,7 @@ fn trimmed_hit_line(source: &str) -> String {
 pub fn render_context_markdown(context: &SymbolContext) -> String {
     let one_fact = !context.sections.is_all() || context.matched_source.is_some();
     let matched = context.matched_source.is_some();
+    let language = fence_language(&context.definition.path);
     let mut out = format!("# Context: {}\n", neutralize(&context.symbol));
 
     if matched {
@@ -745,17 +759,17 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
             neutralize(&context.definition.path),
             context.definition.line
         ));
-        append_context_blocks(&mut out, &context.declaration, "signature");
+        append_context_blocks(&mut out, &context.declaration, "signature", language);
     }
 
-    append_source(&mut out, context);
+    append_source(&mut out, context, language);
 
     if context.sections.outline {
         out.push_str(&format!(
             "\n## File outline: {}\n",
             neutralize(&context.definition.path)
         ));
-        append_context_blocks(&mut out, &context.file_outline, "declaration");
+        append_context_blocks(&mut out, &context.file_outline, "declaration", language);
     }
 
     if context.sections.callers {
@@ -841,7 +855,7 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
 /// block as text rather than closing it. A budget that cut the body short says how many lines it
 /// dropped and the absolute range to read them from, and nothing is printed at all when the caller
 /// supplied no source.
-fn append_source(out: &mut String, context: &SymbolContext) {
+fn append_source(out: &mut String, context: &SymbolContext, language: &str) {
     if let Some(matched) = &context.matched_source {
         append_matched_source(out, context, matched);
         return;
@@ -853,7 +867,7 @@ fn append_source(out: &mut String, context: &SymbolContext) {
     if !source.lines.is_empty() {
         let body = source.lines.join("\n");
         let fence = fence_for(&body);
-        out.push_str(&format!("\n{fence}kotlin\n{body}\n{fence}\n"));
+        out.push_str(&format!("\n{fence}{language}\n{body}\n{fence}\n"));
     }
     if source.omitted_lines > 0 {
         let omitted_start = source.start_line + source.lines.len() as u32;
@@ -906,7 +920,12 @@ fn matched_body_text(matched: &MatchedSource) -> String {
 
 /// A fenced Kotlin section, or a line saying why it is empty. `unit` names what was dropped, so
 /// `3 declarations omitted` reads as the outline losing declarations rather than losing lines.
-fn append_context_blocks(out: &mut String, section: &ContextSection<String>, unit: &str) {
+fn append_context_blocks(
+    out: &mut String,
+    section: &ContextSection<String>,
+    unit: &str,
+    language: &str,
+) {
     if section.items.is_empty() {
         let reason = if section.omitted > 0 {
             format!(
@@ -922,7 +941,7 @@ fn append_context_blocks(out: &mut String, section: &ContextSection<String>, uni
     }
     let body = section.items.join("\n");
     let fence = fence_for(&body);
-    out.push_str(&format!("\n{fence}kotlin\n{body}\n{fence}\n"));
+    out.push_str(&format!("\n{fence}{language}\n{body}\n{fence}\n"));
     if section.omitted > 0 {
         out.push_str(&format!(
             "\nOmitted for budget: {}.\n",
@@ -1520,6 +1539,47 @@ mod tests {
     use super::*;
     use crate::skeleton::DeclKind;
     use crate::text_refs::{TextReferenceGroup, TextReferenceSite, TextReferences};
+
+    /// KT-126: a definition read from a `.java` file fences its signature as `java`, while a Kotlin
+    /// definition keeps `kotlin`, so a Java signature is never highlighted as Kotlin. Both renders are
+    /// checked at once; only the fence language differs, and the Kotlin case proves the default is
+    /// byte-unchanged.
+    #[test]
+    fn a_java_definition_fences_its_trace_signature_as_java_and_a_kotlin_one_as_kotlin() {
+        use crate::trace::{build_trace, Definition, TraceInput};
+        use crate::{GroupingOptions, Location};
+
+        let signature = "protected void executePartialChange(Request request)";
+        let report_for = |path: &str| {
+            build_trace(TraceInput {
+                definition: Definition {
+                    qualified_name: "executePartialChange".to_string(),
+                    path: path.to_string(),
+                    line: 42,
+                    signature: signature.to_string(),
+                },
+                index: IndexCompleteness::Complete,
+                definition_site: Location::new(path, 42),
+                implementation_sites: vec![],
+                reference_sites: vec![],
+                skeletons: &[],
+                options: GroupingOptions::default(),
+            })
+        };
+
+        let java = render_trace_markdown(&report_for("src/UpdateDocumentBase.java"));
+        let kotlin = render_trace_markdown(&report_for("app/Updater.kt"));
+
+        assert_eq!(
+            (
+                java.contains(&format!("```java\n{signature}\n```")),
+                java.contains("```kotlin"),
+                kotlin.contains(&format!("```kotlin\n{signature}\n```")),
+                kotlin.contains("```java"),
+            ),
+            (true, false, true, false)
+        );
+    }
 
     /// KT-112 trace rendering, over both cases in one table. A Java-declared definition gets the
     /// `## Callers (0 from Kotlin)` heading, the Java and Kotlin text-reference sections (the Kotlin

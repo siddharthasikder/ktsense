@@ -101,7 +101,7 @@ fn enclosing_intervals(source: &str) -> Vec<Interval> {
         match &tokens[index].token {
             Token::At => index = skip_annotation(&tokens, index + 1, &mut unit),
             Token::Ident(name) => {
-                unit.observe_ident(name);
+                unit.observe_ident(name, tokens[index].line);
                 index += 1;
             }
             Token::LParen => {
@@ -121,12 +121,16 @@ fn enclosing_intervals(source: &str) -> Vec<Interval> {
             }
             Token::LBrace => {
                 let named = unit.scope_name(paren_depth);
-                if let Some(name) = &named {
-                    named_stack.push(name.clone());
-                }
+                let open_line = match &named {
+                    Some(name) => {
+                        named_stack.push(name.clone());
+                        unit.start_line.unwrap_or(tokens[index].line)
+                    }
+                    None => tokens[index].line,
+                };
                 let path = (!named_stack.is_empty()).then(|| named_stack.join("."));
                 open.push(OpenScope {
-                    open_line: tokens[index].line,
+                    open_line,
                     named: named.is_some(),
                     path,
                 });
@@ -186,10 +190,16 @@ struct Unit {
     expect_class_name: bool,
     saw_new: bool,
     saw_arrow: bool,
+    /// The 1-based line of the first header token seen since the last boundary, so a named scope's
+    /// interval can begin at the line its declaration opens on rather than at the `{`. A method
+    /// whose parameter list spans lines, with the brace on a later line, then attributes its header
+    /// lines to itself rather than to its enclosing type (KT-126).
+    start_line: Option<u32>,
 }
 
 impl Unit {
-    fn observe_ident(&mut self, name: &str) {
+    fn observe_ident(&mut self, name: &str, line: u32) {
+        self.start_line.get_or_insert(line);
         if is_class_keyword(name) {
             self.expect_class_name = true;
         } else if self.expect_class_name {
@@ -904,13 +914,52 @@ fn read_package_name(
 mod tests {
     use super::*;
 
+    /// KT-126: a reference on a method's header, where the parameter list spans lines and the opening
+    /// brace is on a later line, is attributed to the method it opens rather than its enclosing type.
+    /// This is the multi-line `executePartialChange` shape: every header line, the brace
+    /// line and the body attribute to the method, while the enclosing-type lines around it do not.
+    #[test]
+    fn a_multi_line_method_header_attributes_to_the_method_it_opens() {
+        let source = concat!(
+            "class UpdateDocumentBase {\n",               // 1
+            "    protected void executePartialChange(\n", // 2
+            "            Request request,\n",             // 3
+            "            Context context\n",              // 4
+            "    ) {\n",                                  // 5
+            "        request.run();\n",                   // 6
+            "    }\n",                                    // 7
+            "    void other() {}\n",                      // 8
+            "}\n",                                        // 9
+        );
+        let lines: Vec<u32> = (1..=9).collect();
+
+        let observed: Vec<Option<String>> = java_enclosing_declarations(source, &lines);
+
+        let enclosing = |line: u32| -> Option<&'static str> {
+            match line {
+                2..=7 => Some("UpdateDocumentBase.executePartialChange"),
+                8 => Some("UpdateDocumentBase.other"),
+                1 | 9 => Some("UpdateDocumentBase"),
+                _ => None,
+            }
+        };
+        let expected: Vec<Option<String>> = lines
+            .iter()
+            .map(|&line| enclosing(line).map(str::to_string))
+            .collect();
+
+        assert_eq!(observed, expected);
+    }
+
     /// One source carrying every construct the scan must get right, and the enclosing declaration it
     /// reports for each line. Annotations with argument braces, a generic bound, a throws clause and
     /// a multi-line signature must not derail header detection; a static initializer and a default
     /// interface method must be named by their type; a control block, a block lambda and the braces
     /// of an anonymous class must read as their enclosing method, while a real method inside that
-    /// anonymous class is still named; nested and inner types compose. The brace line of a method is
-    /// inside it; the signature lines above the brace are not. Asserted as one line-to-enclosing map.
+    /// anonymous class is still named; nested and inner types compose. A method's multi-line header,
+    /// up to and including the brace line, is attributed to the method it opens, so lines 8 to 10 of
+    /// `pick` read `Outer.pick` rather than the enclosing type (KT-126); the annotation line above the
+    /// header stays with the type. Asserted as one line-to-enclosing map.
     #[test]
     fn each_line_reads_its_enclosing_java_declaration() {
         let source = concat!(
@@ -954,8 +1003,8 @@ mod tests {
         let enclosing = |line: u32| -> Option<&'static str> {
             match line {
                 1..=3 => None,
-                4 | 5 | 6 | 7 | 8 | 9 | 28 => Some("Outer"),
-                10 | 11 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 => Some("Outer.pick"),
+                4 | 5 | 6 | 7 | 28 => Some("Outer"),
+                8 | 9 | 10 | 11 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 => Some("Outer.pick"),
                 15 => Some("Outer.pick.run"),
                 22 | 24 => Some("Outer.Inner"),
                 23 => Some("Outer.Inner.greet"),

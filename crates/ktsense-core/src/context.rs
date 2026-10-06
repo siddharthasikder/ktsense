@@ -787,6 +787,50 @@ mod tests {
         )
     }
 
+    /// KT-126: a definition read from a `.java` file fences its declaration signature as `java`,
+    /// while a Kotlin definition keeps `kotlin`, in the context bundle. Both renders are checked at
+    /// once; the Kotlin case proves the default is byte-unchanged.
+    #[test]
+    fn a_java_definition_renders_its_declaration_fence_as_java() {
+        let signature = "protected void executePartialChange(Request request)";
+        let build_for = |definition: Definition| {
+            build_context(
+                ContextInput {
+                    definition,
+                    index: IndexCompleteness::Complete,
+                    sections: ContextSections::all(),
+                    file: None,
+                    source: None,
+                    source_match: None,
+                    callers: &[],
+                    annotated: &[],
+                    java_text_references: &[],
+                    kotlin_text_references: &[],
+                    implementors: &[],
+                    budget: 10_000,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let java = render_context_markdown(&build_for(Definition {
+            qualified_name: "com.app.UpdateDocumentBase.executePartialChange".to_string(),
+            path: "src/UpdateDocumentBase.java".to_string(),
+            line: 42,
+            signature: signature.to_string(),
+        }));
+        let kotlin = render_context_markdown(&build_for(definition()));
+
+        assert_eq!(
+            (
+                java.contains(&format!("```java\n{signature}\n```")),
+                java.contains("```kotlin"),
+                kotlin.contains("```kotlin\nfun save(order: Order): OrderId\n```"),
+                kotlin.contains("```java"),
+            ),
+            (true, false, true, false)
+        );
+    }
+
     #[test]
     fn a_generous_budget_carries_every_section_with_balanced_outline_blocks() {
         let bundle = build(10_000);
