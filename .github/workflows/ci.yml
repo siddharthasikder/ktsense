@@ -59,6 +59,9 @@ jobs:
       - name: Package layout, sidecar policy and reproducibility
         run: bash scripts/tests/package-release.test.sh
 
+      - name: Installer helpers, version floor and consent defaults
+        run: bash scripts/tests/install.test.sh
+
   # A compile-time env cannot be checked from a unit test, so the KTSENSE_BUILD_VERSION contract is
   # proven by building the binary in an isolated target dir and reading `--version`: dev fallback,
   # explicit override, and recompilation when the override changes.

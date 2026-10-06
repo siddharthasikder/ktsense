@@ -80,6 +80,34 @@ brew untap siddharthasikder/ktsense
 
 A prerelease tarball remains the alternative if you would rather not add a tap at all.
 
+### One script, if you would rather not run the steps yourself
+
+`scripts/install.sh` does the whole Homebrew path and then proves the result by running the binary:
+
+```
+git clone https://github.com/siddharthasikder/ktsense
+ktsense/scripts/install.sh
+```
+
+It finds Homebrew or offers to install it, puts it on the current shell's PATH, installs `ripgrep`,
+taps, asks for tap trust, installs the formula, and finishes by running `--version`, an `outline` over
+a file it generates, and `status`, so a pass means the binary answered rather than that a command
+exited zero.
+
+Two things it deliberately does not do. **It never grants tap trust silently.** The decision above is
+yours, so the script prints what is about to be trusted and stops unless you pass `--trust-tap` or
+confirm at the prompt. **It never installs Homebrew behind your back**, for the same reason:
+`--bootstrap-brew` or a confirmation is required, and without either it exits with instructions.
+`--yes` supplies both consents at once for an unattended run, and `--help` lists the rest.
+
+It installs `ripgrep` even though the formula does not require it, because the engine execs `rg` for
+reference and declaration search and answers nothing without it, which reads as "no such symbol"
+rather than as an error. `--skip-ripgrep` accepts that degradation knowingly.
+
+On a Linux host below glibc 2.28 the script warns and continues rather than refusing, because the
+tree-sitter commands work there and the engine-backed ones do not; the install is still worth having,
+and the warning names which is which.
+
 ### From source
 
 ```
