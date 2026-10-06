@@ -1,5 +1,6 @@
 ---
 source: crates/ktsense-mcp/tests/tools_list.rs
+assertion_line: 21
 expression: listed
 ---
 {
@@ -354,7 +355,7 @@ expression: listed
             ]
           },
           "symbol": {
-            "description": "Declaration name to explain.",
+            "description": "Declaration name to explain; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of.",
             "type": "string"
           }
         },
@@ -523,7 +524,7 @@ expression: listed
             ]
           },
           "query": {
-            "description": "Declaration name to find, for example `OrderRepository` or `save`.",
+            "description": "Declaration name to find, for example `OrderRepository` or `save`; a dotted `Type.member`\nsuch as `OrderRepository.save` keeps only the matches the whole name is a dot-suffix of.",
             "type": "string"
           },
           "root": {
@@ -1163,7 +1164,7 @@ expression: listed
             ]
           },
           "symbol": {
-            "description": "Declaration name to trace.",
+            "description": "Declaration name to trace; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of.",
             "type": "string"
           }
         },

@@ -195,7 +195,13 @@ async fn declarations_from_index(
     if index != IndexCompleteness::Complete {
         return None;
     }
-    match ktsense_daemon::resolve_from_warm_index(client, request.root, request.symbol).await {
+    match ktsense_daemon::resolve_from_warm_index(
+        client,
+        request.root,
+        ktsense_core::last_segment(request.symbol),
+    )
+    .await
+    {
         WarmResolution::Declarations(candidates) => Some(candidates),
         WarmResolution::Inconclusive(reason) => {
             tracing::debug!(
@@ -320,7 +326,7 @@ enum Resolution {
 async fn found_by_command_mode(
     request: &TraceRequest<'_>,
 ) -> Result<Vec<SymbolCandidate>, CommandError> {
-    ktsense_lsp::run_symbols(request.root, request.symbol)
+    ktsense_lsp::run_symbols(request.root, ktsense_core::last_segment(request.symbol))
         .await
         .map_err(|error| CommandError::passthrough(&error))
 }
@@ -332,14 +338,12 @@ fn select_candidate(
     request: &TraceRequest<'_>,
     candidates: Vec<SymbolCandidate>,
 ) -> Result<Resolution, CommandError> {
-    if candidates.is_empty() && request.pick.is_none() {
-        return Ok(Resolution::NotFound);
-    }
+    let filter = symbols::PickFilter::for_query(request.symbol, request.pick);
     match symbols::select(
         request.root,
         request.symbol,
         candidates,
-        request.pick,
+        filter,
         request.format,
     )? {
         Selection::One(candidate, resolved) => Ok(Resolution::Ready {
@@ -352,6 +356,7 @@ fn select_candidate(
             },
         }),
         Selection::Ambiguous(outcome) => Ok(Resolution::Ambiguous(outcome.into())),
+        Selection::NotFound => Ok(Resolution::NotFound),
     }
 }
 
@@ -729,7 +734,7 @@ fn present(report: &TraceReport, format: Format) -> Result<String, CommandError>
 fn not_found(request: &TraceRequest<'_>) -> Result<CommandOutcome, CommandError> {
     crate::text_refs::not_found_outcome(
         request.root,
-        request.symbol,
+        ktsense_core::last_segment(request.symbol),
         request.limit,
         request.format,
         "trace",

@@ -201,7 +201,8 @@ pub struct OutlineParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SymbolParams {
-    /// Declaration name to find, for example `OrderRepository` or `save`.
+    /// Declaration name to find, for example `OrderRepository` or `save`; a dotted `Type.member`
+    /// such as `OrderRepository.save` keeps only the matches the whole name is a dot-suffix of.
     pub query: String,
     /// Keep only declarations of this kind: class, interface, object, fun, val, var, typealias
     /// or constructor.
@@ -221,7 +222,8 @@ pub struct SymbolParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TraceParams {
-    /// Declaration name to trace.
+    /// Declaration name to trace; a dotted `Type.member` such as `OrderRepository.save` selects the
+    /// one candidate the whole name is a dot-suffix of.
     pub symbol: String,
     /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is
     /// ambiguous.
@@ -264,7 +266,8 @@ pub struct CheckParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContextParams {
-    /// Declaration name to explain.
+    /// Declaration name to explain; a dotted `Type.member` such as `OrderRepository.save` selects the
+    /// one candidate the whole name is a dot-suffix of.
     pub symbol: String,
     /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is
     /// ambiguous.

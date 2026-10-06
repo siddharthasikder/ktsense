@@ -416,6 +416,11 @@ ambiguous: 9 declarations named Plugin; rerun with --pick DefaultRequest.Plugin
 Retry with `--pick <fully.qualified.name>`, or the shortest dot-boundary suffix that names one
 candidate, such as `--pick DefaultRequest.Plugin`.
 
+Or name the member in the query itself: `symbols`, `trace` and `context` accept a dotted
+`Type.member`, so `ktsense trace DefaultRequest.Plugin` looks up `Plugin` and keeps only the
+candidate whose fully-qualified name the whole query is a dot-suffix of, answering directly where the
+bare name is ambiguous.
+
 **Output carries its own precision level.** A `trace` says how complete the index was when it
 answered, and says where its callers came from:
 

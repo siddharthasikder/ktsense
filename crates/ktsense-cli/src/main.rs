@@ -144,6 +144,8 @@ enum Command {
     },
     /// Find declarations by name across the workspace
     Symbols {
+        /// Declaration name to find; a dotted Type.member, such as OrderRepository.save, resolves
+        /// its last segment and keeps only the matches the whole name is a suffix of.
         query: String,
         /// Keep only declarations of this kind.
         #[arg(long, value_enum)]
@@ -162,6 +164,8 @@ enum Command {
     },
     /// Definition, usages, implementors and callers of one symbol
     Trace {
+        /// Symbol to trace; a dotted Type.member, such as OrderRepository.save, resolves its last
+        /// segment and keeps only the match the whole name is a suffix of.
         symbol: String,
         /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name
         /// is ambiguous.
@@ -199,6 +203,8 @@ enum Command {
     Diagnose { file: PathBuf },
     /// Budgeted context bundle for one symbol
     Context {
+        /// Symbol to explain; a dotted Type.member, such as OrderRepository.save, resolves its last
+        /// segment and keeps only the match the whole name is a suffix of.
         symbol: String,
         /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name
         /// is ambiguous.
@@ -623,9 +629,13 @@ fn symbols(
         return symbols::present_contained(root, query, kind, limit, format)
             .map(CommandOutcome::from);
     }
-    let candidates = block_on(ktsense_lsp::run_symbols(root, query))
-        .map_err(|error| CommandError::passthrough(&error))?;
-    symbols::present_symbols(root, query, candidates, kind, limit, pick, format)
+    let filter = symbols::PickFilter::for_query(query, pick);
+    let candidates = block_on(ktsense_lsp::run_symbols(
+        root,
+        ktsense_core::last_segment(query),
+    ))
+    .map_err(|error| CommandError::passthrough(&error))?;
+    symbols::present_symbols(root, query, candidates, kind, limit, filter, format)
         .map(CommandOutcome::from)
 }
 

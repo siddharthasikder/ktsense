@@ -386,6 +386,45 @@ fn an_ambiguous_name_exits_three_and_a_pick_narrows_it_to_one_bundle() {
 
 /// An answer computed against a still-building index is weaker and must say so, exactly as a trace
 /// does: the caller list is a lower bound, not the answer.
+/// KT-100: a dotted `Type.member` query resolves its last segment through the engine, then keeps the
+/// one candidate the whole query is a dot-suffix of, so `OrderRepository.save` answers directly where
+/// the bare `save` is ambiguous. The bundle is the one a matching pick gives.
+#[test]
+fn a_dotted_type_member_query_answers_like_the_matching_pick() {
+    let dotted = context(
+        &["OrderRepository.save", "--budget", "2000"],
+        &every_save(),
+        &session(completed_index()),
+    );
+    let picked = context(
+        &[
+            "save",
+            "--pick",
+            "shop.order.OrderRepository.save",
+            "--budget",
+            "2000",
+        ],
+        &every_save(),
+        &session(completed_index()),
+    );
+
+    let observed = (
+        dotted.code,
+        dotted
+            .stdout
+            .contains("# Context: shop.order.OrderRepository.save"),
+        dotted.stdout == picked.stdout,
+        dotted.stderr.is_empty(),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, true, true),
+        "dotted: {}\npicked: {}",
+        dotted.stdout,
+        picked.stdout
+    );
+}
+
 #[test]
 fn an_index_that_never_finishes_is_answered_within_the_cap_and_marked_partial() {
     let still_indexing = vec![progress(json!({ "kind": "begin", "title": "Indexing" }))];

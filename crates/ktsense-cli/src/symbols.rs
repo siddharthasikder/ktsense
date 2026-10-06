@@ -83,7 +83,7 @@ pub(crate) fn present_symbols(
     candidates: Vec<SymbolCandidate>,
     kind: Option<KindFilter>,
     limit: Option<usize>,
-    pick: Option<&str>,
+    filter: PickFilter,
     format: Format,
 ) -> Result<SymbolsOutcome, CommandError> {
     let mut resolved: Vec<ResolvedSymbol> = enrich_sorted(root, candidates)
@@ -94,26 +94,54 @@ pub(crate) fn present_symbols(
         resolved.retain(|symbol| symbol.matches_kind(kind));
     }
 
-    if let Some(pick) = pick {
-        return pick_one(query, resolved, pick, format);
+    match filter {
+        PickFilter::Explicit(pick) => pick_present(query, resolved, pick, format, || {
+            Err(CommandError::pick_missed(pick))
+        }),
+        PickFilter::Dotted(pick) => pick_present(query, resolved, pick, format, || {
+            Err(CommandError::no_symbol(query))
+        }),
+        PickFilter::None => match resolved.len() {
+            0 => Err(CommandError::no_symbol(query)),
+            1 => render(query, &resolved, None, Exit::Success, format),
+            _ => {
+                let total = resolved.len();
+                let hint = ambiguity_hint(query, &resolved);
+                let shown = limit.unwrap_or(total).min(total);
+                let hidden = total - shown;
+                resolved.truncate(shown);
+                render(
+                    query,
+                    &resolved,
+                    hidden_note(hidden),
+                    Exit::Ambiguous,
+                    format,
+                )
+                .map(|outcome| outcome.with_stderr(hint))
+            }
+        },
     }
-    match resolved.len() {
-        0 => Err(CommandError::no_symbol(query)),
-        1 => render(query, &resolved, None, Exit::Success, format),
-        _ => {
-            let total = resolved.len();
-            let hint = ambiguity_hint(query, &resolved);
-            let shown = limit.unwrap_or(total).min(total);
-            let hidden = total - shown;
-            resolved.truncate(shown);
-            render(
-                query,
-                &resolved,
-                hidden_note(hidden),
-                Exit::Ambiguous,
-                format,
-            )
-            .map(|outcome| outcome.with_stderr(hint))
+}
+
+/// How a follow-up narrows engine candidates to one declaration. The three cases differ only when
+/// the filter matches no candidate: an explicit `--pick` miss is the caller's mistake and errors,
+/// while a dotted `Type.member` query that matches nothing is a name the workspace does not declare
+/// and takes the not-found answer, as if the lookup had found nothing (KT-100). The lookup itself
+/// uses only the query's last segment; the whole dotted query is the filter.
+pub(crate) enum PickFilter<'a> {
+    None,
+    Dotted(&'a str),
+    Explicit(&'a str),
+}
+
+impl<'a> PickFilter<'a> {
+    /// The filter for `query` given an optional explicit `--pick`: the explicit value wins over the
+    /// dotted filter, else a dotted query filters by its whole self, else nothing filters.
+    pub(crate) fn for_query(query: &'a str, pick: Option<&'a str>) -> Self {
+        match pick {
+            Some(pick) => PickFilter::Explicit(pick),
+            None if query.contains('.') => PickFilter::Dotted(query),
+            None => PickFilter::None,
         }
     }
 }
@@ -124,6 +152,10 @@ pub(crate) fn present_symbols(
 pub(crate) enum Selection {
     One(SymbolCandidate, ResolvedSymbol),
     Ambiguous(SymbolsOutcome),
+    /// The filter matched no candidate, or nothing resolved at all: a name the workspace does not
+    /// declare, which `trace` and `context` answer by listing its text references rather than
+    /// failing (KT-94/KT-100).
+    NotFound,
 }
 
 /// Narrows engine candidates to the single declaration a follow-up command should act on.
@@ -131,46 +163,65 @@ pub(crate) fn select(
     root: &Path,
     query: &str,
     candidates: Vec<SymbolCandidate>,
-    pick: Option<&str>,
+    filter: PickFilter,
     format: Format,
 ) -> Result<Selection, CommandError> {
-    let mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = enrich_sorted(root, candidates);
-    if let Some(pick) = pick {
-        let decision = match_pick(pick, &fqns_of(&enriched));
-        return match decision {
-            PickMatch::Selected(index) => {
-                let (candidate, resolved) = enriched.swap_remove(index);
+    let enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = enrich_sorted(root, candidates);
+    match filter {
+        PickFilter::Explicit(pick) => select_by_pick(query, enriched, pick, format, || {
+            Err(CommandError::pick_missed(pick))
+        }),
+        PickFilter::Dotted(pick) => {
+            select_by_pick(query, enriched, pick, format, || Ok(Selection::NotFound))
+        }
+        PickFilter::None => match enriched.len() {
+            0 => Ok(Selection::NotFound),
+            1 => {
+                let mut enriched = enriched;
+                let (candidate, resolved) = enriched.remove(0);
                 Ok(Selection::One(candidate, resolved))
             }
-            PickMatch::Ambiguous(indices) => {
-                let subset: Vec<ResolvedSymbol> = retain_indices(enriched, &indices)
-                    .into_iter()
-                    .map(|(_, resolved)| resolved)
-                    .collect();
-                render_ambiguous_selection(query, &subset, format).map(Selection::Ambiguous)
+            _ => {
+                let resolved: Vec<ResolvedSymbol> =
+                    enriched.into_iter().map(|(_, resolved)| resolved).collect();
+                render_ambiguous_selection(query, &resolved, format).map(Selection::Ambiguous)
             }
-            PickMatch::Missed => Err(CommandError::pick_missed(pick)),
-        };
-    }
-    match enriched.len() {
-        0 => Err(CommandError::no_symbol(query)),
-        1 => {
-            let (candidate, resolved) = enriched.remove(0);
-            Ok(Selection::One(candidate, resolved))
-        }
-        _ => {
-            let resolved: Vec<ResolvedSymbol> =
-                enriched.into_iter().map(|(_, resolved)| resolved).collect();
-            render_ambiguous_selection(query, &resolved, format).map(Selection::Ambiguous)
-        }
+        },
     }
 }
 
-fn pick_one(
+/// Applies a pick value to the enriched candidates, selecting the one it matches or listing the
+/// several it matches. `on_miss` decides what matching nothing means, which is the only thing that
+/// differs between an explicit `--pick` (the caller's error) and a dotted query (not found).
+fn select_by_pick(
+    query: &str,
+    mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)>,
+    pick: &str,
+    format: Format,
+    on_miss: impl FnOnce() -> Result<Selection, CommandError>,
+) -> Result<Selection, CommandError> {
+    match match_pick(pick, &fqns_of(&enriched)) {
+        PickMatch::Selected(index) => {
+            let (candidate, resolved) = enriched.swap_remove(index);
+            Ok(Selection::One(candidate, resolved))
+        }
+        PickMatch::Ambiguous(indices) => {
+            let subset: Vec<ResolvedSymbol> = retain_indices(enriched, &indices)
+                .into_iter()
+                .map(|(_, resolved)| resolved)
+                .collect();
+            render_ambiguous_selection(query, &subset, format).map(Selection::Ambiguous)
+        }
+        PickMatch::Missed => on_miss(),
+    }
+}
+
+fn pick_present(
     query: &str,
     resolved: Vec<ResolvedSymbol>,
     pick: &str,
     format: Format,
+    on_miss: impl FnOnce() -> Result<SymbolsOutcome, CommandError>,
 ) -> Result<SymbolsOutcome, CommandError> {
     let fqns: Vec<&str> = resolved.iter().map(|symbol| symbol.fqn.as_str()).collect();
     match match_pick(pick, &fqns) {
@@ -185,7 +236,7 @@ fn pick_one(
             let subset = retain_indices(resolved, &indices);
             render_ambiguous_selection(query, &subset, format)
         }
-        PickMatch::Missed => Err(CommandError::pick_missed(pick)),
+        PickMatch::Missed => on_miss(),
     }
 }
 
@@ -669,13 +720,23 @@ mod tests {
         limit: Option<usize>,
         pick: Option<&str>,
     ) -> (u8, String) {
+        present_query("save", candidates, kind, limit, pick)
+    }
+
+    fn present_query(
+        query: &str,
+        candidates: Vec<SymbolCandidate>,
+        kind: Option<KindFilter>,
+        limit: Option<usize>,
+        pick: Option<&str>,
+    ) -> (u8, String) {
         let outcome = present_symbols(
             &fixtures().join("multi-module"),
-            "save",
+            query,
             candidates,
             kind,
             limit,
-            pick,
+            PickFilter::for_query(query, pick),
             Format::Md,
         );
         match outcome {
@@ -710,7 +771,7 @@ mod tests {
             save_candidates(),
             None,
             None,
-            None,
+            PickFilter::for_query("save", None),
             Format::Md,
         )
         .expect("ambiguous listing");
@@ -804,6 +865,84 @@ mod tests {
     }
 
     #[test]
+    fn a_dotted_query_selects_the_one_candidate_its_whole_name_matches() {
+        let (code, text) =
+            present_query("OrderRepository.save", save_candidates(), None, None, None);
+
+        let observed = (
+            code,
+            text.lines().next().map(str::to_string),
+            text.contains("shop.order.OrderRepository.save  fun"),
+            text.contains("JdbcOrderRepository.save"),
+            text.contains("InMemoryOrderRepository.save"),
+        );
+        assert_eq!(
+            observed,
+            (
+                0,
+                Some("## Symbols: OrderRepository.save".to_string()),
+                true,
+                false,
+                false,
+            )
+        );
+    }
+
+    #[test]
+    fn a_dotted_query_whose_whole_name_matches_nothing_is_reported_not_found() {
+        let (code, text) = present_query("Imaginary.save", save_candidates(), None, None, None);
+
+        let observed = (
+            code,
+            text.contains("no declaration named Imaginary.save in this workspace"),
+        );
+        assert_eq!(observed, (1, true));
+    }
+
+    #[test]
+    fn a_dotted_query_matching_several_candidates_lists_only_those_and_exits_three() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (package, file) in [("alpha", "Alpha.kt"), ("beta", "Beta.kt")] {
+            std::fs::write(
+                dir.path().join(file),
+                format!("package {package}\n\nclass Repo {{\n    fun save() {{}}\n}}\n"),
+            )
+            .expect("write fixture");
+        }
+        let candidate_in = |file: &str| SymbolCandidate {
+            name: "save".to_string(),
+            file: dir.path().join(file).to_string_lossy().into_owned(),
+            line: 4,
+            col: 9,
+        };
+
+        let outcome = present_symbols(
+            dir.path(),
+            "Repo.save",
+            vec![candidate_in("Alpha.kt"), candidate_in("Beta.kt")],
+            None,
+            None,
+            PickFilter::for_query("Repo.save", None),
+            Format::Md,
+        )
+        .expect("ambiguous listing");
+
+        let observed = (
+            outcome.exit.code(),
+            outcome.text.lines().next().map(str::to_string),
+            outcome.text.matches("  fun  ").count(),
+        );
+        assert_eq!(
+            observed,
+            (
+                3,
+                Some("## Ambiguous: Repo.save (2 candidates)".to_string()),
+                2
+            )
+        );
+    }
+
+    #[test]
     fn a_kind_filter_narrows_before_ambiguity_is_judged() {
         let mixed = vec![
             candidate(
@@ -857,7 +996,7 @@ mod tests {
             vec![candidate.clone()],
             None,
             None,
-            None,
+            PickFilter::for_query("Local", None),
             Format::Md,
         )
         .expect("markdown");
@@ -867,7 +1006,7 @@ mod tests {
             vec![candidate],
             None,
             None,
-            None,
+            PickFilter::for_query("Local", None),
             Format::Json,
         )
         .expect("json");

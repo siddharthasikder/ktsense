@@ -117,7 +117,7 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
         Traced::NotFound => {
             return crate::text_refs::not_found_outcome(
                 request.root,
-                request.symbol,
+                ktsense_core::last_segment(request.symbol),
                 None,
                 request.format,
                 "context",

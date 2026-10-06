@@ -23,6 +23,15 @@ pub enum PickMatch {
     Missed,
 }
 
+/// The declaration name a dotted `Type.member` query resolves to: its last dot-separated segment.
+///
+/// A dotted query names its declaration by the last segment and selects among the matches by the
+/// whole query as a [`match_pick`] dot-suffix (KT-100), so the engine looks up this segment and the
+/// whole query filters the result. A query with no dot is its own last segment.
+pub fn last_segment(query: &str) -> &str {
+    query.rsplit('.').next().unwrap_or(query)
+}
+
 /// Resolves `pick` against `fqns`: an exact FQN match wins outright, otherwise a dot-boundary suffix
 /// selects the one candidate it matches, lists the several it matches, or misses.
 pub fn match_pick(pick: &str, fqns: &[&str]) -> PickMatch {
@@ -176,5 +185,27 @@ mod tests {
             shortest_unique_suffix("a.b.C.save", &duplicated),
             "a.b.C.save"
         );
+    }
+
+    #[test]
+    fn last_segment_is_the_name_after_the_final_dot_and_a_plain_name_is_its_own_segment() {
+        let cases = [
+            ("a dotted type and member", "OrderRepository.save", "save"),
+            (
+                "a package-qualified type",
+                "shop.order.OrderRepository",
+                "OrderRepository",
+            ),
+            ("a plain name has no dot", "save", "save"),
+        ];
+        let observed: Vec<(&str, &str)> = cases
+            .iter()
+            .map(|(label, query, _)| (*label, last_segment(query)))
+            .collect();
+        let expected: Vec<(&str, &str)> = cases
+            .iter()
+            .map(|(label, _, segment)| (*label, *segment))
+            .collect();
+        assert_eq!(observed, expected);
     }
 }

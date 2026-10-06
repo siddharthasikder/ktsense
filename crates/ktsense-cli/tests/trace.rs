@@ -356,6 +356,61 @@ fn a_name_the_workspace_does_not_declare_lists_its_text_references() {
     );
 }
 
+/// KT-100: a dotted `Type.member` query resolves its last segment through the engine, then keeps the
+/// one candidate the whole query is a dot-suffix of, so `OrderRepository.save` answers directly where
+/// the bare `save` is ambiguous and needs no `--pick`. The answer is the one a matching pick gives.
+#[test]
+fn a_dotted_type_member_query_answers_like_the_matching_pick() {
+    let dotted = trace(
+        &["OrderRepository.save"],
+        &every_save(),
+        &session(completed_index(), Vec::new()),
+    );
+    let picked = trace(
+        &["save", "--pick", "shop.order.OrderRepository.save"],
+        &every_save(),
+        &session(completed_index(), Vec::new()),
+    );
+
+    let observed = (
+        dotted.code,
+        dotted.stdout.contains("## Callers (3)"),
+        dotted.stdout == picked.stdout,
+        dotted.stderr.is_empty(),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, true, true),
+        "dotted: {}\npicked: {}",
+        dotted.stdout,
+        picked.stdout
+    );
+}
+
+/// A dotted query whose whole name matches none of the candidates its last segment resolved to is a
+/// name the workspace does not declare, so it keeps the not-found answer and lists the last segment's
+/// text references, exactly as a bare undeclared name does (KT-100 over KT-94). No session is opened,
+/// because resolution settled before any engine request.
+#[test]
+fn a_dotted_query_matching_no_candidate_lists_the_last_segments_text_references() {
+    let never_reached = json!({ "steps": [] });
+    let run = trace(&["Imaginary.save"], &every_save(), &never_reached);
+
+    let observed = (
+        run.code,
+        run.stdout
+            .starts_with("no declaration named save in this workspace"),
+        run.stdout.contains("## Text references"),
+        run.stderr.is_empty(),
+    );
+    assert_eq!(
+        observed,
+        (Some(1), true, true, true),
+        "stdout was: {}",
+        run.stdout
+    );
+}
+
 #[test]
 fn an_ambiguous_name_lists_every_candidate_and_exits_three_without_a_session() {
     let never_reached = json!({ "steps": [] });
@@ -603,6 +658,45 @@ mod real {
                 ("OrderImporter", "## Implementors (0)".to_string()),
                 ("CheckoutConfig", "## Implementors (0)".to_string()),
             ]
+        );
+    }
+
+    fn trace_heading(symbol: &str) -> (Option<i32>, String) {
+        let output = Command::cargo_bin("ktsense")
+            .expect("binary builds")
+            .current_dir(WORKSPACE_ROOT)
+            .args(["--root", FIXTURE, "trace", symbol])
+            .output()
+            .expect("binary runs");
+        let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+        let heading = stdout
+            .lines()
+            .find(|line| line.starts_with("# Trace:"))
+            .map(str::to_string)
+            .unwrap_or_else(|| stdout.lines().next().unwrap_or_default().to_string());
+        (output.status.code(), heading)
+    }
+
+    /// KT-100 against the real engine: a dotted `Type.member` resolves its last segment and keeps the
+    /// one candidate the whole name is a dot-suffix of, so `OrderRepository.save` answers where the
+    /// bare `save` is ambiguous; and a dotted query whose last segment is a top-level declaration with
+    /// a package prefix, `shop.order.OrderRepository`, resolves that one declaration. Needs `rg`.
+    #[test]
+    fn a_dotted_type_member_and_a_package_prefixed_type_resolve_against_the_real_engine() {
+        let observed = (
+            trace_heading("OrderRepository.save"),
+            trace_heading("shop.order.OrderRepository"),
+        );
+
+        assert_eq!(
+            observed,
+            (
+                (
+                    Some(0),
+                    "# Trace: shop.order.OrderRepository.save".to_string()
+                ),
+                (Some(0), "# Trace: shop.order.OrderRepository".to_string()),
+            )
         );
     }
 }

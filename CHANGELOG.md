@@ -10,6 +10,7 @@
 
 ### Changed
 
+- `trace`, `context` and `symbols`, and the `symbol`/`query` arguments of the `trace_kotlin_symbol`, `explain_kotlin_symbol` and `find_kotlin_symbol` MCP tools, now accept a dotted `Type.member` argument such as `OrderRepository.save`. The last dot-separated segment is the declaration name the engine looks up, and the whole query then filters the matches as a dot-boundary suffix: a unique match answers directly, several exit 3 listing only those, and none keeps the not-found answer (whose text-reference search uses the last segment). An explicit `--pick` still wins over the dotted filter (KT-100).
 - `--pick` on `symbols`, `trace` and `context`, and the `pick` argument of the `find_kotlin_symbol`, `trace_kotlin_symbol` and `explain_kotlin_symbol` MCP tools, now accepts a dot-boundary suffix of a fully-qualified name as well as a full FQN, such as `InMemoryOrderRepository.save` for `shop.db.InMemoryOrderRepository.save`. An exact FQN wins; a suffix matching one candidate selects it; a suffix matching several lists only those and exits 3; a suffix matching none keeps the pick-missed error. The ambiguity hint now names the shortest unique dot-boundary suffix of its example candidate rather than the whole FQN, so a rerun copies less (KT-95).
 
 ## 0.1.0
