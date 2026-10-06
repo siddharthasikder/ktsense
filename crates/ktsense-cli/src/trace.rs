@@ -146,18 +146,9 @@ pub(crate) async fn resolve_warm(
     match select_candidate(request, candidates)? {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
         Resolution::NotFound => Ok(Traced::NotFound),
-        Resolution::Ready {
-            candidate,
-            definition,
-        } => {
+        Resolution::Ready(target) => {
             let report = Session::new(request.root, request.limit, request.filter.clone())
-                .run(
-                    engine.client(),
-                    &candidate,
-                    definition,
-                    request.depth,
-                    index,
-                )
+                .run(engine.client(), target, request.depth, index)
                 .await
                 .map_err(CommandError::engine)?;
             Ok(Traced::Resolved(Box::new(report)))
@@ -246,11 +237,8 @@ async fn traced(
     match resolution {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
         Resolution::NotFound => Ok(Traced::NotFound),
-        Resolution::Ready {
-            candidate,
-            definition,
-        } => {
-            let report = collect_fresh(request, &candidate, definition)
+        Resolution::Ready(target) => {
+            let report = collect_fresh(request, target)
                 .await
                 .map_err(CommandError::engine)?;
             Ok(Traced::Resolved(Box::new(report)))
@@ -298,12 +286,9 @@ async fn indexed_trace(
     match select_candidate(request, candidates)? {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
         Resolution::NotFound => Ok(Traced::NotFound),
-        Resolution::Ready {
-            candidate,
-            definition,
-        } => {
+        Resolution::Ready(target) => {
             let report = Session::new(request.root, request.limit, request.filter.clone())
-                .run(client, &candidate, definition, request.depth, index)
+                .run(client, target, request.depth, index)
                 .await
                 .map_err(CommandError::engine)?;
             Ok(Traced::Resolved(Box::new(report)))
@@ -315,14 +300,19 @@ async fn indexed_trace(
 /// when it was ambiguous. Shared by the fresh and warm paths so the ambiguity contract is stated
 /// once.
 enum Resolution {
-    Ready {
-        candidate: SymbolCandidate,
-        definition: Definition,
-    },
+    Ready(Target),
     Ambiguous(CommandOutcome),
     /// No declaration of the name under the root, with no `--pick` to miss. Carried rather than
     /// raised as an error so `trace` and `context` can list the name's text references (KT-94).
     NotFound,
+}
+
+/// The one declaration a trace answers about, with how many engine candidates inside ignored
+/// directories were left out before it was chosen (KT-129).
+struct Target {
+    candidate: SymbolCandidate,
+    definition: Definition,
+    ignored_candidates: usize,
 }
 
 /// Every declaration the engine's command-mode `find` reports for the name. This is the first
@@ -343,6 +333,9 @@ fn select_candidate(
     request: &TraceRequest<'_>,
     candidates: Vec<SymbolCandidate>,
 ) -> Result<Resolution, CommandError> {
+    let (ignored, candidates): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|candidate| {
+        crate::is_inside_ignored_dir(request.root, Path::new(&candidate.file))
+    });
     let filter = symbols::PickFilter::for_query(request.symbol, request.pick);
     match symbols::select(
         request.root,
@@ -351,7 +344,7 @@ fn select_candidate(
         filter,
         request.format,
     )? {
-        Selection::One(candidate, resolved) => Ok(Resolution::Ready {
+        Selection::One(candidate, resolved) => Ok(Resolution::Ready(Target {
             candidate,
             definition: Definition {
                 qualified_name: resolved.fqn,
@@ -359,7 +352,8 @@ fn select_candidate(
                 line: resolved.line,
                 signature: resolved.signature,
             },
-        }),
+            ignored_candidates: ignored.len(),
+        })),
         Selection::Ambiguous(outcome) => Ok(Resolution::Ambiguous(outcome.into())),
         Selection::NotFound => Ok(Resolution::NotFound),
     }
@@ -369,12 +363,11 @@ fn select_candidate(
 /// returned.
 async fn collect_fresh(
     request: &TraceRequest<'_>,
-    candidate: &SymbolCandidate,
-    definition: Definition,
+    target: Target,
 ) -> Result<TraceReport, LspError> {
     let (mut client, index) = open_fresh_session(request).await?;
     let outcome = Session::new(request.root, request.limit, request.filter.clone())
-        .run(&client, candidate, definition, request.depth, index)
+        .run(&client, target, request.depth, index)
         .await;
     let _ = client.shutdown().await;
     outcome
@@ -456,6 +449,9 @@ struct Session<'a> {
     /// (KT-127). Passed to `build_trace` for the direct callers and usages, and applied to each
     /// deeper caller level here.
     filter: Option<SiteFilter>,
+    /// Engine results inside ignored directories left out so far, candidates and sites together
+    /// (KT-129).
+    ignored: usize,
 }
 
 impl<'a> Session<'a> {
@@ -466,6 +462,7 @@ impl<'a> Session<'a> {
             limit,
             skeletons: Skeletons::default(),
             filter,
+            ignored: 0,
         }
     }
 
@@ -476,12 +473,17 @@ impl<'a> Session<'a> {
     async fn run(
         mut self,
         client: &LspClient,
-        candidate: &SymbolCandidate,
-        definition: Definition,
+        target: Target,
         depth: usize,
         index: IndexCompleteness,
     ) -> Result<TraceReport, LspError> {
-        let at = self.declaration_position(candidate);
+        let Target {
+            candidate,
+            definition,
+            ignored_candidates,
+        } = target;
+        self.ignored = ignored_candidates;
+        let at = self.declaration_position(&candidate);
         let implementation_sites = self.sites(&client.implementation_sites(&at).await?);
         let reference_sites = self.sites(
             &client
@@ -514,7 +516,7 @@ impl<'a> Session<'a> {
             frontier = kept.clone();
             report = report.with_deeper_level(kept, production_omitted, test_omitted);
         }
-        Ok(report)
+        Ok(report.with_ignored_directory_results(self.ignored))
     }
 
     /// Splits deeper callers into those the filter keeps and the production and test counts it
@@ -591,8 +593,12 @@ impl<'a> Session<'a> {
     /// declarations out of the callers (KT-83). Sites are classified in one pass per file; a file
     /// that cannot be read leaves its sites as `Code`, which lists them rather than hiding them.
     fn sites(&mut self, locations: &[SiteLocation]) -> Vec<Location> {
-        let normalized: Vec<(String, u32, u32)> = locations
+        let (ignored, kept): (Vec<&SiteLocation>, Vec<&SiteLocation>) = locations
             .iter()
+            .partition(|site| crate::is_inside_ignored_dir(self.root, &site.path));
+        self.ignored += ignored.len();
+        let normalized: Vec<(String, u32, u32)> = kept
+            .into_iter()
             .map(|site| {
                 let path = normalized_path(self.root, &site.path);
                 self.skeletons.load(self.root, &path);

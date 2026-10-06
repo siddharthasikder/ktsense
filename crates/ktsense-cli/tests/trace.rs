@@ -584,6 +584,38 @@ fn depth_two_follows_each_direct_caller_and_reports_who_calls_them() {
     ));
 }
 
+/// The IDE build-output copy of a fixture source: VS Code Java and Eclipse write `bin/main/...`
+/// beside `src/main/kotlin/...`, and a checkout that does not gitignore it shows the engine both.
+fn ide_copy(relative: &str) -> String {
+    relative.replacen("/src/main/kotlin/", "/bin/main/", 1)
+}
+
+/// KT-129: `find` and the reference request both answer with `bin/` copies as well as the sources.
+/// The copies are dropped before the name is resolved and before sites are grouped, so the trace is
+/// the unambiguous one the plain fixture gives, with one line counting what was left out.
+#[test]
+fn engine_results_inside_ignored_build_directories_are_left_out_and_counted() {
+    let find = json!([
+        candidate(&ide_copy(REPOSITORY), 4, 9),
+        candidate(REPOSITORY, 4, 9)
+    ]);
+    let mut script = session(completed_index(), Vec::new());
+    let steps = script["steps"].as_array_mut().expect("steps");
+    let references = steps
+        .iter_mut()
+        .find(|step| step["method"] == "textDocument/references")
+        .expect("references step");
+    let mut sites = every_reference().as_array().expect("sites").clone();
+    sites.push(location(&ide_copy(REPOSITORY), 4, 9));
+    sites.push(location(&ide_copy(CHECKOUT), 13, 29));
+    sites.push(location(&ide_copy(IMPORTER), 11, 24));
+    references["respond"]["result"] = json!(sites);
+
+    let run = trace(&["save"], &find, &script);
+
+    insta::assert_snapshot!(record(&run));
+}
+
 #[cfg(feature = "real-lsp")]
 mod real {
     use super::*;

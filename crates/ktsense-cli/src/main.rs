@@ -1300,7 +1300,31 @@ fn is_build_dir(path: &Path) -> bool {
 fn is_ignored_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with('.') || IGNORED_DIRS.contains(&name))
+        .is_some_and(is_ignored_dir_name)
+}
+
+fn is_ignored_dir_name(name: &str) -> bool {
+    name.starts_with('.') || IGNORED_DIRS.contains(&name)
+}
+
+/// Whether an engine-reported file lies inside a directory the workspace walks skip, judged on its
+/// path under `root` (KT-129). The engine searches with `rg`, which honours `.gitignore` but not
+/// [`IGNORED_DIRS`], so a checkout that leaves an IDE's `bin/` copy untracked hands back every
+/// declaration and reference twice. Generated sources under `build/generated` stay in, matching the
+/// one opt-in walk past `build`, and a file outside the root is never judged.
+pub(crate) fn is_inside_ignored_dir(root: &Path, path: &Path) -> bool {
+    let relative = normalized_path(root, path);
+    if relative.starts_with('/') {
+        return false;
+    }
+    let directories: Vec<&str> = relative.split('/').collect();
+    let directories = &directories[..directories.len().saturating_sub(1)];
+    directories.iter().enumerate().any(|(index, name)| {
+        let generated_follows = directories
+            .get(index + 1)
+            .is_some_and(|next| GENERATED_DIRS.contains(next));
+        is_ignored_dir_name(name) && !(*name == "build" && generated_follows)
+    })
 }
 
 /// Wraps engine-derived lines in a `text` code fence sized to survive any backtick run they carry,
@@ -1325,6 +1349,41 @@ fn fenced_block(lines: &[String]) -> String {
 mod tests {
     use super::*;
     use ktsense_lsp::{CheckReport, DiagnoseReport, Diagnostic, Severity, SyntaxError};
+
+    #[test]
+    fn engine_paths_inside_ignored_directories_are_judged_under_the_root_only() {
+        let root = Path::new("/work/shop");
+        let judged: Vec<(&str, bool)> = [
+            "/work/shop/core/src/main/kotlin/shop/A.kt",
+            "/work/shop/core/bin/main/shop/A.kt",
+            "/work/shop/app/.idea/A.kt",
+            "/work/shop/core/build/tmp/A.kt",
+            "/work/shop/core/build/generated/ksp/main/kotlin/A.kt",
+            "/work/shop/core/build/generated-src/A.kt",
+            "/work/shop/bin.kt",
+            "/elsewhere/bin/A.kt",
+        ]
+        .into_iter()
+        .map(|path| (path, is_inside_ignored_dir(root, Path::new(path))))
+        .collect();
+
+        assert_eq!(
+            judged,
+            vec![
+                ("/work/shop/core/src/main/kotlin/shop/A.kt", false),
+                ("/work/shop/core/bin/main/shop/A.kt", true),
+                ("/work/shop/app/.idea/A.kt", true),
+                ("/work/shop/core/build/tmp/A.kt", true),
+                (
+                    "/work/shop/core/build/generated/ksp/main/kotlin/A.kt",
+                    false
+                ),
+                ("/work/shop/core/build/generated-src/A.kt", false),
+                ("/work/shop/bin.kt", false),
+                ("/elsewhere/bin/A.kt", false),
+            ]
+        );
+    }
 
     #[test]
     fn engine_absolute_paths_render_root_relative_and_never_double_the_leading_slash() {

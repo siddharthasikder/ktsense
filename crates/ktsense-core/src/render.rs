@@ -443,6 +443,12 @@ fn fence_language(path: &str) -> &'static str {
 pub fn render_trace_markdown(report: &TraceReport) -> String {
     let mut out = format!("# Trace: {}\n\n", neutralize(&report.symbol));
     out.push_str(&format!("index: {}\n", report.index.label()));
+    if report.ignored_directory_results > 0 {
+        out.push_str(&format!(
+            "ignored: {} inside ignored directories such as bin/\n",
+            pluralize(report.ignored_directory_results, "engine result")
+        ));
+    }
 
     out.push_str("\n## Definition\n\n");
     out.push_str(&format!(

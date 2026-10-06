@@ -177,6 +177,11 @@ pub struct TraceReport {
     /// (KT-127). Left out of the JSON otherwise, so an unfiltered trace serializes exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<AppliedTraceFilter>,
+    /// Engine declarations and reference sites inside directories the workspace walks skip, such as
+    /// an IDE's `bin/` copy of the sources, left out of every list (KT-129). Absent from JSON when
+    /// nothing was left out, so a clean workspace serializes exactly as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ignored_directory_results: usize,
 }
 
 /// Everything `build_trace` needs, gathered by the caller from the engine and the parser.
@@ -282,6 +287,13 @@ impl TraceReport {
         self.kotlin_text_references = Some(references);
         self
     }
+
+    /// Records how many engine results inside ignored directories were left out before the report
+    /// was built (KT-129), so the answer states that its lists exclude them.
+    pub fn with_ignored_directory_results(mut self, count: usize) -> Self {
+        self.ignored_directory_results = count;
+        self
+    }
 }
 
 /// Builds the answer: implementors and direct callers attributed to their enclosing declarations,
@@ -348,6 +360,7 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
         java_text_references: None,
         kotlin_text_references: None,
         filter,
+        ignored_directory_results: 0,
     }
 }
 
