@@ -266,6 +266,11 @@ or fails it; concurrent first uses settle on a single daemon. Set `KTSENSE_NO_AU
 in process without starting one, or `KTSENSE_NO_DAEMON=1` to also skip routing through an existing
 one.
 
+After an upgrade, a daemon an older build left warm speaks an older protocol. `daemon stop` stops a
+daemon of any protocol version, `daemon status` names both versions when they differ, and the next
+engine-backed command's background start replaces the mismatched daemon with a current one, so an
+upgrade never strands a root without a warm daemon.
+
 ### As an MCP server
 
 `ktsense mcp` speaks JSON-RPC over stdio and exposes nine tools: `get_kotlin_outline`,

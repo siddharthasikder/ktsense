@@ -13,15 +13,15 @@ mod server;
 mod symbols;
 mod wire;
 
-pub use client::{verify_protocol, Client, ClientError, ProtocolMismatch};
+pub use client::{verify_protocol, AnyClient, Client, ClientError, ProtocolMismatch};
 pub use engine::{Engine, EngineRequest, HandlerOutcome, IndexTracker, WarmEngine};
 pub use placement::{
     resolve_socket_path, short_socket_base, BaseFault, SocketPlacementError, COMPANION_RESERVE,
     MAX_SOCKET_PATH, SOCKET_BUDGET,
 };
 pub use server::{
-    probe, run, status, stop, DaemonConfig, DaemonError, Liveness, StopOutcome, StopReason,
-    DEFAULT_IDLE_TIMEOUT,
+    probe, run, status, stop, stop_if_mismatched, DaemonConfig, DaemonError, Liveness, StopOutcome,
+    StopReason, DEFAULT_IDLE_TIMEOUT,
 };
 pub use symbols::{resolve_from_warm_index, Inconclusive, WarmResolution};
 pub use wire::{read_frame, write_frame, ClientFrame, ServerFrame, WireError, MAX_FRAME};

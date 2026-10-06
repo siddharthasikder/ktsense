@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ktsense_daemon::{status as probe_daemon, Client, Liveness};
+use ktsense_daemon::{status as probe_daemon, AnyClient, Client, Liveness, PROTOCOL_VERSION};
 use ktsense_lsp::{classify, Compatibility, IndexPhase, LSP_BINARY, PINNED_UPSTREAM_VERSION};
 use serde::{Deserialize, Serialize};
 
@@ -111,8 +111,20 @@ impl From<Compatibility> for CompatibilityLabel {
 pub(crate) struct DaemonStatus {
     pub(crate) socket: PathBuf,
     pub(crate) state: DaemonState,
+    /// Set only when a live daemon announced a protocol version this build does not match; naming
+    /// both versions is what a caller runs `status` to learn before an upgrade replaces it. Absent
+    /// from the JSON of a matched daemon, so an ordinary status is byte-identical (KT-113).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) protocol_mismatch: Option<ProtocolMismatchReport>,
     #[serde(flatten)]
     pub(crate) snapshot: Option<DaemonSnapshot>,
+}
+
+/// The two protocol versions on a mismatch: the live daemon's, and this build's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct ProtocolMismatchReport {
+    pub(crate) daemon: u32,
+    pub(crate) build: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -200,21 +212,48 @@ fn locate_ripgrep(path: Option<std::ffi::OsString>) -> Option<PathBuf> {
 
 /// Probes the socket, then asks a live daemon for its snapshot. A daemon that accepts the
 /// connection but does not answer the status method is still reported as running, with no
-/// snapshot, rather than as absent: the connection is the fact, the snapshot is a courtesy.
+/// snapshot, rather than as absent: the connection is the fact, the snapshot is a courtesy. A daemon
+/// whose announced protocol this build does not match is reported running with that mismatch and no
+/// snapshot, since the snapshot request is a shape the versions would disagree about (KT-113).
 pub(crate) async fn observe_daemon(socket: &Path) -> DaemonStatus {
     let state = match probe_daemon(socket).await {
         Liveness::Live => DaemonState::Running,
         Liveness::Stale => DaemonState::Stale,
         Liveness::Absent => DaemonState::Absent,
     };
-    let snapshot = match state {
-        DaemonState::Running => fetch_snapshot(socket).await,
-        DaemonState::Stale | DaemonState::Absent => None,
+    let (snapshot, protocol_mismatch) = match state {
+        DaemonState::Running => observe_running(socket).await,
+        DaemonState::Stale | DaemonState::Absent => (None, None),
     };
     DaemonStatus {
         socket: socket.to_path_buf(),
         state,
+        protocol_mismatch,
         snapshot,
+    }
+}
+
+/// Learns a live daemon's protocol version first, then asks for its snapshot only when that version
+/// matches this build. A version that does not match is reported rather than queried. The daemon
+/// serves one connection at a time, so the version connection is closed before the snapshot
+/// connection opens; holding it open would leave the snapshot waiting on a daemon still serving it.
+async fn observe_running(
+    socket: &Path,
+) -> (Option<DaemonSnapshot>, Option<ProtocolMismatchReport>) {
+    let announced = AnyClient::connect(socket)
+        .await
+        .ok()
+        .map(|client| client.protocol_version);
+    match announced {
+        Some(version) if version == PROTOCOL_VERSION => (fetch_snapshot(socket).await, None),
+        Some(version) => (
+            None,
+            Some(ProtocolMismatchReport {
+                daemon: version,
+                build: PROTOCOL_VERSION,
+            }),
+        ),
+        None => (None, None),
     }
 }
 
@@ -270,14 +309,20 @@ pub(crate) fn daemon_lines(daemon: &DaemonStatus) -> String {
     match daemon.state {
         DaemonState::Running => {
             let mut lines = format!("daemon: running\nsocket: {socket}\n");
-            match &daemon.snapshot {
-                Some(snapshot) => lines.push_str(&format!(
-                    "uptime: {}\nindex: {}\nrequests served: {}\n",
-                    humanize(Duration::from_secs(snapshot.uptime_secs)),
-                    snapshot.index.text(),
-                    snapshot.requests_served
+            match &daemon.protocol_mismatch {
+                Some(mismatch) => lines.push_str(&format!(
+                    "protocol: daemon speaks protocol {}, this build speaks {}\n",
+                    mismatch.daemon, mismatch.build
                 )),
-                None => lines.push_str("uptime, index and request count: not answered\n"),
+                None => match &daemon.snapshot {
+                    Some(snapshot) => lines.push_str(&format!(
+                        "uptime: {}\nindex: {}\nrequests served: {}\n",
+                        humanize(Duration::from_secs(snapshot.uptime_secs)),
+                        snapshot.index.text(),
+                        snapshot.requests_served
+                    )),
+                    None => lines.push_str("uptime, index and request count: not answered\n"),
+                },
             }
             lines
         }
@@ -322,6 +367,7 @@ mod tests {
         let running = report(DaemonStatus {
             socket: PathBuf::from("/run/ktsense/abc.sock"),
             state: DaemonState::Running,
+            protocol_mismatch: None,
             snapshot: Some(DaemonSnapshot {
                 uptime_secs: 3725,
                 index: IndexLabel::Complete,
@@ -354,11 +400,44 @@ mod tests {
         );
     }
 
+    /// A daemon this build does not match is reported running and names both protocol versions, in
+    /// Markdown and JSON, in place of the snapshot it cannot ask for. This is what a caller runs
+    /// `status` to learn before `daemon stop` or an autostart replaces it (KT-113).
+    #[test]
+    fn a_mismatched_daemon_names_both_protocol_versions() {
+        let mismatched = report(DaemonStatus {
+            socket: PathBuf::from("/run/ktsense/abc.sock"),
+            state: DaemonState::Running,
+            protocol_mismatch: Some(ProtocolMismatchReport {
+                daemon: 7,
+                build: 8,
+            }),
+            snapshot: None,
+        });
+
+        let json: serde_json::Value = serde_json::to_value(&mismatched).expect("serializes");
+
+        assert_eq!(
+            (daemon_lines(&mismatched.daemon), json["daemon"].clone()),
+            (
+                "daemon: running\nsocket: /run/ktsense/abc.sock\nprotocol: daemon speaks protocol \
+                 7, this build speaks 8\n"
+                    .to_string(),
+                serde_json::json!({
+                    "socket": "/run/ktsense/abc.sock",
+                    "state": "running",
+                    "protocol_mismatch": { "daemon": 7, "build": 8 }
+                })
+            )
+        );
+    }
+
     #[test]
     fn a_missing_engine_and_a_stale_socket_are_reported_rather_than_failing() {
         let mut degraded = report(DaemonStatus {
             socket: PathBuf::from("/run/ktsense/abc.sock"),
             state: DaemonState::Stale,
+            protocol_mismatch: None,
             snapshot: None,
         });
         degraded.engine.version = None;

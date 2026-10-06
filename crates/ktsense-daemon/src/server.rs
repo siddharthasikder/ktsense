@@ -14,7 +14,7 @@ use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
-use crate::client::{Client, ClientError};
+use crate::client::{AnyClient, ClientError};
 use crate::engine::{Engine, EngineRequest, HandlerOutcome};
 use crate::wire::{self, ClientFrame, ServerFrame};
 use crate::PROTOCOL_VERSION;
@@ -130,14 +130,39 @@ pub async fn status(socket_path: &Path) -> Liveness {
 
 /// Stops a running daemon, or reports that none was running. Idempotent: stopping an absent or dead
 /// daemon is a no-op, not an error.
+///
+/// The stop is version-independent: it reads the daemon's hello without requiring the version to
+/// match and sends the pinned stop frame every protocol version accepts, so an upgraded build stops
+/// a daemon left over from an older one. There is no pid-signal fallback for a daemon that would not
+/// accept the frame, because a deployed daemon records no pid beside its socket to signal (only the
+/// socket is written there; the `.start` claim is removed once a start completes), and every version
+/// shipped so far accepts the frame, so none needs one (KT-113).
 pub async fn stop(socket_path: &Path) -> Result<StopOutcome, ClientError> {
     if probe(socket_path).await != Liveness::Live {
         return Ok(StopOutcome::NotRunning);
     }
-    let client = Client::connect(socket_path).await?;
+    let client = AnyClient::connect(socket_path).await?;
     client.stop().await?;
     wait_until_gone(socket_path, STOP_TIMEOUT).await;
     Ok(StopOutcome::Stopped)
+}
+
+/// Stops the daemon on this socket only if it speaks a protocol this build does not, returning
+/// `None` when it matched or none answered. The version is read and the stop is sent on one
+/// connection, so the daemon that is stopped is exactly the one whose version was read: a current
+/// daemon a concurrent start spawned after that read is a different connection's daemon and is never
+/// stopped by this one (KT-113).
+pub async fn stop_if_mismatched(socket_path: &Path) -> Result<Option<StopOutcome>, ClientError> {
+    let client = match AnyClient::connect(socket_path).await {
+        Ok(client) => client,
+        Err(_) => return Ok(None),
+    };
+    if client.protocol_version == PROTOCOL_VERSION {
+        return Ok(None);
+    }
+    client.stop().await?;
+    wait_until_gone(socket_path, STOP_TIMEOUT).await;
+    Ok(Some(StopOutcome::Stopped))
 }
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);

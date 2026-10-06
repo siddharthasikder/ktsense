@@ -21,7 +21,10 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
-    /// Sent first on every connection so the client can detect a stale or mismatched daemon.
+    /// Sent first on every connection so the client can detect a stale or mismatched daemon. This
+    /// frame is version-independent: every daemon, of any protocol version, announces its version
+    /// through it, so a client can read the version of a daemon it does not match. Its wire bytes
+    /// are pinned (see the wire test) and must stay decodable forever.
     Hello { protocol_version: u32 },
     /// A successful answer to a request.
     Result { value: Value },
@@ -33,7 +36,14 @@ pub enum ServerFrame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
-    Request { method: String, params: Value },
+    Request {
+        method: String,
+        params: Value,
+    },
+    /// Asks the daemon to shut down. This frame is version-independent and its wire bytes are pinned
+    /// (see the wire test): every protocol version has accepted `{"type":"stop"}` and every future
+    /// one must, so `daemon stop` can stop a daemon whose protocol version it does not match. The
+    /// deployed protocol-7 build was measured to accept exactly these bytes (KT-113).
     Stop,
 }
 
@@ -137,5 +147,38 @@ mod tests {
                 limit
             }) if length == MAX_FRAME + 1 && limit == MAX_FRAME
         ));
+    }
+
+    /// The two frames `daemon stop` and `daemon status` rely on across a protocol mismatch are
+    /// pinned to their exact wire bytes. If serde renaming, field order or the framing ever changes
+    /// these, a current build can no longer stop or read the version of an already-deployed daemon,
+    /// so this fails rather than letting that regress silently. The protocol-7 build was measured to
+    /// emit this hello and accept this stop (KT-113).
+    #[tokio::test]
+    async fn the_cross_version_frames_are_pinned_to_their_wire_bytes() {
+        let frame = |body: &[u8]| {
+            let mut out = (body.len() as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(body);
+            out
+        };
+        let mut stop = Vec::new();
+        write_frame(&mut stop, &ClientFrame::Stop).await.unwrap();
+        let mut hello = Vec::new();
+        write_frame(
+            &mut hello,
+            &ServerFrame::Hello {
+                protocol_version: 7,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            (stop, hello),
+            (
+                frame(br#"{"type":"stop"}"#),
+                frame(br#"{"type":"hello","protocol_version":7}"#),
+            )
+        );
     }
 }

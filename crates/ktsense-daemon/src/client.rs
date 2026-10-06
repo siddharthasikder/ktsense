@@ -96,6 +96,43 @@ impl Client {
     }
 }
 
+/// A connection past the hello that tolerates a protocol version this build does not match, carrying
+/// the version the daemon announced.
+///
+/// The version-independent operations use this rather than [`Client`]: `daemon stop` sends a stop
+/// frame every protocol version accepts, and `daemon status` names the daemon's version instead of
+/// refusing it. It deliberately exposes no `request`, because a request's wire shape is what a
+/// protocol version pins, so issuing one against a daemon of another version is exactly the mismatch
+/// [`Client::connect`] exists to refuse.
+pub struct AnyClient {
+    stream: UnixStream,
+    /// The protocol version the daemon announced in its hello, matched or not.
+    pub protocol_version: u32,
+}
+
+impl AnyClient {
+    /// Connects and consumes the hello, keeping the connection whatever protocol version it reports.
+    pub async fn connect(socket_path: &Path) -> Result<Self, ClientError> {
+        let mut stream = UnixStream::connect(socket_path)
+            .await
+            .map_err(WireError::Io)?;
+        match wire::read_frame(&mut stream).await? {
+            Some(ServerFrame::Hello { protocol_version }) => Ok(Self {
+                stream,
+                protocol_version,
+            }),
+            Some(_) => Err(ClientError::UnexpectedFrame),
+            None => Err(ClientError::NoHello),
+        }
+    }
+
+    /// Sends the version-independent stop frame. A daemon of any protocol version shuts down on it.
+    pub async fn stop(mut self) -> Result<(), ClientError> {
+        wire::write_frame(&mut self.stream, &ClientFrame::Stop).await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

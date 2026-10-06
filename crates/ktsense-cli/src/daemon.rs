@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 use rustix::fs::{flock, FlockOperation};
 
 use ktsense_daemon::{
-    resolve_socket_path, run, short_socket_base, status, stop, DaemonConfig, Liveness, StopOutcome,
-    StopReason, WarmEngine, DEFAULT_IDLE_TIMEOUT,
+    resolve_socket_path, run, short_socket_base, status, stop, stop_if_mismatched, DaemonConfig,
+    Liveness, StopOutcome, StopReason, WarmEngine, DEFAULT_IDLE_TIMEOUT,
 };
 use ktsense_lsp::InitializeConfig;
 
@@ -67,6 +67,14 @@ pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError>
 /// Starts a daemon for `root`, or reports that one is already running. Idempotent by design: asking
 /// for something that already exists is a success, and saying so is more useful than an error.
 ///
+/// A daemon already live for this root is kept only when its protocol version matches this build's.
+/// One that answered an older protocol is stopped first, then a current daemon is started through the
+/// same claim below, so an upgrade never strands a root behind the daemon the older build left warm
+/// (KT-113). The version is read and the stop sent on one connection, so only the daemon whose
+/// version was read can be stopped, never one a concurrent start spawned after it. This is not a
+/// liveness probe into the claim: the claim is still granted by one `flock`, and the replacement is
+/// decided before it, so the KT-71 rule that nothing observes the claim holder's liveness holds.
+///
 /// The liveness check below cannot decide a race, because two starts released together both pass it.
 /// A claim decides, and it is taken before the engine child is spawned rather than after: the loser
 /// reports the winner's daemon without having paid for an engine of its own, so there is no losing
@@ -77,7 +85,7 @@ pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError>
 pub(crate) fn start(root: &Path) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
     let socket = socket_for(&root)?;
-    if live(&socket) {
+    if live(&socket) && !matches!(block_on(stop_if_mismatched(&socket)), Ok(Some(_))) {
         return Ok(already_running(&root, &socket));
     }
     rendezvous();

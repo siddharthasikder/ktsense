@@ -7,7 +7,7 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,8 +18,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use ktsense_daemon::{
-    probe, run, stop, write_frame, Client, ClientError, DaemonConfig, Engine, EngineRequest,
-    HandlerOutcome, Liveness, ServerFrame, StopOutcome, StopReason, PROTOCOL_VERSION,
+    probe, read_frame, run, stop, stop_if_mismatched, write_frame, AnyClient, Client, ClientError,
+    ClientFrame, DaemonConfig, Engine, EngineRequest, HandlerOutcome, Liveness, ServerFrame,
+    StopOutcome, StopReason, PROTOCOL_VERSION,
 };
 
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -299,4 +300,115 @@ async fn stopping_an_absent_daemon_is_a_no_op() {
         .expect("stop ok");
 
     assert_eq!(outcome, StopOutcome::NotRunning);
+}
+
+/// A fake daemon that answers an older protocol version, so a current build can be driven against a
+/// mismatch without an older binary installed. It announces `version` in its hello on every
+/// connection and shuts down on the version-independent stop frame, removing its socket as a real
+/// daemon does. Earlier connections (the probe, and a tolerant version read) hang up without a
+/// frame, so it loops back to accept rather than treating a closed connection as a stop.
+fn spawn_legacy_daemon(
+    socket_path: PathBuf,
+    version: u32,
+    saw_stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    let listener = UnixListener::bind(&socket_path).expect("bind legacy");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            if write_frame(
+                &mut stream,
+                &ServerFrame::Hello {
+                    protocol_version: version,
+                },
+            )
+            .await
+            .is_err()
+            {
+                continue;
+            }
+            if let Ok(Some(ClientFrame::Stop)) = read_frame::<_, ClientFrame>(&mut stream).await {
+                saw_stop.store(true, Ordering::Relaxed);
+                let _ = std::fs::remove_file(&socket_path);
+                return;
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn stop_stops_a_daemon_whose_protocol_this_build_does_not_match() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("legacy.sock");
+    let legacy_version = PROTOCOL_VERSION - 1;
+    let saw_stop = Arc::new(AtomicBool::new(false));
+    let server = spawn_legacy_daemon(socket_path.clone(), legacy_version, saw_stop.clone());
+
+    let announced = AnyClient::connect(&socket_path)
+        .await
+        .expect("tolerant connect")
+        .protocol_version;
+    let outcome = timeout(DEADLINE, stop(&socket_path))
+        .await
+        .expect("stop resolved")
+        .expect("stop ok");
+    let _ = timeout(DEADLINE, server).await;
+
+    let observed = json!({
+        "read_the_mismatched_version": announced == legacy_version && announced != PROTOCOL_VERSION,
+        "outcome_stopped": outcome == StopOutcome::Stopped,
+        "daemon_saw_the_stop_frame": saw_stop.load(Ordering::Relaxed),
+        "socket_removed": !socket_path.exists(),
+    });
+    assert_eq!(
+        observed,
+        json!({
+            "read_the_mismatched_version": true,
+            "outcome_stopped": true,
+            "daemon_saw_the_stop_frame": true,
+            "socket_removed": true
+        })
+    );
+}
+
+/// The replacement a start performs stops a daemon only when the very connection that read its
+/// version found it mismatched, so a current daemon a concurrent start has just spawned is never the
+/// one stopped. A matched daemon is kept and sees no stop frame; a mismatched one is stopped.
+#[tokio::test]
+async fn replacement_stops_only_the_daemon_whose_version_it_read_as_mismatched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let replace = |name: &str, version: u32| {
+        let socket_path = dir.path().join(name);
+        let saw_stop = Arc::new(AtomicBool::new(false));
+        let server = spawn_legacy_daemon(socket_path.clone(), version, saw_stop.clone());
+        async move {
+            let outcome = timeout(DEADLINE, stop_if_mismatched(&socket_path))
+                .await
+                .expect("replacement resolved")
+                .expect("replacement ok");
+            if outcome.is_some() {
+                let _ = timeout(DEADLINE, server).await;
+            } else {
+                server.abort();
+            }
+            (
+                outcome,
+                saw_stop.load(Ordering::Relaxed),
+                socket_path.exists(),
+            )
+        }
+    };
+
+    let matched = replace("matched.sock", PROTOCOL_VERSION).await;
+    let mismatched = replace("mismatched.sock", PROTOCOL_VERSION - 1).await;
+
+    assert_eq!(
+        (matched, mismatched),
+        (
+            (None, false, true),
+            (Some(StopOutcome::Stopped), true, false)
+        )
+    );
 }
