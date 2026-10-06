@@ -161,7 +161,8 @@ stderr: (empty)
     },
     {
       "kind": "function",
-      "name": "Outcome<T>.map",
+      "name": "map",
+      "receiver": "Outcome<T>",
       "line": 25,
       "modifiers": [
         "inline"

@@ -56,6 +56,14 @@ stderr: (empty)
           }
         }
       ]
+    },
+    {
+      "kind": "function",
+      "name": "blankToNull",
+      "receiver": "String?",
+      "line": 11,
+      "visibility": "internal",
+      "return_type": "String?"
     }
   ]
 }

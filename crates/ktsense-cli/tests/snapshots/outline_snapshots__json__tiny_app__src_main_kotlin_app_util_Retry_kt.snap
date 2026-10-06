@@ -41,7 +41,8 @@ stderr: (empty)
     },
     {
       "kind": "function",
-      "name": "Iterable<T>.mapSequentially",
+      "name": "mapSequentially",
+      "receiver": "Iterable<T>",
       "line": 23,
       "modifiers": [
         "suspend"

@@ -1317,6 +1317,37 @@ mod tests {
     }
 
     #[test]
+    fn an_extension_resolves_from_the_syntax_index_under_its_simple_name_with_a_receiver_free_fqn()
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Probe.kt"),
+            "package com.example.probe\n\ninternal fun String?.blankToNull(): String? = this\n",
+        )
+        .expect("write fixture");
+
+        let outcome =
+            present_exact_from_syntax_index(dir.path(), "blankToNull", None, None, Format::Md)
+                .expect("exact fallback finds the extension");
+
+        let row = outcome
+            .text
+            .lines()
+            .find(|line| line.contains("Probe.kt:"))
+            .map(str::to_string);
+        assert_eq!(
+            (outcome.exit.code(), row),
+            (
+                0,
+                Some(
+                    "com.example.probe.blankToNull  fun  Probe.kt:3  internal fun String?.blankToNull(): String?"
+                        .to_string()
+                ),
+            )
+        );
+    }
+
+    #[test]
     fn a_java_class_candidate_gets_its_kind_qualified_name_signature_and_folds_its_constructor() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("UpdateDocumentBase.java");

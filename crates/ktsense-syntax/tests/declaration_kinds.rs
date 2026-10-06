@@ -240,6 +240,65 @@ internal val lazySummary: String by lazy { "" }
 }
 
 #[test]
+fn an_extension_is_named_by_its_simple_name_with_the_receiver_shown_in_the_signature_only() {
+    // source, simple name, receiver, rendered signature. The name is receiver-free so a lookup
+    // matches what an occurrence spells, while the signature still shows the receiver (KT-121).
+    let cases = [
+        (
+            "fun String?.blankToNull(): String? = null",
+            "blankToNull",
+            "String?",
+            "fun String?.blankToNull(): String?",
+        ),
+        (
+            "fun <T> List<T>.second(): T = this[1]",
+            "second",
+            "List<T>",
+            "fun <T> List<T>.second(): T",
+        ),
+        (
+            "val Foo.bar: Int get() = 0",
+            "bar",
+            "Foo",
+            "val Foo.bar: Int",
+        ),
+        ("fun a.b.C.ext() {}", "ext", "a.b.C", "fun a.b.C.ext()"),
+        (
+            "suspend fun Flow<Int>.x(): Int = 0",
+            "x",
+            "Flow<Int>",
+            "suspend fun Flow<Int>.x(): Int",
+        ),
+    ];
+
+    let observed: Vec<(String, Option<String>, String)> = cases
+        .iter()
+        .map(|(source, ..)| {
+            let file = extract("probe.kt", source).expect("extract");
+            let declaration = file.declarations.first().expect("one declaration").clone();
+            (
+                declaration.name,
+                declaration.receiver,
+                render_skeleton(&file, &RenderOptions::default().with_private()),
+            )
+        })
+        .collect();
+
+    let expected: Vec<(String, Option<String>, String)> = cases
+        .iter()
+        .map(|(_, name, receiver, signature)| {
+            (
+                name.to_string(),
+                Some(receiver.to_string()),
+                signature.to_string(),
+            )
+        })
+        .collect();
+
+    assert_eq!(observed, expected);
+}
+
+#[test]
 fn package_imports_and_kdoc_summaries_survive_extraction() {
     let source = r#"
 package app.service

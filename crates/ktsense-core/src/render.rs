@@ -1400,8 +1400,12 @@ fn name_segment(declaration: &Declaration) -> String {
         .as_deref()
         .filter(|_| !declaration.kind.type_parameters_precede_name())
         .unwrap_or_default();
+    let receiver = match &declaration.receiver {
+        Some(receiver) => format!("{}.", neutralize(receiver)),
+        None => String::new(),
+    };
     format!(
-        "{}{}",
+        "{receiver}{}{}",
         neutralize(&declaration.name),
         neutralize(trailing_type_parameters)
     )

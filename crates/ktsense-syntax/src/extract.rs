@@ -283,11 +283,12 @@ impl<'a> Extractor<'a> {
 
         let mut declaration = Declaration::new(
             DeclKind::Function,
-            self.name_with_receiver(node, bare_name),
+            bare_name,
             self.line_of(name_node.unwrap_or(node)),
         )
         .with_visibility(visibility)
         .with_modifiers(modifiers);
+        declaration.receiver = self.receiver_of(node);
 
         self.attach_type_parameters(&mut declaration, node);
         if let Some(parameters) = self.first_child_of_kind(node, "function_value_parameters") {
@@ -329,11 +330,12 @@ impl<'a> Extractor<'a> {
             } else {
                 DeclKind::Val
             },
-            self.name_with_receiver(node, self.text(name_node)),
+            self.text(name_node),
             self.line_of(name_node),
         )
         .with_visibility(visibility)
         .with_modifiers(modifiers);
+        declaration.receiver = self.receiver_of(node);
 
         declaration.return_type = self
             .children(variable)
@@ -387,13 +389,13 @@ impl<'a> Extractor<'a> {
         declaration
     }
 
-    /// Prefixes an extension's receiver onto its name, because the receiver is what makes the
-    /// declaration callable: `User.initials` can be used, a bare `initials` cannot.
-    fn name_with_receiver(&self, node: Node<'_>, bare_name: &str) -> String {
-        match self.first_child_of_kind(node, "receiver_type") {
-            Some(receiver) => format!("{}.{}", self.text(receiver), bare_name),
-            None => bare_name.to_string(),
-        }
+    /// The receiver type of an extension function or property, as written in source, else `None`.
+    /// The receiver is what makes the declaration callable (`User.initials` can be used, a bare
+    /// `initials` cannot), so it is kept and rendered into the signature; it stays out of the name
+    /// so a lookup matches the simple name and a qualified name omits it (KT-121).
+    fn receiver_of(&self, node: Node<'_>) -> Option<String> {
+        self.first_child_of_kind(node, "receiver_type")
+            .map(|receiver| self.text(receiver).to_string())
     }
 
     fn modifiers_of(&self, node: Node<'_>) -> (Visibility, Vec<Modifier>) {

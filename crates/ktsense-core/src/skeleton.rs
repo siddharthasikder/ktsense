@@ -129,7 +129,19 @@ impl FileSkeleton {
 pub struct Declaration {
     pub kind: DeclKind,
     /// Empty for a declaration that has no name of its own, such as an unnamed companion object.
+    ///
+    /// This is the declaration's own simple name, never a receiver-qualified one: an extension
+    /// `fun String?.blankToNull()` is named `blankToNull`, with `String?` carried in
+    /// [`Self::receiver`]. Keeping the receiver out of the name is what lets a lookup match the
+    /// name an occurrence spells and a fully-qualified name read `<package>.blankToNull` rather
+    /// than `<package>.String?.blankToNull` (KT-121).
     pub name: String,
+    /// The receiver type of an extension function or property, as written in source
+    /// (`String?`, `List<T>`, `Flow<Int>`), else absent. Rendered into the signature line before
+    /// the name so an extension still reads `fun String?.blankToNull()`, but kept out of
+    /// [`Self::name`] so the receiver never leaks into a simple-name match or a qualified name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
     /// 1-based line in the source file, so output can point an agent at it.
     pub line: u32,
     #[serde(default, skip_serializing_if = "Visibility::is_public")]
@@ -183,6 +195,7 @@ impl Declaration {
         Self {
             kind,
             name: name.into(),
+            receiver: None,
             line,
             visibility: Visibility::Public,
             modifiers: Vec::new(),
@@ -235,6 +248,12 @@ impl Declaration {
 
     pub fn with_annotations(mut self, annotations: Vec<String>) -> Self {
         self.annotations = annotations;
+        self
+    }
+
+    /// Sets the extension receiver type shown in the signature, as written in source.
+    pub fn with_receiver(mut self, receiver: impl Into<String>) -> Self {
+        self.receiver = Some(receiver.into());
         self
     }
 

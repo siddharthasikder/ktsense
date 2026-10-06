@@ -108,14 +108,16 @@ stderr: (empty)
     },
     {
       "kind": "val",
-      "name": "User.initials",
+      "name": "initials",
+      "receiver": "User",
       "line": 20,
       "return_type": "String",
       "doc": "Extension property on a foreign type."
     },
     {
       "kind": "function",
-      "name": "User.hasAnyEmailDomain",
+      "name": "hasAnyEmailDomain",
+      "receiver": "User",
       "line": 24,
       "parameters": [
         {

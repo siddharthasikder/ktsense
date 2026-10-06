@@ -7,3 +7,6 @@ data class Order(
     val customerEmail: String,
     val totalCents: Long,
 )
+
+internal fun String?.blankToNull(): String? = if (isNullOrBlank()) null else this
+

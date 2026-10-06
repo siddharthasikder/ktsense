@@ -67,6 +67,38 @@ fn contains_lists_every_repository_in_rank_order_from_the_syntax_index() {
     );
 }
 
+/// An extension function is listed under its own simple name with a receiver-free qualified name:
+/// `--contains blankToNull` reports `shop.order.blankToNull`, not `shop.order.String?.blankToNull`,
+/// while the receiver survives in the signature column (KT-121).
+#[test]
+fn contains_names_an_extension_by_its_simple_name_with_a_receiver_free_qualified_name() {
+    let run = symbols(&[
+        "symbols",
+        "--contains",
+        "blankToNull",
+        "--root",
+        "fixtures/multi-module",
+    ]);
+
+    let row = run
+        .stdout
+        .lines()
+        .find(|line| line.contains("Order.kt:"))
+        .map(str::to_string);
+
+    assert_eq!(
+        (run.code, row, run.stderr),
+        (
+            Some(0),
+            Some(
+                "shop.order.blankToNull  fun  core/src/main/kotlin/shop/order/Order.kt:11  internal fun String?.blankToNull(): String?"
+                    .to_string()
+            ),
+            String::new(),
+        )
+    );
+}
+
 /// A query nothing contains is a real "no such declaration" answer: exit 1, and the KT-87 scope
 /// wording saying only this workspace was searched.
 #[test]
