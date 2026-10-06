@@ -321,3 +321,43 @@ fn nesting_past_the_depth_limit_truncates_instead_of_overflowing_the_stack() {
     let observed = (file.truncated, file.declaration_count());
     assert_eq!(observed, (true, MAX_NESTING_DEPTH + 1));
 }
+
+/// Annotations are extracted for a class, a nested function and a class annotation split across
+/// several source lines, the last normalized to a single line. Rendering drops annotations by
+/// default, so this asserts the extracted field directly rather than through the skeleton text.
+#[test]
+fn extracts_class_function_and_multiline_annotations_each_on_one_line() {
+    let file = extract(
+        "probe.kt",
+        concat!(
+            "@Component(modules = [AwsModule::class, ConfigModule::class])\n",
+            "class Wiring {\n",
+            "    @JvmStatic\n",
+            "    fun boot(): Unit = TODO()\n",
+            "}\n",
+            "\n",
+            "@Retention(\n",
+            "    AnnotationRetention.RUNTIME,\n",
+            ")\n",
+            "annotation class Audited\n",
+        ),
+    )
+    .expect("extract");
+
+    let wiring = &file.declarations[0];
+    let boot = &wiring.children[0];
+    let audited = &file.declarations[1];
+
+    assert_eq!(
+        (
+            wiring.annotations.clone(),
+            boot.annotations.clone(),
+            audited.annotations.clone(),
+        ),
+        (
+            vec!["@Component(modules = [AwsModule::class, ConfigModule::class])".to_string()],
+            vec!["@JvmStatic".to_string()],
+            vec!["@Retention( AnnotationRetention.RUNTIME, )".to_string()],
+        )
+    );
+}

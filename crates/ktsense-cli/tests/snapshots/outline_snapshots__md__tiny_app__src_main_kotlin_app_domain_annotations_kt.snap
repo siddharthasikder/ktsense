@@ -14,3 +14,4 @@ annotation class Audited(val category: String = "default")
 annotation class Sanitized
 annotation class RetryOn(val exception: String)
 ```
+5 annotations hidden; pass --annotations to include them.

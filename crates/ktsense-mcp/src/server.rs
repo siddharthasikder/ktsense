@@ -192,6 +192,9 @@ pub struct OutlineParams {
     /// Include the first line of each declaration's KDoc.
     #[serde(default)]
     pub kdoc: bool,
+    /// Show declaration annotations, hidden by default.
+    #[serde(default)]
+    pub annotations: bool,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -580,7 +583,8 @@ impl KtsenseServer {
         let args = Args::for_tool(&crate::OUTLINE, root)
             .positional(params.file)
             .flag("private", params.private)
-            .flag("kdoc", params.kdoc);
+            .flag("kdoc", params.kdoc)
+            .flag("annotations", params.annotations);
         self.invoke(&crate::OUTLINE, args.0).await
     }
 

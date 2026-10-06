@@ -641,6 +641,11 @@ expression: listed
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "annotations": {
+            "default": false,
+            "description": "Show declaration annotations, hidden by default.",
+            "type": "boolean"
+          },
           "file": {
             "description": "Path to one Kotlin file, absolute or relative to the workspace root.",
             "type": "string"

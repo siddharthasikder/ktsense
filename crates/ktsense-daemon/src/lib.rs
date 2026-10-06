@@ -29,7 +29,13 @@ pub use wire::{read_frame, write_frame, ClientFrame, ServerFrame, WireError, MAX
 use std::path::{Path, PathBuf};
 
 /// Protocol version carried in the hello frame, so a stale daemon is detected rather than trusted.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Bump it whenever a routed command's wire shape changes. The routed parameters are flattened,
+/// and serde ignores a field it does not know, so an older daemon would otherwise answer a new
+/// flag by silently leaving it out, or reject a new command as a command error instead of letting
+/// the client fall back in-process. Version 2 added routed `context` (KT-89) and outline
+/// `annotations` (KT-90).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

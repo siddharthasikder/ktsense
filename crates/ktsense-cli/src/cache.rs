@@ -312,10 +312,13 @@ mod tests {
         let fixture = Fixture::new();
         let file = fixture.write(
             "core/Order.kt",
-            "package shop.order\n\n/** A placed order. */\ndata class Order(private val id: Int)\n",
+            "package shop.order\n\n/** A placed order. */\n@Deprecated\ndata class Order(private val id: Int)\n",
         );
         let cache = SkeletonCache::default();
-        let rich = RenderOptions::default().with_private().with_doc();
+        let rich = RenderOptions::default()
+            .with_private()
+            .with_doc()
+            .with_annotations();
 
         let outline_md = pair(
             cache.outline(&fixture.root, &file, Format::Md, &rich),

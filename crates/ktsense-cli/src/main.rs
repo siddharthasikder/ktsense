@@ -112,6 +112,9 @@ enum Command {
         /// Include the first line of each declaration's KDoc.
         #[arg(long)]
         kdoc: bool,
+        /// Show declaration annotations, hidden by default; a default outline says how many it hid.
+        #[arg(long)]
+        annotations: bool,
     },
     /// Find declarations by name across the workspace
     Symbols {
@@ -419,12 +422,14 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             file,
             private,
             kdoc,
+            annotations,
         } => route(
             &base,
             routing::RoutedCommand::Outline {
                 file,
                 private,
                 kdoc,
+                annotations,
             },
             format,
         ),
@@ -677,7 +682,10 @@ fn present(
 ) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(render_markdown(skeleton, options)),
-        Format::Json => as_json(skeleton),
+        // Annotations reach JSON only under --annotations, matching the Markdown default, so a
+        // client toggles them the same way in either format.
+        Format::Json if options.include_annotations => as_json(skeleton),
+        Format::Json => as_json(&skeleton.clone().without_annotations()),
         Format::Dot => Err(CommandError::unsupported_format("outline")),
     }
 }

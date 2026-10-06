@@ -9,8 +9,10 @@
 //! - Function and property bodies, and initializer expressions, are dropped. That is the point.
 //! - An enum entry's constructor arguments are values, so they are part of the body and go too:
 //!   `VIEWER(0)` renders as `VIEWER`.
-//! - Annotations are dropped. An outline answers "what can I call and what does it return"; the
-//!   annotation set is a separate question, and printing it doubles the width of every line.
+//! - Annotations are omitted by default and shown with `--annotations`. An outline answers "what can
+//!   I call and what does it return"; the annotation set is a separate question, and printing it
+//!   doubles the width of every line, so the default drops it and says how many it dropped. The
+//!   [`Declaration::annotations`] are still extracted and carried so the flag can reveal them.
 
 use serde::{Deserialize, Serialize};
 
@@ -106,6 +108,20 @@ impl FileSkeleton {
         }
         count(&self.declarations)
     }
+
+    /// The same skeleton with every declaration's annotations cleared. The JSON outline uses this
+    /// when `--annotations` was not asked for, so annotations reach JSON only with the flag; a
+    /// skeleton that carried none is returned unchanged.
+    pub fn without_annotations(mut self) -> Self {
+        fn strip(declarations: &mut [Declaration]) {
+            for declaration in declarations {
+                declaration.annotations.clear();
+                strip(&mut declaration.children);
+            }
+        }
+        strip(&mut self.declarations);
+        self
+    }
 }
 
 /// A single declaration, possibly containing others.
@@ -118,6 +134,12 @@ pub struct Declaration {
     pub line: u32,
     #[serde(default, skip_serializing_if = "Visibility::is_public")]
     pub visibility: Visibility,
+    /// Annotation source text, one entry per annotation, each whitespace-normalized to a single line
+    /// with its arguments kept, for example `@Component(modules = [AwsModule::class])`. Extracted
+    /// always but rendered only under `--annotations`, so an outline stays terse by default;
+    /// `skip_serializing_if` keeps existing JSON unchanged when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modifiers: Vec<Modifier>,
     /// Rendered as written, for example `<T : Any>` or `<out T>`.
@@ -164,6 +186,7 @@ impl Declaration {
             line,
             visibility: Visibility::Public,
             modifiers: Vec::new(),
+            annotations: Vec::new(),
             type_parameters: None,
             parameters: Vec::new(),
             constructor_visibility: None,
@@ -207,6 +230,11 @@ impl Declaration {
 
     pub fn with_modifiers(mut self, modifiers: Vec<Modifier>) -> Self {
         self.modifiers = modifiers;
+        self
+    }
+
+    pub fn with_annotations(mut self, annotations: Vec<String>) -> Self {
+        self.annotations = annotations;
         self
     }
 
@@ -505,6 +533,30 @@ mod tests {
         assert_eq!(
             modifiers,
             vec![Modifier::Override, Modifier::Suspend, Modifier::Data]
+        );
+    }
+
+    #[test]
+    fn annotations_are_absent_from_json_when_empty_and_stripped_view_matches_a_bare_declaration() {
+        let annotated = FileSkeleton::new("p/Api.kt")
+            .with_declarations(vec![
+                Declaration::class("Api", 1).with_annotations(vec!["@Component".to_string()])
+            ]);
+        let bare =
+            FileSkeleton::new("p/Api.kt").with_declarations(vec![Declaration::class("Api", 1)]);
+
+        let bare_json = serde_json::to_string(&bare).expect("serialize bare");
+        let annotated_json = serde_json::to_string(&annotated).expect("serialize annotated");
+        let stripped_json =
+            serde_json::to_string(&annotated.without_annotations()).expect("serialize stripped");
+
+        assert_eq!(
+            (
+                bare_json.contains("annotations"),
+                annotated_json.contains("\"annotations\":[\"@Component\"]"),
+                stripped_json == bare_json,
+            ),
+            (false, true, true)
         );
     }
 

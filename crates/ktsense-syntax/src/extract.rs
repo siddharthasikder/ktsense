@@ -168,6 +168,7 @@ impl<'a> Extractor<'a> {
         declaration.supertypes = self.supertypes_of(node);
         self.attach_constraints(&mut declaration, node);
         declaration.doc = self.doc_of(node);
+        declaration.annotations = self.annotations_of(node);
         declaration.children = self.body_of(node, depth);
         declaration
     }
@@ -193,6 +194,7 @@ impl<'a> Extractor<'a> {
         let mut declaration = self.declared(node, DeclKind::Object, "type_identifier");
         declaration.supertypes = self.supertypes_of(node);
         declaration.doc = self.doc_of(node);
+        declaration.annotations = self.annotations_of(node);
         declaration.children = self.body_of(node, depth);
         declaration
     }
@@ -228,6 +230,7 @@ impl<'a> Extractor<'a> {
         }
         self.attach_constraints(&mut declaration, node);
         declaration.doc = self.doc_of(node);
+        declaration.annotations = self.annotations_of(node);
         declaration
     }
 
@@ -270,6 +273,7 @@ impl<'a> Extractor<'a> {
             .map(|type_node| self.text(type_node).to_string());
         declaration.type_inferred = declaration.return_type.is_none();
         declaration.doc = self.doc_of(node);
+        declaration.annotations = self.annotations_of(node);
         Some(declaration)
     }
 
@@ -310,6 +314,7 @@ impl<'a> Extractor<'a> {
             declaration.parameters = self.function_parameters(parameters);
         }
         declaration.doc = self.doc_of(node);
+        declaration.annotations = self.annotations_of(node);
         declaration
     }
 
@@ -346,6 +351,21 @@ impl<'a> Extractor<'a> {
             }
         }
         (visibility, collected)
+    }
+
+    /// The annotations written on `node`, one entry per `annotation` group in its `modifiers` child,
+    /// each whitespace-normalized to a single line so a multi-line annotation reads as one. Kept
+    /// separate from [`modifiers_of`], which drops the same groups, because an outline shows
+    /// annotations only under `--annotations` while it always shows modifiers.
+    fn annotations_of(&self, node: Node<'_>) -> Vec<String> {
+        let Some(modifiers) = self.first_child_of_kind(node, "modifiers") else {
+            return Vec::new();
+        };
+        self.children(modifiers)
+            .into_iter()
+            .filter(|group| group.kind() == "annotation")
+            .map(|group| normalize_annotation(self.text(group)))
+            .collect()
     }
 
     fn attach_type_parameters(&self, declaration: &mut Declaration, node: Node<'_>) {
@@ -536,6 +556,13 @@ fn summarize_kdoc(raw: &str) -> Option<String> {
         None => summary,
     };
     (!sentence.is_empty()).then_some(sentence)
+}
+
+/// Collapses an annotation's source text to a single line, folding any run of whitespace (including
+/// the newlines of a multi-line annotation) into one space. Keeps the arguments verbatim otherwise,
+/// so `@Component(modules = [A::class, B::class])` survives with its shape intact.
+fn normalize_annotation(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn modifier_from_keyword(keyword: &str) -> Option<Modifier> {

@@ -20,6 +20,7 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Added
 
+- `outline --annotations` shows each declaration's annotations, one per line above it; the default outline drops them and says how many it hid, and the `get_kotlin_outline` MCP tool gains an `annotations` argument (KT-90).
 - `context` includes a `## Source` section with the declaration's own body, right after its signature. A body too long for the budget is cut on a line boundary with the omitted range to read (KT-86).
 - On an ambiguous name, `trace` and `context` title the block `## Ambiguous: <name> (N candidates)` and print a `rerun with --pick <FQN>` hint on stdout and stderr, still exiting 3 (KT-85).
 - `status` reports whether `rg` is on `PATH` and warns when it is missing, because engine `find` and references return nothing without it (KT-80).

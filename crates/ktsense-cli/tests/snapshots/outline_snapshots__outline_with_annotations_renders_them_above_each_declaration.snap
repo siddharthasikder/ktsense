@@ -1,6 +1,6 @@
 ---
 source: crates/ktsense-cli/tests/outline_snapshots.rs
-expression: "outline(fixture.root, relative_path, format)"
+expression: "format!(\"exit: {exit}\\nstderr: {stderr_line}\\n--- stdout ---\\n{stdout}\")"
 ---
 exit: 0
 stderr: (empty)
@@ -10,6 +10,7 @@ stderr: (empty)
 package app.service
 
 ```kotlin
+@Audited(category = "user")
 open class UserService(private val repo: UserRepository, private val clock: Clock) : Service {
     override val name: String
     val cachedCount: Int
@@ -19,9 +20,9 @@ open class UserService(private val repo: UserRepository, private val clock: Cloc
     protected open fun onEviction(user: User)
     companion object {
         const val MAX_PAGE_SIZE: Int
+        @JvmStatic
         fun describe(): String
     }
 }
 ```
 3 private or internal declarations hidden; pass --private to include them.
-2 annotations hidden; pass --annotations to include them.

@@ -16,3 +16,4 @@ typealias UserPredicate = (User) -> Boolean
 const val ANONYMOUS_DISPLAY_NAME: String
 val defaultPredicate: UserPredicate
 ```
+1 annotation hidden; pass --annotations to include them.

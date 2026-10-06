@@ -132,3 +132,35 @@ fn outline_of_every_kotlin_fixture_is_pinned_in_both_formats() {
         }
     }
 }
+
+/// The `--annotations` flag renders each annotation on its own line above its declaration, indented
+/// to match. Pinned on `UserService.kt`, which carries a class annotation with an argument and a
+/// `@JvmStatic` on a companion member, so both a top-level and a nested annotation are covered. The
+/// default outline of the same file is pinned above and shows only the hidden-count hint.
+#[test]
+fn outline_with_annotations_renders_them_above_each_declaration() {
+    let user_service = &FIXTURES[0];
+    let relative = "src/main/kotlin/app/service/UserService.kt";
+    let output = Command::cargo_bin("ktsense")
+        .expect("binary builds")
+        .current_dir(user_service.root)
+        .args(["outline", relative, "--annotations"])
+        .output()
+        .expect("binary runs");
+
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    let exit = output
+        .status
+        .code()
+        .map_or_else(|| "signal".to_string(), |code| code.to_string());
+    let stderr_line = if stderr.is_empty() {
+        "(empty)".to_string()
+    } else {
+        stderr
+    };
+
+    insta::assert_snapshot!(format!(
+        "exit: {exit}\nstderr: {stderr_line}\n--- stdout ---\n{stdout}"
+    ));
+}

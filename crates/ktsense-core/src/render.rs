@@ -62,6 +62,7 @@ pub struct RenderOptions {
     pub include_private: bool,
     pub include_doc: bool,
     pub include_lines: bool,
+    pub include_annotations: bool,
 }
 
 impl RenderOptions {
@@ -77,6 +78,11 @@ impl RenderOptions {
 
     pub fn with_lines(mut self) -> Self {
         self.include_lines = true;
+        self
+    }
+
+    pub fn with_annotations(mut self) -> Self {
+        self.include_annotations = true;
         self
     }
 
@@ -113,9 +119,11 @@ pub fn render_markdown(file: &FileSkeleton, options: &RenderOptions) -> String {
         out.push_str(&format!("\npackage {}\n", neutralize(package)));
     }
     let hidden = hidden_declaration_count(&file.declarations, options);
+    let hidden_annotations = hidden_annotation_count(&file.declarations, options);
     if body.is_empty() {
         out.push_str("\nNo public declarations.\n");
         append_hidden_notice(&mut out, hidden);
+        append_annotation_notice(&mut out, hidden_annotations);
         return out;
     }
     let fence = fence_for(&body);
@@ -123,6 +131,7 @@ pub fn render_markdown(file: &FileSkeleton, options: &RenderOptions) -> String {
     out.push_str(&body);
     out.push_str(&format!("\n{fence}\n"));
     append_hidden_notice(&mut out, hidden);
+    append_annotation_notice(&mut out, hidden_annotations);
     out
 }
 
@@ -162,6 +171,50 @@ fn append_hidden_notice(out: &mut String, hidden: usize) {
     };
     out.push_str(&format!(
         "{hidden} private or internal {noun} hidden; pass --private to include them.\n"
+    ));
+}
+
+/// Annotations the default outline left off the declarations it did show, which is what
+/// `--annotations` would reveal. Zero when the flag is set, since then nothing is dropped, and it
+/// counts only admitted declarations: an annotation on a hidden declaration is already covered by
+/// the private notice, not counted twice here.
+fn hidden_annotation_count(declarations: &[Declaration], options: &RenderOptions) -> usize {
+    if options.include_annotations {
+        return 0;
+    }
+    declarations
+        .iter()
+        .map(|declaration| annotations_within(declaration, options))
+        .sum()
+}
+
+fn annotations_within(declaration: &Declaration, options: &RenderOptions) -> usize {
+    if !is_visible_api(declaration.visibility) && !options.include_private {
+        return 0;
+    }
+    declaration.annotations.len()
+        + declaration
+            .children
+            .iter()
+            .map(|child| annotations_within(child, options))
+            .sum::<usize>()
+}
+
+/// Appends the one-line count of annotations the default outline dropped, in the same style and
+/// place as the hidden-private notice, so a reader knows a terse outline stripped them. Nothing is
+/// appended when none were dropped, which keeps an annotation-free file and an `--annotations`
+/// render byte-identical to before.
+fn append_annotation_notice(out: &mut String, hidden: usize) {
+    if hidden == 0 {
+        return;
+    }
+    let noun = if hidden == 1 {
+        "annotation"
+    } else {
+        "annotations"
+    };
+    out.push_str(&format!(
+        "{hidden} {noun} hidden; pass --annotations to include them.\n"
     ));
 }
 
@@ -559,6 +612,7 @@ impl<'a> SkeletonWriter<'a> {
 
         let padding = INDENT.repeat(depth);
         self.write_doc(declaration, &padding);
+        self.write_annotations(declaration, &padding);
 
         let header = header_of(declaration, self.options);
         let members = self.visible_members(declaration);
@@ -597,6 +651,19 @@ impl<'a> SkeletonWriter<'a> {
         }
     }
 
+    /// Writes each annotation on its own line directly above the declaration, indented to match it,
+    /// only under `--annotations`. Source text, so each passes through [`neutralize`] like every
+    /// other lifted string.
+    fn write_annotations(&mut self, declaration: &Declaration, padding: &str) {
+        if !self.options.include_annotations {
+            return;
+        }
+        for annotation in &declaration.annotations {
+            self.lines
+                .push(format!("{padding}{}", neutralize(annotation)));
+        }
+    }
+
     fn visible_members<'d>(&self, declaration: &'d Declaration) -> Vec<&'d Declaration> {
         declaration
             .children
@@ -616,7 +683,8 @@ impl<'a> SkeletonWriter<'a> {
     ) -> Option<String> {
         let [only] = members else { return None };
         let carries_doc = self.options.include_doc && only.doc.is_some();
-        if !only.children.is_empty() || carries_doc {
+        let carries_annotations = self.options.include_annotations && !only.annotations.is_empty();
+        if !only.children.is_empty() || carries_doc || carries_annotations {
             return None;
         }
         let inlined = format!("{header} {{ {} }}", header_of(only, self.options));
@@ -1001,6 +1069,78 @@ mod tests {
                     "```\n",
                 )
                 .to_string(),
+            )
+        );
+    }
+
+    /// Under `--annotations` each annotation prints on its own line directly above its declaration,
+    /// indented to match, including one on a nested member; without the flag no annotation text
+    /// appears and the markdown gains a single hint line saying how many were dropped, counting the
+    /// nested one. The two renderings prove the flag and its suppression at once.
+    fn annotated_file() -> FileSkeleton {
+        FileSkeleton::new("p/Api.kt").with_declarations(vec![Declaration::class("Api", 2)
+            .with_annotations(vec![
+                "@Component(modules = [AwsModule::class, ConfigModule::class])".to_string(),
+            ])
+            .containing(vec![
+                Declaration::function("run", 4).with_annotations(vec!["@JvmStatic".to_string()])
+            ])])
+    }
+
+    #[test]
+    fn annotations_render_above_each_declaration_only_under_the_flag() {
+        let file = annotated_file();
+
+        assert_eq!(
+            render_skeleton(&file, &RenderOptions::default().with_annotations()),
+            concat!(
+                "@Component(modules = [AwsModule::class, ConfigModule::class])\n",
+                "class Api {\n",
+                "    @JvmStatic\n",
+                "    fun run()\n",
+                "}"
+            )
+        );
+    }
+
+    #[test]
+    fn the_default_outline_drops_annotation_text_and_says_how_many_it_hid() {
+        let file = annotated_file();
+
+        assert_eq!(
+            render_markdown(&file, &RenderOptions::default()),
+            concat!(
+                "## p/Api.kt\n",
+                "\n",
+                "```kotlin\n",
+                "class Api { fun run() }\n",
+                "```\n",
+                "2 annotations hidden; pass --annotations to include them.\n",
+            )
+        );
+    }
+
+    #[test]
+    fn a_single_hidden_annotation_reads_as_singular_and_the_flag_suppresses_the_notice() {
+        let file = FileSkeleton::new("p/One.kt")
+            .with_declarations(vec![
+                Declaration::class("One", 1).with_annotations(vec!["@Deprecated".to_string()])
+            ]);
+
+        let default_and_flagged = (
+            render_markdown(&file, &RenderOptions::default()),
+            render_markdown(&file, &RenderOptions::default().with_annotations()),
+        );
+
+        assert_eq!(
+            default_and_flagged,
+            (
+                concat!(
+                    "## p/One.kt\n\n```kotlin\nclass One\n```\n",
+                    "1 annotation hidden; pass --annotations to include them.\n",
+                )
+                .to_string(),
+                "## p/One.kt\n\n```kotlin\n@Deprecated\nclass One\n```\n".to_string(),
             )
         );
     }

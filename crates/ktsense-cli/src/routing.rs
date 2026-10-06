@@ -54,6 +54,7 @@ pub(crate) enum RoutedCommand {
         file: PathBuf,
         private: bool,
         kdoc: bool,
+        annotations: bool,
     },
     Deps {
         level: RoutedLevel,
@@ -150,11 +151,12 @@ pub(crate) fn run_in_process(
             file,
             private,
             kdoc,
+            annotations,
         } => crate::outline(
             root,
             &crate::resolve_root(Some(root), file),
             format,
-            &render_options(*private, *kdoc),
+            &render_options(*private, *kdoc, *annotations),
         )
         .map(CommandOutcome::success),
         RoutedCommand::Deps { level } => {
@@ -229,13 +231,16 @@ fn trace_request<'a>(
 
 /// The render options a routed `outline` carries, shared by the fresh and cached paths so a knob
 /// added to one cannot be forgotten by the other.
-fn render_options(private: bool, kdoc: bool) -> RenderOptions {
+fn render_options(private: bool, kdoc: bool, annotations: bool) -> RenderOptions {
     let mut options = RenderOptions::default();
     if private {
         options = options.with_private();
     }
     if kdoc {
         options = options.with_doc();
+    }
+    if annotations {
+        options = options.with_annotations();
     }
     options
 }
@@ -409,13 +414,14 @@ impl CommandEngine {
                 file,
                 private,
                 kdoc,
+                annotations,
             } => self
                 .cache
                 .outline(
                     &self.root,
                     &crate::resolve_root(Some(&self.root), file),
                     format,
-                    &render_options(*private, *kdoc),
+                    &render_options(*private, *kdoc, *annotations),
                 )
                 .map(CommandOutcome::success),
             RoutedCommand::Deps { level } => self
@@ -486,12 +492,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_routed_wire_shape_is_pinned_to_the_protocol_version() {
+        let every_command = [
+            RoutedCommand::Outline {
+                file: PathBuf::from("src/A.kt"),
+                private: true,
+                kdoc: true,
+                annotations: true,
+            },
+            RoutedCommand::Deps {
+                level: RoutedLevel::File,
+            },
+            RoutedCommand::Trace {
+                symbol: "save".to_string(),
+                pick: Some("shop.order.OrderRepository.save".to_string()),
+                depth: 2,
+                limit: Some(5),
+                wait_index: true,
+            },
+            RoutedCommand::Map { budget: 4000 },
+            RoutedCommand::Context {
+                symbol: "save".to_string(),
+                pick: None,
+                budget: 2000,
+            },
+        ];
+        let shapes: Vec<Value> = every_command
+            .into_iter()
+            .map(|command| {
+                serde_json::to_value(RoutedParams {
+                    command,
+                    format: WireFormat::Md,
+                })
+                .expect("serializes")
+            })
+            .collect();
+
+        assert_eq!(
+            (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
+            (
+                2,
+                serde_json::json!([
+                    { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
+                      "annotations": true, "format": "md" },
+                    { "command": "deps", "level": "file", "format": "md" },
+                    { "command": "trace", "symbol": "save", "pick": "shop.order.OrderRepository.save",
+                      "depth": 2, "limit": 5, "wait_index": true, "format": "md" },
+                    { "command": "map", "budget": 4000, "format": "md" },
+                    { "command": "context", "symbol": "save", "pick": null, "budget": 2000,
+                      "format": "md" }
+                ])
+            ),
+            "a routed wire shape changed: bump ktsense_daemon::PROTOCOL_VERSION and repin this test"
+        );
+    }
+
+    #[test]
     fn routed_commands_round_trip_through_the_wire_shape() {
         let params = RoutedParams {
             command: RoutedCommand::Outline {
                 file: PathBuf::from("src/A.kt"),
                 private: true,
                 kdoc: false,
+                annotations: true,
             },
             format: WireFormat::Json,
         };
@@ -507,6 +570,7 @@ mod tests {
                     "file": "src/A.kt",
                     "private": true,
                     "kdoc": false,
+                    "annotations": true,
                     "format": "json"
                 }),
                 params.command,
