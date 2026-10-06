@@ -596,3 +596,65 @@ fn routed_java_text_references_match_the_in_process_answer_byte_for_byte() {
         transcripts.join("\n")
     );
 }
+
+/// KT-115: a name nothing declares, in a workspace with `.java` sources, lists its Java sites in the
+/// not-found answer. The daemon renders those into the answer text it already returns, so the routed
+/// request and reply shapes are unchanged and no protocol bump is needed. This proves it: over the
+/// mixed Java/Kotlin fixture the routed and in-process answers for an undeclared name are
+/// byte-identical in markdown and JSON, for both `trace` and `context`, each exiting 1, and the
+/// daemon answer actually carries the Java section so the parity is not a comparison of two bare
+/// failures. `--wait-index` pins both `trace` paths to a complete index.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn a_routed_not_found_with_java_sites_matches_the_in_process_answer_byte_for_byte() {
+    const MIXED_FIXTURE: &str = "fixtures/mixed-java";
+    let runtime = tempfile::tempdir().expect("runtime dir");
+    let started = daemon(
+        runtime.path(),
+        &["daemon", "start", "--root", MIXED_FIXTURE],
+    );
+    assert_eq!(started.code, Some(0), "start failed: {}", started.stderr);
+
+    let cases: [Vec<&str>; 4] = [
+        vec!["trace", "setStagingEnabled", "--wait-index"],
+        vec![
+            "--format",
+            "json",
+            "trace",
+            "setStagingEnabled",
+            "--wait-index",
+        ],
+        vec!["context", "setStagingEnabled"],
+        vec!["--format", "json", "context", "setStagingEnabled"],
+    ];
+    let (observed, transcripts): (Vec<Parity>, Vec<String>) = cases
+        .iter()
+        .map(|args| parity(runtime.path(), MIXED_FIXTURE, args))
+        .unzip();
+    let via_daemon = routed(
+        runtime.path(),
+        MIXED_FIXTURE,
+        "KTSENSE_REQUIRE_DAEMON",
+        &cases[0],
+    );
+
+    let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", MIXED_FIXTURE]);
+
+    let expected = Parity {
+        identical: true,
+        daemon_code: Some(1),
+        in_process_code: Some(1),
+        both_silent: true,
+        produced_output: true,
+    };
+    assert_eq!(
+        (
+            observed,
+            via_daemon.stdout.contains("## Java text references"),
+            stopped.code,
+        ),
+        (vec![expected; cases.len()], true, Some(0)),
+        "what each path said:\n{}",
+        transcripts.join("\n")
+    );
+}

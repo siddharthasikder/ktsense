@@ -17,8 +17,8 @@ use ktsense_core::{
     build_annotated, build_text_references, build_text_references_attributed,
     build_text_references_with_text, classify_java_sites, fully_qualified_enclosing,
     java_enclosing_declarations, render_annotated_markdown, render_text_references_markdown,
-    AnnotatedDeclaration, AnnotatedDeclarations, FileSkeleton, ForeignReference, Location,
-    TextReferences,
+    render_text_references_titled, AnnotatedDeclaration, AnnotatedDeclarations, FileSkeleton,
+    ForeignReference, Location, TextReferences,
 };
 
 use crate::{collect_kotlin_files, normalized_path, CommandError, CommandOutcome, Exit, Format};
@@ -26,6 +26,14 @@ use crate::{collect_kotlin_files, normalized_path, CommandError, CommandOutcome,
 /// The exit a name nothing declares ends with, unchanged from before this listing existed: the
 /// answer on stdout, the status still a failure the caller can branch on.
 const NOT_FOUND_EXIT: Exit = Exit::Failure;
+
+/// The sentence the not-found wording gains when `.java` sources under the root hold the name, so a
+/// reader knows a Java-only name or a generated accessor (Lombok, AutoValue, Immutables generate
+/// setters and getters no source declares) is accounted for in the Java section below rather than
+/// absent (KT-115).
+const JAVA_NOT_FOUND_SENTENCE: &str =
+    "Java-only names and generated accessors (Lombok, AutoValue, Immutables) appear under Java \
+     text references below.";
 
 /// Builds the answer for a name the workspace does not declare: the KT-87 not-found wording, then
 /// the text-reference evidence, on stdout with a failing exit and no stderr, so a routed daemon and
@@ -40,10 +48,12 @@ pub(crate) fn not_found_outcome(
     let references = build_text_references(symbol, &collect_text_sites(root, symbol)?, limit);
     let uses = collect_annotation_uses(root, symbol)?;
     let annotated = (!uses.is_empty()).then(|| build_annotated(symbol, &uses));
+    let java = java_text_references(root, symbol, limit)?;
     let text = present(
         symbol,
         annotated.as_ref(),
         references,
+        java,
         format,
         command,
         root,
@@ -58,7 +68,8 @@ pub(crate) fn not_found_outcome(
 /// The not-found answer as `message` in JSON, absent otherwise, so a JSON consumer reads the same
 /// scope wording a Markdown reader does. `annotated` carries the declarations the name is written on
 /// as an annotation when there are any, skipped otherwise so an undeclared name that annotates
-/// nothing serializes exactly as before (KT-109).
+/// nothing serializes exactly as before (KT-109). `java_text_references` carries the Java sites when
+/// `.java` sources hold the name, skipped otherwise so a root with no Java is byte-identical (KT-115).
 #[derive(serde::Serialize)]
 struct NotFoundAnswer<'a> {
     found: bool,
@@ -67,12 +78,15 @@ struct NotFoundAnswer<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     annotated: Option<&'a AnnotatedDeclarations>,
     text_references: TextReferences,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    java_text_references: Option<TextReferences>,
 }
 
 fn present(
     symbol: &str,
     annotated: Option<&AnnotatedDeclarations>,
     references: TextReferences,
+    java: Option<TextReferences>,
     format: Format,
     command: &str,
     root: &Path,
@@ -80,12 +94,20 @@ fn present(
     match format {
         Format::Md => {
             let mut out = crate::no_symbol_message_scoped(symbol, root);
+            if java.is_some() {
+                out.push_str("\n\n");
+                out.push_str(JAVA_NOT_FOUND_SENTENCE);
+            }
             out.push_str("\n\n");
             if let Some(annotated) = annotated {
                 out.push_str(&render_annotated_markdown(annotated));
                 out.push('\n');
             }
             out.push_str(&render_text_references_markdown(&references));
+            if let Some(java) = &java {
+                out.push('\n');
+                out.push_str(&render_text_references_titled(java, "Java text references"));
+            }
             Ok(out)
         }
         Format::Json => crate::as_json(&NotFoundAnswer {
@@ -94,6 +116,7 @@ fn present(
             message: crate::no_symbol_message_scoped(symbol, root),
             annotated,
             text_references: references,
+            java_text_references: java,
         }),
         Format::Dot => Err(CommandError::unsupported_format(command)),
     }
@@ -458,6 +481,75 @@ mod tests {
                 1,
                 Some("app.B.run".to_string()),
             )
+        );
+    }
+
+    /// KT-115: a name declared nowhere, in a workspace holding both Kotlin and Java sources, lists
+    /// its Java sites in the KT-114 layout under a `## Java text references` section after the Kotlin
+    /// `## Text references`, and the not-found wording gains the generated-accessor sentence. A root
+    /// with no `.java` file renders byte-identically, with neither the section nor the sentence.
+    /// Composed over both workspaces and asserted once.
+    #[test]
+    fn a_name_declared_nowhere_lists_java_sites_after_kotlin_and_a_root_without_java_is_unchanged()
+    {
+        use std::fs;
+
+        let kotlin =
+            "package app\nclass Caller {\n    fun run() { bean.setStagingEnabled(true) }\n}\n";
+        let mixed = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(mixed.path().join("k")).expect("mkdir k");
+        fs::create_dir_all(mixed.path().join("j")).expect("mkdir j");
+        fs::write(mixed.path().join("k/Caller.kt"), kotlin).expect("write kotlin");
+        fs::write(
+            mixed.path().join("j/Toggle.java"),
+            "class Toggle {\n    void run() { bean.setStagingEnabled(true); }\n}\n",
+        )
+        .expect("write java");
+
+        let kotlin_only = tempfile::tempdir().expect("temp dir");
+        fs::write(kotlin_only.path().join("Caller.kt"), kotlin).expect("write kotlin");
+
+        let render = |root: &Path| {
+            not_found_outcome(root, "setStagingEnabled", None, Format::Md, "trace")
+                .expect("renders")
+                .text
+        };
+
+        let base = concat!(
+            "no declaration named setStagingEnabled in this workspace; library and dependency ",
+            "declarations are not searched, so use a text search for external types. No generated ",
+            "Kotlin sources were found under build/generated, so if setStagingEnabled is generated, ",
+            "run the build and retry",
+        );
+        let kotlin_section = |path: &str| {
+            format!(
+                concat!(
+                    "## Text references (1 site in 1 file)\n",
+                    "precision: text match\n",
+                    "1 in code, 0 in comments or strings.\n",
+                    "\n{path}\n- 3\n",
+                ),
+                path = path,
+            )
+        };
+        let expected_mixed = format!(
+            "{base}\n\n{sentence}\n\n{kotlin}\n{java}",
+            sentence = JAVA_NOT_FOUND_SENTENCE,
+            kotlin = kotlin_section("k/Caller.kt"),
+            java = concat!(
+                "## Java text references (1 site in 1 file)\n",
+                "precision: text match\n",
+                "1 in code, 0 in comments or strings.\n",
+                "\nj/Toggle.java\n",
+                "Toggle.run\n",
+                "  2: void run() { bean.setStagingEnabled(true); }\n",
+            ),
+        );
+        let expected_kotlin_only = format!("{base}\n\n{}", kotlin_section("Caller.kt"));
+
+        assert_eq!(
+            (render(mixed.path()), render(kotlin_only.path())),
+            (expected_mixed, expected_kotlin_only),
         );
     }
 }

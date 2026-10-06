@@ -10,6 +10,9 @@ report where Java sources hold references the Kotlin engine cannot resolve.
 | `src/main/java/app/UpdateByName.java` | Java caller of `executeUpdate`; references `UpdateGuard` |
 | `src/main/kotlin/app/UpdateByDomain.kt` | Kotlin subclass that calls the Java `executeUpdate` and uses `UpdateGuard` |
 | `src/main/kotlin/app/UpdateGuard.kt` | Kotlin interface declared here and referenced from Java |
+| `src/main/java/app/StagingConfig.java` | Lombok-style `@Data` bean; its setter `setStagingEnabled` is generated, so no source declares it |
+| `src/main/java/app/StagingToggle.java` | Java caller of the generated `setStagingEnabled` |
+| `src/main/kotlin/app/StagingSetup.kt` | Kotlin caller of the generated `setStagingEnabled` |
 
 Expected answers:
 
@@ -20,3 +23,8 @@ Expected answers:
 - `trace UpdateGuard` resolves to a `.kt` definition (`UpdateGuard.kt`), so the engine resolves its
   Kotlin callers normally while the Java text references list the three `.java` files that name it.
   No Kotlin text references section is added and no Java-definition note is printed.
+- `trace setStagingEnabled` finds no declaration (Lombok would generate the setter), so the
+  not-found answer lists its Kotlin site in `StagingSetup.kt` under `## Text references` and its two
+  Java sites under `## Java text references`: the code call in `StagingToggle.java` attributed to
+  `StagingToggle.enable`, and the comment mention in `StagingConfig.java` counted apart as a comment.
+  The wording notes that Java-only names and generated accessors appear there (KT-115).

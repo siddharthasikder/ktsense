@@ -754,4 +754,44 @@ mod real {
             "executeUpdate:\n{java_def}\nUpdateGuard:\n{kotlin_def}"
         );
     }
+
+    /// KT-115: a name declared nowhere lists its Java site in the not-found answer, attributed to its
+    /// enclosing Java method in the KT-114 layout, after the Kotlin site, with the generated-accessor
+    /// sentence. `setStagingEnabled` is a Lombok setter: no source declares it, while a Java file and
+    /// a Kotlin file call it. `--wait-index` pins a complete index so the engine confirms the absence.
+    /// Needs `rg`.
+    #[test]
+    fn an_undeclared_name_lists_its_java_and_kotlin_text_references() {
+        let output = Command::cargo_bin("ktsense")
+            .expect("binary builds")
+            .current_dir(WORKSPACE_ROOT)
+            .env("KTSENSE_NO_AUTOSTART", "1")
+            .args([
+                "--root",
+                MIXED,
+                "trace",
+                "setStagingEnabled",
+                "--wait-index",
+            ])
+            .output()
+            .expect("binary runs");
+        let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+
+        let observed = (
+            output.status.code(),
+            stdout.starts_with("no declaration named setStagingEnabled in this workspace"),
+            stdout.contains("appear under Java text references below."),
+            stdout.contains("## Text references (1 site in 1 file)"),
+            stdout.contains("src/main/kotlin/app/StagingSetup.kt\n- 5\n"),
+            stdout.contains("## Java text references (2 sites in 2 files)"),
+            stdout.contains("1 in code, 1 in comments or strings."),
+            stdout.contains("StagingToggle.enable\n  5: config.setStagingEnabled(true);"),
+            output.stderr.is_empty(),
+        );
+        assert_eq!(
+            observed,
+            (Some(1), true, true, true, true, true, true, true, true),
+            "stdout was: {stdout}"
+        );
+    }
 }
