@@ -816,11 +816,13 @@ fn symbols(
             .map(CommandOutcome::from);
     }
     let filter = symbols::PickFilter::for_query(query, pick);
-    let candidates = block_on(ktsense_lsp::run_symbols(
+    let (ignored, candidates): (Vec<_>, Vec<_>) = block_on(ktsense_lsp::run_symbols(
         root,
         ktsense_core::last_segment(query),
     ))
-    .map_err(|error| CommandError::passthrough(&error))?;
+    .map_err(|error| CommandError::passthrough(&error))?
+    .into_iter()
+    .partition(|candidate| is_inside_ignored_dir(root, Path::new(&candidate.file)));
     // The engine's `find` does not see generated sources under `build`, so a name it answers with
     // nothing is resolved from the workspace's own syntax index, which does (KT-104). That fallback
     // also carries the generated-aware not-found wording when it finds nothing either.
@@ -829,6 +831,7 @@ fn symbols(
             .map(CommandOutcome::from);
     }
     symbols::present_symbols(root, query, candidates, kind, limit, filter, format)
+        .map(|outcome| outcome.noting_ignored(ignored.len(), format))
         .map(CommandOutcome::from)
 }
 

@@ -1,0 +1,14 @@
+---
+source: crates/ktsense-cli/tests/ignored_dirs.rs
+expression: "format!(\"exit {}\\nstderr {}\\n---\\n{}\",\noutput.status.code().expect(\"exited normally\"),\nString::from_utf8_lossy(&output.stderr).trim(),\nString::from_utf8_lossy(&output.stdout))"
+---
+exit 0
+stderr 
+---
+## Symbols: OrderRepository
+
+```text
+shop.order.OrderRepository  interface  core/src/main/kotlin/shop/order/OrderRepository.kt:3  interface OrderRepository
+```
+
+ignored: 1 engine result inside ignored directories such as bin/

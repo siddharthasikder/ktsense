@@ -79,6 +79,18 @@ impl SymbolsOutcome {
         self.stderr = Some(stderr);
         self
     }
+
+    /// Ends a Markdown listing with how many engine declarations inside ignored directories were
+    /// left out of it (KT-130). JSON stays a plain list of rows.
+    pub(crate) fn noting_ignored(mut self, ignored: usize, format: Format) -> Self {
+        if ignored > 0 && matches!(format, Format::Md) {
+            let noun = if ignored == 1 { "result" } else { "results" };
+            self.text.push_str(&format!(
+                "\nignored: {ignored} engine {noun} inside ignored directories such as bin/\n"
+            ));
+        }
+        self
+    }
 }
 
 impl From<SymbolsOutcome> for CommandOutcome {
