@@ -203,7 +203,8 @@ pub struct OutlineParams {
 pub struct SymbolParams {
     /// Declaration name to find, for example `OrderRepository` or `save`; a dotted `Type.member`
     /// such as `OrderRepository.save` keeps only the matches the whole name is a dot-suffix of.
-    pub query: String,
+    /// Optional when `pick` is given, in which case the pick's last dot segment is the name.
+    pub query: Option<String>,
     /// Keep only declarations of this kind: class, interface, object, fun, val, var, typealias
     /// or constructor.
     pub kind: Option<String>,
@@ -223,8 +224,9 @@ pub struct SymbolParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TraceParams {
     /// Declaration name to trace; a dotted `Type.member` such as `OrderRepository.save` selects the
-    /// one candidate the whole name is a dot-suffix of.
-    pub symbol: String,
+    /// one candidate the whole name is a dot-suffix of. Optional when `pick` is given, in which case
+    /// the pick's last dot segment is the name.
+    pub symbol: Option<String>,
     /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is
     /// ambiguous.
     pub pick: Option<String>,
@@ -274,8 +276,9 @@ pub struct CheckParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContextParams {
     /// Declaration name to explain; a dotted `Type.member` such as `OrderRepository.save` selects the
-    /// one candidate the whole name is a dot-suffix of.
-    pub symbol: String,
+    /// one candidate the whole name is a dot-suffix of. Optional when `pick` is given, in which case
+    /// the pick's last dot segment is the name.
+    pub symbol: Option<String>,
     /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is
     /// ambiguous.
     pub pick: Option<String>,
@@ -597,6 +600,16 @@ impl Args {
         self
     }
 
+    /// A positional argument when one was given, nothing otherwise. The `symbols`, `trace` and
+    /// `context` commands take their query or `--pick` (KT-119), so a call that passed only `pick`
+    /// adds no positional and lets the CLI derive the name from the pick.
+    fn maybe_positional(self, value: Option<String>) -> Self {
+        match value {
+            Some(value) => self.positional(value),
+            None => self,
+        }
+    }
+
     fn flag(mut self, name: &str, present: bool) -> Self {
         if present {
             self.0.args.push(format!("--{name}"));
@@ -656,7 +669,7 @@ impl KtsenseServer {
     ) -> Result<CallToolResult, ErrorData> {
         let root = self.root_for(params.root, None).await;
         let args = Args::for_tool(&crate::SYMBOLS, root)
-            .positional(params.query)
+            .maybe_positional(params.query)
             .option("kind", params.kind)
             .option("limit", params.limit)
             .option("pick", params.pick)
@@ -676,7 +689,7 @@ impl KtsenseServer {
     ) -> Result<CallToolResult, ErrorData> {
         let root = self.root_for(params.root, None).await;
         let args = Args::for_tool(&crate::TRACE, root)
-            .positional(params.symbol)
+            .maybe_positional(params.symbol)
             .option("pick", params.pick)
             .option("depth", params.depth)
             .option("limit", params.limit);
@@ -749,7 +762,7 @@ impl KtsenseServer {
     ) -> Result<CallToolResult, ErrorData> {
         let root = self.root_for(params.root, None).await;
         let args = Args::for_tool(&crate::CONTEXT, root)
-            .positional(params.symbol)
+            .maybe_positional(params.symbol)
             .option("pick", params.pick)
             .option("budget", params.budget)
             .option_list("only", &params.only)
@@ -993,7 +1006,7 @@ mod tests {
 
         let result = server
             .trace_kotlin_symbol(Parameters(TraceParams {
-                symbol: "save".to_string(),
+                symbol: Some("save".to_string()),
                 pick: Some("shop.order.OrderRepository.save".to_string()),
                 depth: Some(2),
                 limit: None,
@@ -1052,7 +1065,7 @@ mod tests {
         ));
         let params = |query: &str| {
             Parameters(SymbolParams {
-                query: query.to_string(),
+                query: Some(query.to_string()),
                 kind: None,
                 limit: None,
                 pick: None,
@@ -1265,7 +1278,7 @@ mod tests {
         );
         let trace = || {
             Parameters(TraceParams {
-                symbol: "save".to_string(),
+                symbol: Some("save".to_string()),
                 pick: None,
                 depth: None,
                 limit: None,
@@ -1309,6 +1322,77 @@ mod tests {
                 Some(json!("already_decided")),
             ),
             "first={first:?} second={second:?}"
+        );
+    }
+
+    /// KT-119: a call that passes only `pick`, with no `symbol`/`query`, builds a CLI invocation that
+    /// carries `--pick` and no positional, so the CLI derives the lookup name from the pick. Shown
+    /// for all three tools whose positional became optional.
+    #[tokio::test]
+    async fn pick_without_a_positional_builds_a_pick_only_invocation() {
+        let runner = Recorded::replying(0, "", "");
+        let server = KtsenseServer::new(runner.clone());
+
+        server
+            .find_kotlin_symbol(Parameters(SymbolParams {
+                query: None,
+                kind: None,
+                limit: None,
+                pick: Some("a.b.UpdateDocumentBase".to_string()),
+                contains: false,
+                root: None,
+            }))
+            .await
+            .expect("symbols call");
+        server
+            .trace_kotlin_symbol(Parameters(TraceParams {
+                symbol: None,
+                pick: Some("shop.Repo.save".to_string()),
+                depth: None,
+                limit: None,
+                root: None,
+            }))
+            .await
+            .expect("trace call");
+        server
+            .explain_kotlin_symbol(Parameters(ContextParams {
+                symbol: None,
+                pick: Some("x.y.Z.run".to_string()),
+                budget: None,
+                only: Vec::new(),
+                match_pattern: None,
+                around: None,
+                root: None,
+            }))
+            .await
+            .expect("context call");
+
+        let args: Vec<Vec<String>> = runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.args.clone())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                vec![
+                    "symbols".to_string(),
+                    "--pick".to_string(),
+                    "a.b.UpdateDocumentBase".to_string(),
+                ],
+                vec![
+                    "trace".to_string(),
+                    "--pick".to_string(),
+                    "shop.Repo.save".to_string(),
+                ],
+                vec![
+                    "context".to_string(),
+                    "--pick".to_string(),
+                    "x.y.Z.run".to_string(),
+                ],
+            ]
         );
     }
 }

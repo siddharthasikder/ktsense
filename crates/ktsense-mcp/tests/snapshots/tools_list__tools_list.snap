@@ -354,13 +354,13 @@ expression: listed
             ]
           },
           "symbol": {
-            "description": "Declaration name to explain; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of.",
-            "type": "string"
+            "description": "Declaration name to explain; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of. Optional when `pick` is given, in which case\nthe pick's last dot segment is the name.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "required": [
-          "symbol"
-        ],
         "type": "object"
       },
       "outputSchema": {
@@ -523,8 +523,11 @@ expression: listed
             ]
           },
           "query": {
-            "description": "Declaration name to find, for example `OrderRepository` or `save`; a dotted `Type.member`\nsuch as `OrderRepository.save` keeps only the matches the whole name is a dot-suffix of.",
-            "type": "string"
+            "description": "Declaration name to find, for example `OrderRepository` or `save`; a dotted `Type.member`\nsuch as `OrderRepository.save` keeps only the matches the whole name is a dot-suffix of.\nOptional when `pick` is given, in which case the pick's last dot segment is the name.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "root": {
             "description": "Workspace root to answer about; defaults to the server's configured root.",
@@ -534,9 +537,6 @@ expression: listed
             ]
           }
         },
-        "required": [
-          "query"
-        ],
         "type": "object"
       },
       "outputSchema": {
@@ -1346,13 +1346,13 @@ expression: listed
             ]
           },
           "symbol": {
-            "description": "Declaration name to trace; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of.",
-            "type": "string"
+            "description": "Declaration name to trace; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of. Optional when `pick` is given, in which case\nthe pick's last dot segment is the name.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "required": [
-          "symbol"
-        ],
         "type": "object"
       },
       "outputSchema": {

@@ -78,6 +78,15 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Known limitations
 
+- `--pick` now stands alone as the query on `symbols`, `trace` and `context`, and as the `pick`
+  argument of the `find_kotlin_symbol`, `trace_kotlin_symbol` and `explain_kotlin_symbol` MCP tools:
+  the positional name is optional when `--pick` is given, the lookup name is then the pick's last dot
+  segment (`ktsense_core::last_segment`), and the whole pick filters the matches as before, so an
+  ambiguity hint can be rerun as written. An invocation with neither the positional nor `--pick` is a
+  clap usage error (exit 2). The MCP `query`/`symbol` arguments became optional, which is backwards
+  compatible (a call that still sends them works unchanged); the `tools_list` golden is updated. The
+  routed daemon request carries the derived name as before, so the protocol version is unchanged
+  (KT-119).
 - Resolution is syntactic, not type-checked. For an interface or open class, `Implementors` can still include a name-matched declaration from another package; supertype resolution is planned as KT-84.
 - On Linux hosts below glibc 2.28 the bundled engine does not start. Set `KTSENSE_LSP_PATH` to a host-built `kmp-lsp` 0.26.0.
 - In a like-for-like benchmark on ktor (KT-76), grep was faster on every question. ktsense's advantage is structured, smaller answers for questions such as callers of a nested type, not speed.

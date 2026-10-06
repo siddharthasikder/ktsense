@@ -437,7 +437,9 @@ ambiguous: 9 declarations named Plugin; rerun with --pick DefaultRequest.Plugin
 ````
 
 Retry with `--pick <fully.qualified.name>`, or the shortest dot-boundary suffix that names one
-candidate, such as `--pick DefaultRequest.Plugin`.
+candidate, such as `--pick DefaultRequest.Plugin`. The pick stands alone as the query:
+`ktsense trace --pick DefaultRequest.Plugin` needs no positional, taking the lookup name from the
+pick's last dot segment, so the hint can be rerun as written.
 
 Or name the member in the query itself: `symbols`, `trace` and `context` accept a dotted
 `Type.member`, so `ktsense trace DefaultRequest.Plugin` looks up `Plugin` and keeps only the

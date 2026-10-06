@@ -131,6 +131,17 @@ fn context_sections(only: &[ContextOnly]) -> ContextSections {
     }
 }
 
+/// The positional query, or the pick's last dot segment when only `--pick` was given (KT-119).
+/// `symbols`, `trace` and `context` all make their positional optional and require it or `--pick`,
+/// so clap guarantees one is present; this derives the engine lookup name from whichever it was. A
+/// pick like `InventoryItemsRepository.createProduct` yields `createProduct`, which the whole pick
+/// then filters as a dot-suffix exactly as a dotted positional would.
+fn query_or_pick(query: Option<String>, pick: Option<&str>) -> String {
+    query.unwrap_or_else(|| {
+        ktsense_core::last_segment(pick.expect("clap requires a query or --pick")).to_string()
+    })
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Compressed declaration skeleton of one file
@@ -149,8 +160,10 @@ enum Command {
     /// Find declarations by name across the workspace
     Symbols {
         /// Declaration name to find; a dotted Type.member, such as OrderRepository.save, resolves
-        /// its last segment and keeps only the matches the whole name is a suffix of.
-        query: String,
+        /// its last segment and keeps only the matches the whole name is a suffix of. Optional when
+        /// --pick is given, in which case the pick's last dot segment is the name.
+        #[arg(required_unless_present = "pick")]
+        query: Option<String>,
         /// Keep only declarations of this kind.
         #[arg(long, value_enum)]
         kind: Option<KindFilter>,
@@ -187,8 +200,10 @@ enum Command {
     /// Definition, usages, implementors and callers of one symbol
     Trace {
         /// Symbol to trace; a dotted Type.member, such as OrderRepository.save, resolves its last
-        /// segment and keeps only the match the whole name is a suffix of.
-        symbol: String,
+        /// segment and keeps only the match the whole name is a suffix of. Optional when --pick is
+        /// given, in which case the pick's last dot segment is the name.
+        #[arg(required_unless_present = "pick")]
+        symbol: Option<String>,
         /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name
         /// is ambiguous.
         #[arg(long, value_name = "FQN_OR_SUFFIX")]
@@ -235,8 +250,10 @@ enum Command {
     /// Budgeted context bundle for one symbol
     Context {
         /// Symbol to explain; a dotted Type.member, such as OrderRepository.save, resolves its last
-        /// segment and keeps only the match the whole name is a suffix of.
-        symbol: String,
+        /// segment and keeps only the match the whole name is a suffix of. Optional when --pick is
+        /// given, in which case the pick's last dot segment is the name.
+        #[arg(required_unless_present = "pick")]
+        symbol: Option<String>,
         /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name
         /// is ambiguous.
         #[arg(long, value_name = "FQN_OR_SUFFIX")]
@@ -590,7 +607,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             contains,
         } => symbols(
             &base,
-            &query,
+            &query_or_pick(query, pick.as_deref()),
             kind,
             limit,
             pick.as_deref(),
@@ -635,7 +652,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         } => route(
             &base,
             routing::RoutedCommand::Trace {
-                symbol,
+                symbol: query_or_pick(symbol, pick.as_deref()),
                 pick,
                 depth,
                 limit,
@@ -664,7 +681,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
         } => route(
             &base,
             routing::RoutedCommand::Context {
-                symbol,
+                symbol: query_or_pick(symbol, pick.as_deref()),
                 pick,
                 budget,
                 sections: context_sections(&only),
@@ -1427,6 +1444,57 @@ mod tests {
         assert_eq!(
             render_check(&report, Format::Json).unwrap(),
             serde_json::to_string_pretty(&report).unwrap() + "\n"
+        );
+    }
+
+    /// KT-119: `--pick` stands alone as the query on `symbols`, `trace` and `context`. The positional
+    /// is optional when `--pick` is present, parses to `None`, and the engine lookup name is derived
+    /// from the pick's last dot segment; an explicit positional wins; and an invocation with neither
+    /// the positional nor `--pick` is a clap usage error (exit 2).
+    #[test]
+    fn pick_stands_alone_as_the_query_and_neither_is_a_usage_error() {
+        let symbols =
+            Cli::try_parse_from(["ktsense", "symbols", "--pick", "a.b.UpdateDocumentBase"]);
+        let symbols_fields = match symbols.map(|cli| cli.command) {
+            Ok(Command::Symbols { query, pick, .. }) => (query, pick),
+            _ => (Some("parse failed".to_string()), None),
+        };
+        let trace_ok =
+            Cli::try_parse_from(["ktsense", "trace", "--pick", "shop.Repo.save"]).is_ok();
+        let context_ok = Cli::try_parse_from(["ktsense", "context", "--pick", "x.y.Z.run"]).is_ok();
+        let neither_all_usage_errors = [
+            Cli::try_parse_from(["ktsense", "symbols"]),
+            Cli::try_parse_from(["ktsense", "trace"]),
+            Cli::try_parse_from(["ktsense", "context"]),
+        ]
+        .iter()
+        .all(|parsed| {
+            parsed
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.use_stderr())
+        });
+
+        let observed = (
+            symbols_fields,
+            trace_ok,
+            context_ok,
+            query_or_pick(None, Some("a.b.UpdateDocumentBase")),
+            query_or_pick(None, Some("InventoryItemsRepository.createProduct")),
+            query_or_pick(Some("explicit".to_string()), Some("a.b.C")),
+            neither_all_usage_errors,
+        );
+        assert_eq!(
+            observed,
+            (
+                (None, Some("a.b.UpdateDocumentBase".to_string())),
+                true,
+                true,
+                "UpdateDocumentBase".to_string(),
+                "createProduct".to_string(),
+                "explicit".to_string(),
+                true,
+            )
         );
     }
 }
