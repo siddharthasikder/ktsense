@@ -229,6 +229,35 @@ fn a_budget_that_fits_only_the_declaration_says_what_it_dropped() {
     insta::assert_snapshot!(record(&run));
 }
 
+/// `--only` restricts the bundle to the named sections and spends the budget on them alone: with
+/// `--only callers` the Callers heading is the only section heading, the file outline, implementors
+/// and source headings are gone, and the declaration line still stands. The trace it is built on is
+/// unchanged, so the same session answers it.
+#[test]
+fn only_callers_renders_the_callers_section_alone() {
+    let run = context(
+        &["save", "--only", "callers", "--budget", "2000"],
+        &only_the_interface_method(),
+        &session(completed_index()),
+    );
+
+    let observed = (
+        run.code,
+        run.stderr.trim().to_string(),
+        run.stdout.contains("## Declaration"),
+        run.stdout.contains("## Callers"),
+        run.stdout.contains("## Implementors"),
+        run.stdout.contains("## File outline"),
+        run.stdout.contains("## Source"),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), String::new(), true, true, false, false, false),
+        "stdout: {}",
+        run.stdout
+    );
+}
+
 /// The acceptance criterion the card states outright: the reported content bound never exceeds the
 /// budget, at any budget from nothing to generous. Swept rather than sampled so an off-by-one in
 /// the packing cannot hide between two chosen budgets.

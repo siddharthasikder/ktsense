@@ -24,8 +24,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use ktsense_core::{
     build_import_graph, build_repo_map, fence_for, neutralize, render_deps_dot,
-    render_deps_markdown, render_map_markdown, render_markdown, ByteRatioEstimator, DepLevel,
-    FileSkeleton, ImportGraph, RenderOptions, RepoMap, RepoMapInput,
+    render_deps_markdown, render_map_markdown, render_markdown, ByteRatioEstimator,
+    ContextSections, DepLevel, FileSkeleton, ImportGraph, RenderOptions, RepoMap, RepoMapInput,
 };
 use ktsense_lsp::{CheckReport, DiagnoseReport, LspError, PassthroughError, Severity};
 
@@ -99,6 +99,31 @@ impl KindFilter {
             KindFilter::Typealias => "typealias",
             KindFilter::Constructor => "constructor",
         }
+    }
+}
+
+/// The optional `context` sections `--only` can restrict the bundle to. The declaration line is
+/// always present and so is not listed here; everything else is a section a caller can single out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ContextOnly {
+    Source,
+    Callers,
+    Implementors,
+    Outline,
+}
+
+/// Resolves the `--only` list into the section switches core budgets on. An empty list means no
+/// filter was given, which is every section on, so an unfiltered `context` is byte-identical to the
+/// one that shipped before the flag.
+fn context_sections(only: &[ContextOnly]) -> ContextSections {
+    if only.is_empty() {
+        return ContextSections::all();
+    }
+    ContextSections {
+        source: only.contains(&ContextOnly::Source),
+        outline: only.contains(&ContextOnly::Outline),
+        callers: only.contains(&ContextOnly::Callers),
+        implementors: only.contains(&ContextOnly::Implementors),
     }
 }
 
@@ -177,6 +202,11 @@ enum Command {
         pick: Option<String>,
         #[arg(long, default_value_t = 2000)]
         budget: usize,
+        /// Render only these comma-separated sections (source, callers, implementors, outline)
+        /// and spend the budget on them alone; the declaration line is always shown. Omit for the
+        /// full bundle.
+        #[arg(long, value_enum, value_delimiter = ',')]
+        only: Vec<ContextOnly>,
     },
     /// Index phase, counts and engine version
     Status,
@@ -503,12 +533,14 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             symbol,
             pick,
             budget,
+            only,
         } => route(
             &base,
             routing::RoutedCommand::Context {
                 symbol,
                 pick,
                 budget,
+                sections: context_sections(&only),
             },
             format,
         ),

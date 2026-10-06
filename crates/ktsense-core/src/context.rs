@@ -22,7 +22,7 @@
 //! Callers and implementors arrive already derived by [`crate::trace`], because `kmp-lsp` 0.26.0
 //! advertises no call hierarchy and that derivation has exactly one home.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::budget::emit_within_budget;
 use crate::references::declaration_span_at;
@@ -31,6 +31,46 @@ use crate::skeleton::{Declaration, FileSkeleton};
 use crate::text::neutralize;
 use crate::trace::{Definition, IndexCompleteness, RelatedDeclaration};
 use crate::TokenEstimator;
+
+/// Which optional sections a bundle carries, so a caller can ask for only what it needs rather than
+/// paying the budget for the whole bundle. The declaration line is not a section: it is always
+/// present, because a bundle without the thing it describes is not an answer. Everything else is a
+/// section a caller can switch off.
+///
+/// [`Self::all`] is the default and reproduces the pre-filter bundle exactly, so an unfiltered
+/// `context` is byte-identical to the one that shipped before `--only`. When a section is off, its
+/// units are never offered to the budget, so the budget spends on the sections that are on alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSections {
+    pub source: bool,
+    pub outline: bool,
+    pub callers: bool,
+    pub implementors: bool,
+}
+
+impl ContextSections {
+    /// Every section on: the default, and the shape that reproduces the pre-filter bundle.
+    pub const fn all() -> Self {
+        Self {
+            source: true,
+            outline: true,
+            callers: true,
+            implementors: true,
+        }
+    }
+
+    /// Whether every section is on, which is both the default and the condition under which the
+    /// filter is left out of the serialized bundle so an unfiltered answer is byte-identical.
+    pub fn is_all(&self) -> bool {
+        *self == Self::all()
+    }
+}
+
+impl Default for ContextSections {
+    fn default() -> Self {
+        Self::all()
+    }
+}
 
 /// One part of the bundle: the items that fit, and how many the budget dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -62,6 +102,11 @@ pub struct SourceSection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolContext {
     pub symbol: String,
+    /// Which sections the caller asked for. Left out of the JSON when every section is on, so an
+    /// unfiltered bundle serializes exactly as it did before `--only` existed; present only when a
+    /// filter was applied, which is the signal a consumer reads to tell a filtered answer apart.
+    #[serde(skip_serializing_if = "ContextSections::is_all")]
+    pub sections: ContextSections,
     /// Whether the engine had finished indexing: a bundle built on a partial index lists fewer
     /// callers than exist, and the reader must be told before acting on it.
     pub index: IndexCompleteness,
@@ -100,6 +145,8 @@ impl SymbolContext {
 pub struct ContextInput<'a> {
     pub definition: Definition,
     pub index: IndexCompleteness,
+    /// Which sections to carry. [`ContextSections::all`] reproduces the pre-filter bundle.
+    pub sections: ContextSections,
     /// Skeleton of the file the declaration lives in, absent when it could not be read or parsed.
     pub file: Option<&'a FileSkeleton>,
     /// The lines of the file the declaration lives in, 1-based (`source[0]` is line 1), from which
@@ -113,7 +160,7 @@ pub struct ContextInput<'a> {
 
 /// Builds the bundle, emitting as much of the priority order as the budget affords.
 pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) -> SymbolContext {
-    let body = source_body(&input);
+    let body = input.sections.source.then(|| source_body(&input)).flatten();
     let offered = units_in_priority_order(&input, body.as_ref());
     let available = Available::of(&offered);
 
@@ -129,6 +176,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
 
     SymbolContext {
         symbol: input.definition.qualified_name.clone(),
+        sections: input.sections,
         index: input.index,
         declaration: section(kept.declaration, available.declaration),
         source,
@@ -208,20 +256,26 @@ fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>
             payload: Payload::SourceLine(line.clone()),
         }));
     }
-    if let Some(file) = input.file {
-        units.extend(outline_blocks(file).into_iter().map(|block| Unit {
-            text: block.clone(),
-            payload: Payload::FileOutline(block),
+    if input.sections.outline {
+        if let Some(file) = input.file {
+            units.extend(outline_blocks(file).into_iter().map(|block| Unit {
+                text: block.clone(),
+                payload: Payload::FileOutline(block),
+            }));
+        }
+    }
+    if input.sections.callers {
+        units.extend(input.callers.iter().map(|caller| Unit {
+            text: context_caller_line(caller),
+            payload: Payload::Caller(caller.clone()),
         }));
     }
-    units.extend(input.callers.iter().map(|caller| Unit {
-        text: context_caller_line(caller),
-        payload: Payload::Caller(caller.clone()),
-    }));
-    units.extend(input.implementors.iter().map(|implementor| Unit {
-        text: related_line(implementor),
-        payload: Payload::Implementor(implementor.clone()),
-    }));
+    if input.sections.implementors {
+        units.extend(input.implementors.iter().map(|implementor| Unit {
+            text: related_line(implementor),
+            payload: Payload::Implementor(implementor.clone()),
+        }));
+    }
     units
 }
 
@@ -392,6 +446,7 @@ mod tests {
             ContextInput {
                 definition: definition(),
                 index: IndexCompleteness::Complete,
+                sections: ContextSections::all(),
                 file: Some(&file),
                 source: None,
                 callers: &callers(),
@@ -507,6 +562,7 @@ mod tests {
             ContextInput {
                 definition: definition(),
                 index: IndexCompleteness::Partial,
+                sections: ContextSections::all(),
                 file: None,
                 source: None,
                 callers: &callers(),
@@ -580,6 +636,7 @@ mod tests {
             ContextInput {
                 definition: greet_definition(),
                 index: IndexCompleteness::Complete,
+                sections: ContextSections::all(),
                 file: Some(&file),
                 source: Some(&source),
                 callers: &[],
@@ -631,6 +688,7 @@ mod tests {
                     signature: "fun big()".to_string(),
                 },
                 index: IndexCompleteness::Complete,
+                sections: ContextSections::all(),
                 file: Some(&file),
                 source: Some(&source),
                 callers: &[],
@@ -669,6 +727,7 @@ mod tests {
             ContextInput {
                 definition: greet_definition(),
                 index: IndexCompleteness::Complete,
+                sections: ContextSections::all(),
                 file: Some(&file),
                 source: None,
                 callers: &[],
@@ -682,6 +741,69 @@ mod tests {
         assert_eq!(
             (bundle.source, rendered.contains("## Source")),
             (None, false)
+        );
+    }
+
+    /// `--only source` keeps the declaration and the source body and spends the budget on them
+    /// alone: the file outline, callers and implementors are off, so none is offered to the budget
+    /// and none of their headings is rendered, while the declaration line stays because it is not a
+    /// section. The sections filter is carried on the bundle so a JSON consumer can read it.
+    #[test]
+    fn only_source_keeps_the_declaration_and_source_and_renders_no_other_section() {
+        let (file, source) = greeter();
+        let bundle = build_context(
+            ContextInput {
+                definition: greet_definition(),
+                index: IndexCompleteness::Complete,
+                sections: ContextSections {
+                    source: true,
+                    outline: false,
+                    callers: false,
+                    implementors: false,
+                },
+                file: Some(&file),
+                source: Some(&source),
+                callers: &callers(),
+                implementors: &implementors(),
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+
+        let observed = (
+            bundle.sections,
+            bundle.source.is_some(),
+            bundle.file_outline.available(),
+            bundle.callers.available(),
+            bundle.implementors.available(),
+            rendered.contains("## Declaration"),
+            rendered.contains("## Source"),
+            rendered.contains("## File outline"),
+            rendered.contains("## Callers"),
+            rendered.contains("## Implementors"),
+            bundle.token_upper_bound <= 10_000,
+        );
+        assert_eq!(
+            observed,
+            (
+                ContextSections {
+                    source: true,
+                    outline: false,
+                    callers: false,
+                    implementors: false,
+                },
+                true,
+                0,
+                0,
+                0,
+                true,
+                true,
+                false,
+                false,
+                false,
+                true,
+            )
         );
     }
 }

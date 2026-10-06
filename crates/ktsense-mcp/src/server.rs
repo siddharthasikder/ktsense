@@ -267,6 +267,10 @@ pub struct ContextParams {
     pub pick: Option<String>,
     /// Token budget for the bundle; defaults to 2000.
     pub budget: Option<usize>,
+    /// Render only these sections (any of source, callers, implementors, outline) and spend the
+    /// budget on them alone; the declaration line is always shown. Omit for the full bundle.
+    #[serde(default)]
+    pub only: Vec<String>,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -572,6 +576,16 @@ impl Args {
         }
         self
     }
+
+    /// A comma-joined option, as `--name a,b`, matching the CLI's comma-delimited list flags. An
+    /// empty list leaves the flag off, so the default behaviour is the one the flag was absent for.
+    fn option_list(mut self, name: &str, values: &[String]) -> Self {
+        if !values.is_empty() {
+            self.0.args.push(format!("--{name}"));
+            self.0.args.push(values.join(","));
+        }
+        self
+    }
 }
 
 #[tool_router]
@@ -686,7 +700,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "explain_kotlin_symbol",
-        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
+        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -698,7 +712,8 @@ impl KtsenseServer {
         let args = Args::for_tool(&crate::CONTEXT, root)
             .positional(params.symbol)
             .option("pick", params.pick)
-            .option("budget", params.budget);
+            .option("budget", params.budget)
+            .option_list("only", &params.only);
         self.invoke(&crate::CONTEXT, args.0).await
     }
 

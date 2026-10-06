@@ -438,27 +438,39 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
 
     append_source(&mut out, context);
 
-    out.push_str(&format!(
-        "\n## File outline: {}\n",
-        neutralize(&context.definition.path)
-    ));
-    append_context_blocks(&mut out, &context.file_outline, "declaration");
+    if context.sections.outline {
+        out.push_str(&format!(
+            "\n## File outline: {}\n",
+            neutralize(&context.definition.path)
+        ));
+        append_context_blocks(&mut out, &context.file_outline, "declaration");
+    }
 
-    out.push_str(&format!("\n## Callers ({})\n", context.callers.available()));
-    append_context_lines(&mut out, &context.callers, context_caller_line);
+    if context.sections.callers {
+        out.push_str(&format!("\n## Callers ({})\n", context.callers.available()));
+        append_context_lines(&mut out, &context.callers, context_caller_line);
+    }
 
-    out.push_str(&format!(
-        "\n## Implementors ({})\n",
-        context.implementors.available()
-    ));
-    append_context_lines(&mut out, &context.implementors, related_line);
+    if context.sections.implementors {
+        out.push_str(&format!(
+            "\n## Implementors ({})\n",
+            context.implementors.available()
+        ));
+        append_context_lines(&mut out, &context.implementors, related_line);
+    }
 
-    out.push_str(
-        "\nCallers are the declarations enclosing each reference site; the engine reports no call \
-         hierarchy. Resolution is syntactic, not type-checked. The content bound covers the \
-         declaration, its source, the outline, and the caller and implementor lines the budget \
-         gated, not the headings around them.\n",
-    );
+    if context.sections.is_all() {
+        out.push_str(
+            "\nCallers are the declarations enclosing each reference site; the engine reports no \
+             call hierarchy. Resolution is syntactic, not type-checked. The content bound covers \
+             the declaration, its source, the outline, and the caller and implementor lines the \
+             budget gated, not the headings around them.\n",
+        );
+    } else {
+        out.push_str(
+            "\nOnly the requested sections are shown. Resolution is syntactic, not type-checked.\n",
+        );
+    }
     out
 }
 

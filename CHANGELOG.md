@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `context --only <section>[,<section>...]` (and the `only` argument of the `explain_kotlin_symbol` MCP tool) renders the declaration line plus only the named sections, out of `source`, `callers`, `implementors` and `outline`, and spends the token budget on them alone. The full bundle is the default and is byte-identical to before, in Markdown and JSON; a filtered bundle carries a `sections` object in its JSON. The routed daemon request shape gained the filter, so the daemon protocol version is now 4 (KT-96).
+
 ### Changed
 
 - `--pick` on `symbols`, `trace` and `context`, and the `pick` argument of the `find_kotlin_symbol`, `trace_kotlin_symbol` and `explain_kotlin_symbol` MCP tools, now accepts a dot-boundary suffix of a fully-qualified name as well as a full FQN, such as `InMemoryOrderRepository.save` for `shop.db.InMemoryOrderRepository.save`. An exact FQN wins; a suffix matching one candidate selects it; a suffix matching several lists only those and exits 3; a suffix matching none keeps the pick-missed error. The ambiguity hint now names the shortest unique dot-boundary suffix of its example candidate rather than the whole FQN, so a rerun copies less (KT-95).

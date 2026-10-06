@@ -40,6 +40,7 @@ pub(crate) struct ContextRequest<'a> {
     pub symbol: &'a str,
     pub pick: Option<&'a str>,
     pub budget: usize,
+    pub sections: ktsense_core::ContextSections,
     pub format: Format,
 }
 
@@ -96,6 +97,7 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
         ContextInput {
             definition: report.definition.clone(),
             index: report.index,
+            sections: request.sections,
             file: file.as_ref(),
             source: source.as_deref(),
             callers: report.direct_callers(),

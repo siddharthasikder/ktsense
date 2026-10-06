@@ -23,7 +23,9 @@ pub mod text_refs;
 pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
-pub use context::{build_context, ContextInput, ContextSection, SourceSection, SymbolContext};
+pub use context::{
+    build_context, ContextInput, ContextSection, ContextSections, SourceSection, SymbolContext,
+};
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use pick::{match_pick, shortest_unique_suffix, PickMatch};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};

@@ -73,6 +73,7 @@ pub(crate) enum RoutedCommand {
         symbol: String,
         pick: Option<String>,
         budget: usize,
+        sections: ktsense_core::ContextSections,
     },
 }
 
@@ -184,7 +185,10 @@ pub(crate) fn run_in_process(
             symbol,
             pick,
             budget,
-        } => crate::context::context(context_request(root, symbol, pick, *budget, format)),
+            sections,
+        } => crate::context::context(context_request(
+            root, symbol, pick, *budget, *sections, format,
+        )),
     }
 }
 
@@ -196,6 +200,7 @@ fn context_request<'a>(
     symbol: &'a str,
     pick: &'a Option<String>,
     budget: usize,
+    sections: ktsense_core::ContextSections,
     format: Format,
 ) -> crate::context::ContextRequest<'a> {
     crate::context::ContextRequest {
@@ -203,6 +208,7 @@ fn context_request<'a>(
         symbol,
         pick: pick.as_deref(),
         budget,
+        sections,
         format,
     }
 }
@@ -459,10 +465,11 @@ impl CommandEngine {
                 symbol,
                 pick,
                 budget,
+                sections,
             } => {
                 crate::context::context_warm(
                     &self.engine,
-                    context_request(&self.root, symbol, pick, *budget, format),
+                    context_request(&self.root, symbol, pick, *budget, *sections, format),
                 )
                 .await
             }
@@ -518,6 +525,7 @@ mod tests {
                 symbol: "save".to_string(),
                 pick: None,
                 budget: 2000,
+                sections: ktsense_core::ContextSections::all(),
             },
         ];
         let shapes: Vec<Value> = every_command
@@ -534,7 +542,7 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                3,
+                4,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },
@@ -543,7 +551,8 @@ mod tests {
                       "depth": 2, "limit": 5, "wait_index": true, "format": "md" },
                     { "command": "map", "budget": 4000, "format": "md" },
                     { "command": "context", "symbol": "save", "pick": null, "budget": 2000,
-                      "format": "md" }
+                      "sections": { "source": true, "outline": true, "callers": true,
+                      "implementors": true }, "format": "md" }
                 ])
             ),
             "a routed wire shape changed: bump ktsense_daemon::PROTOCOL_VERSION and repin this test"
@@ -620,6 +629,7 @@ mod tests {
                 symbol: "CheckoutService".to_string(),
                 pick: Some("shop.app.checkout.CheckoutService".to_string()),
                 budget: 2000,
+                sections: ktsense_core::ContextSections::all(),
             },
             format: WireFormat::Md,
         };
@@ -635,6 +645,8 @@ mod tests {
                     "symbol": "CheckoutService",
                     "pick": "shop.app.checkout.CheckoutService",
                     "budget": 2000,
+                    "sections": { "source": true, "outline": true, "callers": true,
+                      "implementors": true },
                     "format": "md"
                 }),
                 params.command,
