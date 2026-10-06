@@ -68,9 +68,9 @@ pub(crate) fn present_symbols(
     pick: Option<&str>,
     format: Format,
 ) -> Result<SymbolsOutcome, CommandError> {
-    let mut resolved: Vec<ResolvedSymbol> = candidates
-        .iter()
-        .map(|candidate| enrich(root, candidate))
+    let mut resolved: Vec<ResolvedSymbol> = enrich_sorted(root, candidates)
+        .into_iter()
+        .map(|(_, resolved)| resolved)
         .collect();
     if let Some(kind) = kind {
         resolved.retain(|symbol| symbol.matches_kind(kind));
@@ -114,13 +114,7 @@ pub(crate) fn select(
     pick: Option<&str>,
     format: Format,
 ) -> Result<Selection, CommandError> {
-    let mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = candidates
-        .into_iter()
-        .map(|candidate| {
-            let resolved = enrich(root, &candidate);
-            (candidate, resolved)
-        })
-        .collect();
+    let mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = enrich_sorted(root, candidates);
     if let Some(pick) = pick {
         return enriched
             .into_iter()
@@ -171,6 +165,33 @@ fn render(
         Format::Dot => return Err(CommandError::unsupported_format("symbols")),
     };
     Ok(SymbolsOutcome { text, exit })
+}
+
+/// Enriches every engine candidate and orders the result deterministically, so a set of
+/// declarations renders identically however the engine ordered its answer. The engine's `find`
+/// order is not stable between runs (KT-81); ordering by fully-qualified name, then file, line and
+/// column, is. This is the one place both `symbols` and the `trace`/`context` ambiguity listing
+/// order candidates, so every consumer sees the same rows in the same order.
+fn enrich_sorted(
+    root: &Path,
+    candidates: Vec<SymbolCandidate>,
+) -> Vec<(SymbolCandidate, ResolvedSymbol)> {
+    let mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = candidates
+        .into_iter()
+        .map(|candidate| {
+            let resolved = enrich(root, &candidate);
+            (candidate, resolved)
+        })
+        .collect();
+    enriched.sort_by(|(left_candidate, left), (right_candidate, right)| {
+        (&left.fqn, &left.file, left.line, left_candidate.col).cmp(&(
+            &right.fqn,
+            &right.file,
+            right.line,
+            right_candidate.col,
+        ))
+    });
+    enriched
 }
 
 /// Enriches one engine location from the declaration at that point in its file. A file that cannot
@@ -404,6 +425,16 @@ mod tests {
     fn several_exact_matches_list_all_and_exit_three() {
         let (code, text) = present(save_candidates(), None, None, None);
         insta::assert_snapshot!("ambiguous_exits_three", format!("exit {code}\n{text}"));
+    }
+
+    #[test]
+    fn candidate_order_does_not_change_the_rendering() {
+        let forward = present(save_candidates(), None, None, None);
+        let mut reversed = save_candidates();
+        reversed.reverse();
+        let backward = present(reversed, None, None, None);
+
+        assert_eq!(forward, backward);
     }
 
     #[test]

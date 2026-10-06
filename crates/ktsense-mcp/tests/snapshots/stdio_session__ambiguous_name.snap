@@ -10,20 +10,20 @@ structuredContent:
 {
   "citations": [
     {
-      "line": 9,
-      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
-    },
-    {
       "line": 13,
       "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
     }
   ],
   "citations_omitted": 0,
   "command": "trace",
   "exit": 3,
   "files": [
-    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
-    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
   ],
   "requires": "kmp-lsp and a settled index",
   "root": "<FIXTURE>",
@@ -33,8 +33,8 @@ structuredContent:
 ## Symbols: save
 
 ```text
-shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
 
 === explain_kotlin_symbol ===
@@ -43,20 +43,20 @@ structuredContent:
 {
   "citations": [
     {
-      "line": 9,
-      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
-    },
-    {
       "line": 13,
       "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
     }
   ],
   "citations_omitted": 0,
   "command": "context",
   "exit": 3,
   "files": [
-    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
-    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
   ],
   "requires": "kmp-lsp and a settled index",
   "root": "<FIXTURE>",
@@ -66,8 +66,8 @@ structuredContent:
 ## Symbols: save
 
 ```text
-shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
 
 === find_kotlin_symbol ===
@@ -76,20 +76,20 @@ structuredContent:
 {
   "citations": [
     {
-      "line": 9,
-      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
-    },
-    {
       "line": 13,
       "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    },
+    {
+      "line": 9,
+      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
     }
   ],
   "citations_omitted": 0,
   "command": "symbols",
   "exit": 3,
   "files": [
-    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
-    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
+    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
   ],
   "requires": "kmp-lsp",
   "root": "<FIXTURE>",
@@ -99,8 +99,8 @@ structuredContent:
 ## Symbols: save
 
 ```text
-shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
+shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
 
 server exit: Some(0)

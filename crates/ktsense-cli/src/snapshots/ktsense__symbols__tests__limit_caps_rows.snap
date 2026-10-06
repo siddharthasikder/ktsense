@@ -6,7 +6,7 @@ exit 3
 ## Symbols: save
 
 ```text
-shop.order.OrderRepository.save  fun  core/src/main/kotlin/shop/order/OrderRepository.kt:4  fun save(order: Order): OrderId
+shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
 ```
 
 ... 2 more (use --limit)
