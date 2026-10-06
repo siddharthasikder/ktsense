@@ -19,3 +19,4 @@ object ServiceRegistry {
 inline fun <reified T : Service> ServiceRegistry.findOrNull(): T?
 fun countUsers(repo: Repository<User>): Int
 ```
+1 private or internal declaration hidden; pass --private to include them.

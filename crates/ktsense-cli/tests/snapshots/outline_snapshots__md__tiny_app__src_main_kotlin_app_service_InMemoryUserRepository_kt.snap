@@ -26,3 +26,4 @@ class InMemoryUserRepository private constructor(private val backing: MutableMap
 }
 interface ReadOnlyView { fun keys(): Set<Long> }
 ```
+4 private or internal declarations hidden; pass --private to include them.

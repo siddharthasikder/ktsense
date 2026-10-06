@@ -112,15 +112,57 @@ pub fn render_markdown(file: &FileSkeleton, options: &RenderOptions) -> String {
     if let Some(package) = &file.package {
         out.push_str(&format!("\npackage {}\n", neutralize(package)));
     }
+    let hidden = hidden_declaration_count(&file.declarations, options);
     if body.is_empty() {
         out.push_str("\nNo public declarations.\n");
+        append_hidden_notice(&mut out, hidden);
         return out;
     }
     let fence = fence_for(&body);
     out.push_str(&format!("\n{fence}kotlin\n"));
     out.push_str(&body);
     out.push_str(&format!("\n{fence}\n"));
+    append_hidden_notice(&mut out, hidden);
     out
+}
+
+/// Declarations the default outline left out on the visibility rule that [`RenderOptions::admits`]
+/// applies, counting every one including members nested inside a hidden container. Zero when
+/// `--private` was asked for, since then nothing is hidden and the notice is suppressed.
+fn hidden_declaration_count(declarations: &[Declaration], options: &RenderOptions) -> usize {
+    if options.include_private {
+        return 0;
+    }
+    declarations.iter().map(hidden_within).sum()
+}
+
+fn hidden_within(declaration: &Declaration) -> usize {
+    if is_visible_api(declaration.visibility) {
+        declaration.children.iter().map(hidden_within).sum()
+    } else {
+        subtree_size(declaration)
+    }
+}
+
+fn subtree_size(declaration: &Declaration) -> usize {
+    1 + declaration.children.iter().map(subtree_size).sum::<usize>()
+}
+
+/// Appends the one-line count of what the outline hid, so a reader knows the answer is the public
+/// surface rather than the whole file. Nothing is appended when nothing was hidden, which keeps a
+/// `--private` render and a fully public file byte-identical to before.
+fn append_hidden_notice(out: &mut String, hidden: usize) {
+    if hidden == 0 {
+        return;
+    }
+    let noun = if hidden == 1 {
+        "declaration"
+    } else {
+        "declarations"
+    };
+    out.push_str(&format!(
+        "{hidden} private or internal {noun} hidden; pass --private to include them.\n"
+    ));
 }
 
 /// The import graph as compressed Markdown an agent reads: a one-line census, then the edges,
@@ -837,14 +879,66 @@ mod tests {
     }
 
     #[test]
-    fn a_file_with_no_public_api_says_so_rather_than_rendering_an_empty_fence() {
+    fn a_file_with_no_public_api_says_so_and_how_many_were_hidden_rather_than_an_empty_fence() {
         let file = FileSkeleton::new("app/util/internals.kt").with_declarations(vec![
             Declaration::function("unusedHelper", 15).with_visibility(Visibility::Private),
         ]);
 
         assert_eq!(
             render_markdown(&file, &RenderOptions::default()),
-            "## app/util/internals.kt\n\nNo public declarations.\n"
+            "## app/util/internals.kt\n\nNo public declarations.\n1 private or internal \
+             declaration hidden; pass --private to include them.\n"
+        );
+    }
+
+    /// The default render hides private and internal declarations, including a private member
+    /// nested in a visible class, and says how many; `--private` shows them all and appends no
+    /// notice, so the two renderings prove the count and its suppression at once.
+    #[test]
+    fn a_hidden_declaration_count_follows_the_default_outline_and_vanishes_under_private() {
+        let file = FileSkeleton::new("p/Api.kt").with_declarations(vec![
+            Declaration::class("Api", 1).containing(vec![
+                Declaration::function("open", 2),
+                Declaration::function("read", 3),
+                Declaration::function("secret", 4).with_visibility(Visibility::Private),
+            ]),
+            Declaration::function("helper", 7).with_visibility(Visibility::Internal),
+        ]);
+
+        let default_and_private = (
+            render_markdown(&file, &RenderOptions::default()),
+            render_markdown(&file, &RenderOptions::default().with_private()),
+        );
+
+        assert_eq!(
+            default_and_private,
+            (
+                concat!(
+                    "## p/Api.kt\n",
+                    "\n",
+                    "```kotlin\n",
+                    "class Api {\n",
+                    "    fun open()\n",
+                    "    fun read()\n",
+                    "}\n",
+                    "```\n",
+                    "2 private or internal declarations hidden; pass --private to include them.\n",
+                )
+                .to_string(),
+                concat!(
+                    "## p/Api.kt\n",
+                    "\n",
+                    "```kotlin\n",
+                    "class Api {\n",
+                    "    fun open()\n",
+                    "    fun read()\n",
+                    "    private fun secret()\n",
+                    "}\n",
+                    "internal fun helper()\n",
+                    "```\n",
+                )
+                .to_string(),
+            )
         );
     }
 

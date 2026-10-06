@@ -16,3 +16,4 @@ class FixedClock(private val fixed: Long) : Clock { override fun nowEpochMillis(
 fun slugify(input: String): String
 fun truncate(input: String, limit: Int = 40): String
 ```
+1 private or internal declaration hidden; pass --private to include them.

@@ -15,3 +15,4 @@ class AuditTrail {
     fun all(): List<String>
 }
 ```
+1 private or internal declaration hidden; pass --private to include them.

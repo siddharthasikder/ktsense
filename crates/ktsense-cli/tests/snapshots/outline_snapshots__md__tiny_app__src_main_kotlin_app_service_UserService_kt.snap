@@ -23,3 +23,4 @@ open class UserService(private val repo: UserRepository, private val clock: Cloc
     }
 }
 ```
+3 private or internal declarations hidden; pass --private to include them.

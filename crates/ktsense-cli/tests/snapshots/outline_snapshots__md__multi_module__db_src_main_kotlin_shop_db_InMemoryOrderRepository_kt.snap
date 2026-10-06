@@ -15,3 +15,4 @@ class InMemoryOrderRepository : OrderRepository {
     override fun findById(id: OrderId): Order?
 }
 ```
+2 private or internal declarations hidden; pass --private to include them.

@@ -22,3 +22,4 @@ abstract class AbstractCachingService<K, V : Any>(protected val capacity: Int) :
     final override fun stop()
 }
 ```
+1 private or internal declaration hidden; pass --private to include them.

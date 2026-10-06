@@ -12,3 +12,4 @@ package app
 ```kotlin
 fun main(args: Array<String>)
 ```
+1 private or internal declaration hidden; pass --private to include them.
