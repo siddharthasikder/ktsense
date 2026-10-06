@@ -40,7 +40,8 @@ use std::path::{Path, PathBuf};
 /// Version 5 added the routed `context` source match, so `--match` and `--around` cross the wire
 /// (KT-101).
 /// Version 6 added the routed `map` compact flag, so `--compact` crosses the wire (KT-97).
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 added the routed `map` focus pattern, so `--focus` crosses the wire (KT-108).
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

@@ -214,3 +214,91 @@ fn inside_one_package_the_most_referenced_file_leads_where_imports_saw_nothing()
         run.stdout
     );
 }
+
+/// `--focus` requires `--compact`: without it the invocation is a usage error (exit 2), caught by
+/// clap before the command runs, rather than a map of everything.
+#[test]
+fn focus_requires_compact() {
+    let run = map(&[
+        "map",
+        "--root",
+        "fixtures/multi-module",
+        "--focus",
+        "Checkout",
+    ]);
+
+    let observed = (run.code, run.stderr.contains("compact"));
+    assert_eq!(observed, (Some(2), true), "stderr: {}", run.stderr);
+}
+
+/// An invalid `--focus` regex is a usage error (exit 2) with a clear message, not a panic.
+#[test]
+fn an_invalid_focus_regex_fails_cleanly() {
+    let run = map(&[
+        "map",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "(",
+    ]);
+
+    let observed = (
+        run.code,
+        run.stderr
+            .contains("--focus is not a valid regular expression"),
+    );
+    assert_eq!(observed, (Some(2), true), "stderr: {}", run.stderr);
+}
+
+/// `--focus` lists the matching declarations first under a focus heading, grouped by file, and the
+/// JSON carries them under `focus`. On the fixture `Checkout` matches the checkout declarations, so
+/// `CheckoutService` is in the focus section in both formats.
+#[test]
+fn focus_lists_matching_declarations_first_in_markdown_and_json() {
+    let md = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "Checkout",
+    ]);
+    let json = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "Checkout",
+        "--format",
+        "json",
+    ]);
+    let document: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid JSON");
+    let focus_declarations: Vec<String> = document["focus"]["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|file| file["declarations"].as_array().cloned().unwrap_or_default())
+        .filter_map(|declaration| declaration.as_str().map(str::to_string))
+        .collect();
+
+    let observed = (
+        md.code,
+        md.stdout.contains("## Focus: Checkout"),
+        json.code,
+        document["focus"]["pattern"].as_str(),
+        focus_declarations.contains(&"class CheckoutService".to_string()),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, Some(0), Some("Checkout"), true),
+        "md: {}\njson: {}",
+        md.stdout,
+        json.stdout
+    );
+}

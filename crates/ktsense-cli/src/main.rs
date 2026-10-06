@@ -26,9 +26,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ktsense_core::{
     build_import_graph, build_repo_map, fence_for, neutralize, render_deps_dot,
     render_deps_markdown, render_map_markdown, render_markdown, ByteRatioEstimator,
-    ContextSections, DepLevel, FileSkeleton, ImportGraph, RenderOptions, RepoMap, RepoMapInput,
+    ContextSections, DepLevel, FileSkeleton, FocusSpec, ImportGraph, NameMatcher, RenderOptions,
+    RepoMap, RepoMapInput,
 };
 use ktsense_lsp::{CheckReport, DiagnoseReport, LspError, PassthroughError, Severity};
+use regex::Regex;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -215,6 +217,10 @@ enum Command {
         /// budget covers more of the module.
         #[arg(long)]
         compact: bool,
+        /// List declarations whose name matches this regex first, grouped by file, before the
+        /// ranked map spends what budget remains. Requires --compact.
+        #[arg(long, value_name = "REGEX", requires = "compact")]
+        focus: Option<String>,
     },
     /// Syntax-check files; exits non-zero when a file has errors
     Check { path: PathBuf },
@@ -369,6 +375,14 @@ impl CommandError {
         Self {
             exit: Exit::Usage,
             message: format!("ktsense: --match is not a valid regular expression: {error}"),
+        }
+    }
+
+    /// The `--focus` value did not compile as a regex, so the invocation itself was malformed.
+    fn bad_focus_pattern(error: regex::Error) -> Self {
+        Self {
+            exit: Exit::Usage,
+            message: format!("ktsense: --focus is not a valid regular expression: {error}"),
         }
     }
 
@@ -591,9 +605,17 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             limit,
             format,
         ),
-        Command::Map { budget, compact } => route(
+        Command::Map {
+            budget,
+            compact,
+            focus,
+        } => route(
             &base,
-            routing::RoutedCommand::Map { budget, compact },
+            routing::RoutedCommand::Map {
+                budget,
+                compact,
+                focus,
+            },
             format,
         ),
         Command::Trace {
@@ -909,6 +931,7 @@ fn repository_map(
     root: &Path,
     budget: usize,
     compact: bool,
+    focus: Option<&str>,
     format: Format,
 ) -> Result<String, CommandError> {
     let files = collect_kotlin_files(root)?;
@@ -921,16 +944,41 @@ fn repository_map(
         .filter_map(|path| skeleton_for_deps(root, path))
         .collect();
     let references = identifiers::count_identifiers(&mapped);
+    let focus_matcher = match focus {
+        Some(pattern) => Some(RegexNameMatcher {
+            pattern: pattern.to_string(),
+            regex: Regex::new(pattern).map_err(CommandError::bad_focus_pattern)?,
+        }),
+        None => None,
+    };
     let map = build_repo_map(
         RepoMapInput {
             files: &skeletons,
             references: &references,
             budget,
             compact,
+            focus: focus_matcher.as_ref().map(|matcher| FocusSpec {
+                pattern: &matcher.pattern,
+                matcher,
+            }),
         },
         &ByteRatioEstimator,
     );
     present_map(&map, format)
+}
+
+/// A compiled `--focus` pattern lent to `ktsense-core` as a [`NameMatcher`], the way `--match` lends
+/// a `LineMatcher`: the regex engine stays in the CLI, the pure crate matches names through the
+/// trait. The pattern is kept beside the regex so the focus heading can name it.
+struct RegexNameMatcher {
+    pattern: String,
+    regex: Regex,
+}
+
+impl NameMatcher for RegexNameMatcher {
+    fn matches(&self, name: &str) -> bool {
+        self.regex.is_match(name)
+    }
 }
 
 /// Whether a path belongs to a test source set, by the directory conventions Gradle and the Kotlin

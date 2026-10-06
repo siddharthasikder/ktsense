@@ -41,7 +41,8 @@ pub use render::{
     render_text_search_markdown, render_trace_markdown, RenderOptions,
 };
 pub use repo_map::{
-    build_repo_map, MappedFile, OmittedDirectory, ReferenceCounts, RepoMap, RepoMapInput,
+    build_repo_map, FocusMatches, FocusSpec, MappedFile, NameMatcher, OmittedDirectory,
+    ReferenceCounts, RepoMap, RepoMapInput,
 };
 pub use scc::{cycles, strongly_connected_components};
 pub use skeleton::{

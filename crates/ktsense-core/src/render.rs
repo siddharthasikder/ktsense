@@ -313,9 +313,12 @@ pub fn render_map_markdown(map: &RepoMap) -> String {
 
     if map.files.is_empty() {
         out.push_str("\nThe budget was too small for any file.\n");
+        append_focus_section(&mut out, map);
         append_map_summary(&mut out, map);
         return out;
     }
+
+    append_focus_section(&mut out, map);
 
     for file in &map.files {
         let body = file.declarations.join("\n");
@@ -348,6 +351,39 @@ fn append_map_summary(out: &mut String, map: &RepoMap) {
         map.omitted_directories_shown,
     ) {
         out.push_str(&format!("\n{line}\n"));
+    }
+}
+
+/// Appends the focus section (KT-108): the declarations whose name matched `--focus`, grouped by
+/// file in rank order, each as kind and name, under a heading naming the pattern and the shown
+/// count. The focus files use a deeper heading than the ranked map's files, so a reader sees the
+/// focus as a labelled subsection ahead of the map. Absent when the caller passed no `--focus`; an
+/// empty match set still prints the heading so the focus is never silently dropped.
+fn append_focus_section(out: &mut String, map: &RepoMap) {
+    let Some(focus) = &map.focus else {
+        return;
+    };
+    let shown: usize = focus.files.iter().map(|file| file.declarations.len()).sum();
+    out.push_str(&format!(
+        "\n## Focus: {} ({})\n",
+        neutralize(&focus.pattern),
+        pluralize(shown, "declaration"),
+    ));
+    if focus.files.is_empty() {
+        out.push_str("\nNo declaration name matched.\n");
+        return;
+    }
+    for file in &focus.files {
+        let body = file.declarations.join("\n");
+        let fence = fence_for(&body);
+        out.push_str(&format!("\n### {}\n", neutralize(&file.path)));
+        out.push_str(&format!("\n{fence}kotlin\n{body}\n{fence}\n"));
+    }
+    if focus.omitted > 0 {
+        out.push_str(&format!(
+            "\n{} omitted for budget.\n",
+            pluralize(focus.omitted, "matching declaration"),
+        ));
     }
 }
 

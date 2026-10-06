@@ -84,9 +84,27 @@ pub struct OmittedDirectory {
     pub files: usize,
 }
 
+/// The `--focus` section: every public top-level declaration whose name the focus pattern matches,
+/// grouped by file in the map's own file-rank order, each as kind and name alone. It is emitted
+/// before the ranked map and claims the budget first (KT-108), so a question that names a kind of
+/// declaration is answered even when the ranking would have spent the budget elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FocusMatches {
+    /// The pattern the caller focused on, carried so the rendered heading can name it.
+    pub pattern: String,
+    /// Matching declarations grouped by file, most central file first.
+    pub files: Vec<MappedFile>,
+    /// Matching declarations the focus budget could not fit.
+    pub omitted: usize,
+}
+
 /// A budgeted map of a repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RepoMap {
+    /// The focus section, present only when the caller passed `--focus`. Left out of the JSON
+    /// otherwise, so an unfocused map serializes exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<FocusMatches>,
     /// Files that contributed at least one signature, most central first.
     pub files: Vec<MappedFile>,
     /// The budget requested by the caller.
@@ -126,6 +144,24 @@ pub struct RepoMapInput<'a> {
     /// same budget covers more of the module. Ranking and the public-visibility filter are
     /// unchanged; only the text each declaration occupies shrinks.
     pub compact: bool,
+    /// When present, every public top-level declaration whose name the matcher accepts is listed
+    /// first in a focus section, grouped by file, before the ranked map spends what budget remains
+    /// (KT-108). Only meaningful with [`Self::compact`], which the CLI requires.
+    pub focus: Option<FocusSpec<'a>>,
+}
+
+/// A `--focus` request: the pattern, for the rendered heading, and a matcher over declaration names.
+/// A trait matcher rather than a concrete regex because `ktsense-core` holds no regex engine: the
+/// CLI compiles the pattern and lends a [`NameMatcher`], exactly as it lends a [`TokenEstimator`].
+pub struct FocusSpec<'a> {
+    pub pattern: &'a str,
+    pub matcher: &'a dyn NameMatcher,
+}
+
+/// Decides whether a declaration name is in the focus set. Implemented by the CLI over a compiled
+/// regex, so the matching stays testable from hand-built values with no parser in the pure crate.
+pub trait NameMatcher {
+    fn matches(&self, name: &str) -> bool;
 }
 
 /// Builds a budgeted map from parsed skeletons and the corpus reference counts.
@@ -153,6 +189,9 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
             .then_with(|| left.path.cmp(&right.path))
     });
 
+    let (focus, focus_tokens) = build_focus_section(&ordered, &ranking, &input, estimator);
+    let map_budget = input.budget - focus_tokens;
+
     let mut units = Vec::new();
     let mut candidate_paths: Vec<String> = Vec::new();
     let mut files_without_public_declarations = 0usize;
@@ -173,14 +212,14 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
     // Emitting once at the full budget shows which files would be dropped when nothing is reserved.
     // Only then, and only when files were actually dropped, is room held back for the summary, so a
     // map whose files all fit reserves nothing and is chosen exactly as before.
-    let full = emit_within_budget(units.clone(), input.budget, estimator);
+    let full = emit_within_budget(units.clone(), map_budget, estimator);
     let dropped_without_reserve = omitted_from(&candidate_paths, &full.items);
-    let reserve = summary_reserve(&dropped_without_reserve, input.budget, estimator);
+    let reserve = summary_reserve(&dropped_without_reserve, map_budget, estimator);
 
     let emission = if reserve == 0 {
         full
     } else {
-        emit_within_budget(units, input.budget - reserve, estimator)
+        emit_within_budget(units, map_budget - reserve, estimator)
     };
     let files_shown = regroup(&emission.items);
     let omitted = omitted_from(&candidate_paths, &emission.items);
@@ -189,7 +228,7 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
     // The summary is rendered to fit the room the files left, so the reported bound, which now
     // covers it, still never exceeds the budget. A reservation larger than the summary needs only
     // leaves the summary fully named; a smaller one truncates it to the largest groups.
-    let room_for_summary = input.budget - emission.token_upper_bound;
+    let room_for_summary = map_budget - emission.token_upper_bound;
     let omitted_directories_shown =
         fit_directories(&omitted_directories, room_for_summary, estimator);
     let summary_cost = omitted_directories_line(&omitted_directories, omitted_directories_shown)
@@ -197,10 +236,11 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
         .unwrap_or(0);
 
     RepoMap {
+        focus,
         files_omitted: omitted.len(),
         files: files_shown,
         budget: input.budget,
-        token_upper_bound: emission.token_upper_bound + summary_cost,
+        token_upper_bound: focus_tokens + emission.token_upper_bound + summary_cost,
         omitted_directories,
         omitted_directories_shown,
         files_without_public_declarations,
@@ -423,6 +463,76 @@ fn signatures_in_reference_order(
         .collect()
 }
 
+/// The focus section: every public top-level declaration whose name the matcher accepts, grouped by
+/// file in the map's own file-rank order, each as kind and name alone, emitted with the budget's
+/// first claim. Returns the section and the tokens it took, or `None` and `0` when the caller passed
+/// no `--focus`. An empty match set still yields a section, so the render reports that the focus
+/// found nothing rather than reading as an unfocused map.
+fn build_focus_section<E: TokenEstimator>(
+    ordered: &[&FileSkeleton],
+    ranking: &Ranking<'_>,
+    input: &RepoMapInput<'_>,
+    estimator: &E,
+) -> (Option<FocusMatches>, usize) {
+    let Some(spec) = &input.focus else {
+        return (None, 0);
+    };
+    let mut units = Vec::new();
+    let mut candidate_paths: Vec<String> = Vec::new();
+    let mut total_matches = 0usize;
+    for file in ordered {
+        let signatures = matching_signatures(file, ranking, spec.matcher);
+        if signatures.is_empty() {
+            continue;
+        }
+        let index = candidate_paths.len();
+        candidate_paths.push(file.path.clone());
+        units.push(Unit::header(&file.path));
+        total_matches += signatures.len();
+        for signature in signatures {
+            units.push(Unit::declaration(index, signature));
+        }
+    }
+    let emission = emit_within_budget(units, input.budget, estimator);
+    let files = regroup(&emission.items);
+    let shown: usize = files.iter().map(|file| file.declarations.len()).sum();
+    (
+        Some(FocusMatches {
+            pattern: spec.pattern.to_string(),
+            files,
+            omitted: total_matches - shown,
+        }),
+        emission.token_upper_bound,
+    )
+}
+
+/// A file's public top-level declarations whose name the matcher accepts, each as kind and name
+/// alone, in the map's most-referenced-first order with source order breaking ties. The focus
+/// section is always kind-and-name, so this renders compact regardless of the ranked map's mode.
+fn matching_signatures(
+    file: &FileSkeleton,
+    ranking: &Ranking<'_>,
+    matcher: &dyn NameMatcher,
+) -> Vec<String> {
+    let mut ranked: Vec<((usize, usize), u32, &Declaration)> = file
+        .declarations
+        .iter()
+        .filter(|declaration| matcher.matches(&declaration.name))
+        .map(|declaration| {
+            (
+                ranking.weight_of(file, declaration),
+                declaration.line,
+                declaration,
+            )
+        })
+        .collect();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    ranked
+        .into_iter()
+        .filter_map(|(_, _, declaration)| rendered_signature(file, declaration, true))
+        .collect()
+}
+
 /// One declaration's line for the map: its full signature, or, in compact mode, its kind and name
 /// alone. The public-visibility filter is the full renderer's, reused here so compact mode hides
 /// exactly what the default map hides.
@@ -557,6 +667,7 @@ mod tests {
                 references: &ReferenceCounts::default(),
                 budget,
                 compact: false,
+                focus: None,
             },
             &ByteRatioEstimator,
         )
@@ -594,6 +705,7 @@ mod tests {
                 references: &counts(&[("Engine", 7), ("Helper", 2), ("Server", 1), ("Main", 0)]),
                 budget: 10_000,
                 compact: false,
+                focus: None,
             },
             &ByteRatioEstimator,
         );
@@ -649,6 +761,7 @@ mod tests {
                 references: &counts(&[("launch", 900), ("async", 400), ("AbstractThing", 12)]),
                 budget: 10_000,
                 compact: false,
+                focus: None,
             },
             &ByteRatioEstimator,
         );
@@ -693,6 +806,7 @@ mod tests {
                 references: &counts(&[("Alpha", 5), ("Beta", 5), ("User", 1)]),
                 budget: 10_000,
                 compact: false,
+                focus: None,
             },
             &ByteRatioEstimator,
         );
@@ -843,6 +957,7 @@ mod tests {
                     references: &references,
                     budget,
                     compact: false,
+                    focus: None,
                 },
                 &ByteRatioEstimator,
             );
@@ -930,6 +1045,7 @@ mod tests {
                 references: &references,
                 budget: 10_000,
                 compact: false,
+                focus: None,
             },
             &ByteRatioEstimator,
         );
@@ -939,6 +1055,7 @@ mod tests {
                 references: &references,
                 budget: 10_000,
                 compact: true,
+                focus: None,
             },
             &ByteRatioEstimator,
         );
@@ -957,6 +1074,96 @@ mod tests {
                     "fun handle".to_string(),
                     "interface Plugin".to_string()
                 ]),
+            )
+        );
+    }
+
+    /// A matcher that accepts any name containing a fixed substring, so the focus set is tested from
+    /// a hand-built matcher with no regex engine in core.
+    struct NameContains(&'static str);
+
+    impl NameMatcher for NameContains {
+        fn matches(&self, name: &str) -> bool {
+            name.contains(self.0)
+        }
+    }
+
+    /// `--focus` lists every public top-level declaration whose name matches first, grouped by file
+    /// in the map's own rank order, each as kind and name, while the ranked map still carries every
+    /// file. A tight budget truncates the focus set and reports the drop, and the bound never passes
+    /// the budget at either size. Composed as one table over a generous and a tiny budget.
+    #[test]
+    fn focus_lists_every_matching_declaration_first_and_respects_the_budget() {
+        let files = vec![
+            file(
+                "core/Core.kt",
+                "app.core",
+                &[],
+                &[("Engine", 1), ("PluginRegistry", 2)],
+            ),
+            file(
+                "web/Web.kt",
+                "app.web",
+                &["app.core.Engine"],
+                &[("Server", 1), ("RoutingPlugin", 2)],
+            ),
+        ];
+        let references = counts(&[
+            ("Engine", 7),
+            ("PluginRegistry", 1),
+            ("Server", 2),
+            ("RoutingPlugin", 1),
+        ]);
+        let matcher = NameContains("Plugin");
+        let focused = |budget: usize| {
+            build_repo_map(
+                RepoMapInput {
+                    files: &files,
+                    references: &references,
+                    budget,
+                    compact: true,
+                    focus: Some(FocusSpec {
+                        pattern: "Plugin",
+                        matcher: &matcher,
+                    }),
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let generous = focused(10_000);
+        let focus = generous.focus.clone().expect("focus section present");
+        let focus_view: Vec<(String, Vec<String>)> = focus
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.declarations.clone()))
+            .collect();
+        let tiny = focused(1);
+
+        assert_eq!(
+            (
+                focus.pattern,
+                focus_view,
+                focus.omitted,
+                generous.files.len(),
+                generous.token_upper_bound <= 10_000,
+                tiny.token_upper_bound <= 1,
+            ),
+            (
+                "Plugin".to_string(),
+                vec![
+                    (
+                        "core/Core.kt".to_string(),
+                        vec!["class PluginRegistry".to_string()]
+                    ),
+                    (
+                        "web/Web.kt".to_string(),
+                        vec!["class RoutingPlugin".to_string()]
+                    ),
+                ],
+                0,
+                2,
+                true,
+                true,
             )
         );
     }

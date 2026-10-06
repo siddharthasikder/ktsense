@@ -70,6 +70,7 @@ pub(crate) enum RoutedCommand {
     Map {
         budget: usize,
         compact: bool,
+        focus: Option<String>,
     },
     Context {
         symbol: String,
@@ -194,9 +195,12 @@ pub(crate) fn run_in_process(
             *wait_index,
             format,
         )),
-        RoutedCommand::Map { budget, compact } => {
-            crate::repository_map(root, *budget, *compact, format).map(CommandOutcome::success)
-        }
+        RoutedCommand::Map {
+            budget,
+            compact,
+            focus,
+        } => crate::repository_map(root, *budget, *compact, focus.as_deref(), format)
+            .map(CommandOutcome::success),
         RoutedCommand::Context {
             symbol,
             pick,
@@ -511,10 +515,12 @@ impl CommandEngine {
                 )
                 .await
             }
-            RoutedCommand::Map { budget, compact } => {
-                crate::repository_map(&self.root, *budget, *compact, format)
-                    .map(CommandOutcome::success)
-            }
+            RoutedCommand::Map {
+                budget,
+                compact,
+                focus,
+            } => crate::repository_map(&self.root, *budget, *compact, focus.as_deref(), format)
+                .map(CommandOutcome::success),
             RoutedCommand::Context {
                 symbol,
                 pick,
@@ -599,6 +605,7 @@ mod tests {
                 engine_backed(RoutedCommand::Map {
                     budget: 4000,
                     compact: false,
+                    focus: None,
                 }),
             ),
             (true, true, false, false, false)
@@ -626,7 +633,8 @@ mod tests {
             },
             RoutedCommand::Map {
                 budget: 4000,
-                compact: false,
+                compact: true,
+                focus: Some("Plugin".to_string()),
             },
             RoutedCommand::Context {
                 symbol: "save".to_string(),
@@ -651,14 +659,15 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                6,
+                7,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },
                     { "command": "deps", "level": "file", "format": "md" },
                     { "command": "trace", "symbol": "save", "pick": "shop.order.OrderRepository.save",
                       "depth": 2, "limit": 5, "wait_index": true, "format": "md" },
-                    { "command": "map", "budget": 4000, "compact": false, "format": "md" },
+                    { "command": "map", "budget": 4000, "compact": true, "focus": "Plugin",
+                      "format": "md" },
                     { "command": "context", "symbol": "save", "pick": null, "budget": 2000,
                       "sections": { "source": true, "outline": true, "callers": true,
                       "implementors": true }, "match_pattern": null, "around": 1, "format": "md" }
@@ -716,6 +725,7 @@ mod tests {
             command: RoutedCommand::Map {
                 budget: 4000,
                 compact: true,
+                focus: Some("Plugin".to_string()),
             },
             format: WireFormat::Json,
         };
@@ -729,7 +739,7 @@ mod tests {
             (trace_back.command, map_value),
             (
                 trace.command,
-                serde_json::json!({ "command": "map", "budget": 4000, "compact": true, "format": "json" })
+                serde_json::json!({ "command": "map", "budget": 4000, "compact": true, "focus": "Plugin", "format": "json" })
             )
         );
     }
