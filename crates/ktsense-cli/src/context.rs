@@ -23,8 +23,8 @@
 use std::path::Path;
 
 use ktsense_core::{
-    build_context, render_context_markdown, ByteRatioEstimator, ContextInput, LineMatcher,
-    SourceMatch as CoreSourceMatch, SymbolContext,
+    build_context, render_context_markdown, AppliedContextFilter, ByteRatioEstimator, ContextInput,
+    LineMatcher, SiteFilter, SourceMatch as CoreSourceMatch, SymbolContext,
 };
 use ktsense_daemon::WarmEngine;
 use regex::Regex;
@@ -77,6 +77,9 @@ pub(crate) struct ContextRequest<'a> {
     pub sections: ktsense_core::ContextSections,
     pub source_match: Option<SourceMatch>,
     pub format: Format,
+    /// The `--path`/`--tests` filter narrowing the callers, annotated and text-reference sections
+    /// (KT-127). Passed to the trace it is built on so the callers are filtered there.
+    pub filter: Option<SiteFilter>,
 }
 
 pub(crate) fn context(request: ContextRequest<'_>) -> Result<CommandOutcome, CommandError> {
@@ -105,6 +108,7 @@ fn trace_request<'a>(request: &ContextRequest<'a>) -> TraceRequest<'a> {
         limit: None,
         wait: IndexWaitPolicy::Capped,
         format: request.format,
+        filter: request.filter.clone(),
     }
 }
 
@@ -112,6 +116,7 @@ fn trace_request<'a>(request: &ContextRequest<'a>) -> TraceRequest<'a> {
 /// unchanged. The file outline and the declaration's own source are read here from plain files, so
 /// both the fresh and warm paths compose the bundle from the same data.
 fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome, CommandError> {
+    let filter = request.filter.as_ref();
     let report = match traced {
         Traced::Ambiguous(outcome) => return Ok(outcome),
         Traced::NotFound => {
@@ -121,6 +126,7 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
                 None,
                 request.format,
                 "context",
+                filter,
             )
         }
         Traced::Resolved(report) => *report,
@@ -128,14 +134,27 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
 
     let file = trace::skeleton_at(request.root, &report.definition.path);
     let source = trace::source_lines_at(request.root, &report.definition.path);
-    let annotated = trace::annotation_class_uses(request.root, &report.definition)?;
+    let (annotated, annotated_omitted) =
+        trace::annotation_class_uses(request.root, &report.definition, filter)?;
     let name = ktsense_core::last_segment(request.symbol);
-    let java_text_references = crate::text_refs::java_foreign_references(request.root, name)?;
-    let kotlin_text_references = if report.definition.path.ends_with(".java") {
-        crate::text_refs::kotlin_foreign_references(request.root, name)?
+    let (java_text_references, java_omitted) =
+        crate::text_refs::java_foreign_references(request.root, name, filter)?;
+    let (kotlin_text_references, kotlin_omitted) = if report.definition.path.ends_with(".java") {
+        crate::text_refs::kotlin_foreign_references(request.root, name, filter)?
     } else {
-        Vec::new()
+        (Vec::new(), 0)
     };
+    let callers_omitted = report
+        .callers
+        .first()
+        .map_or(0, |level| level.production_omitted + level.test_omitted);
+    let applied_filter = request.filter.clone().map(|filter| AppliedContextFilter {
+        filter,
+        callers_omitted,
+        annotated_omitted,
+        java_text_references_omitted: java_omitted,
+        kotlin_text_references_omitted: kotlin_omitted,
+    });
     let bundle = build_context(
         ContextInput {
             definition: report.definition.clone(),
@@ -150,6 +169,7 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
             kotlin_text_references: &kotlin_text_references,
             implementors: &report.implementors,
             budget: request.budget,
+            filter: applied_filter,
         },
         &ByteRatioEstimator,
     );

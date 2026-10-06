@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::filter::SiteFilter;
 use crate::references::{
     declaration_starting_at, fully_qualified_enclosing, group_references, is_test_source,
     GroupingOptions, Location, ReferenceGroup, SiteKind,
@@ -70,6 +71,32 @@ pub struct RelatedDeclaration {
 pub struct CallerLevel {
     pub depth: usize,
     pub callers: Vec<RelatedDeclaration>,
+    /// How many production callers at this level a `--path`/`--tests` filter left out (KT-127), so
+    /// the heading can read `Callers (3 under src/main; 31 others)`. Zero without a filter, and left
+    /// out of the JSON then, so an unfiltered trace serializes exactly as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub production_omitted: usize,
+    /// How many test callers at this level the filter left out, for the `Test callers` heading.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub test_omitted: usize,
+}
+
+impl CallerLevel {
+    /// A level with no filter omissions, the shape every unfiltered trace produces.
+    pub fn new(depth: usize, callers: Vec<RelatedDeclaration>) -> Self {
+        Self {
+            depth,
+            callers,
+            production_omitted: 0,
+            test_omitted: 0,
+        }
+    }
+}
+
+/// Whether a count is zero, for the serde skip that keeps an omitted count out of the JSON when a
+/// filter left nothing out, so an unfiltered answer serializes exactly as before.
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 /// A reference site left out of the callers and the per-file usage list because it names the symbol
@@ -81,6 +108,31 @@ pub struct ExcludedSite {
     pub path: String,
     pub line: u32,
     pub kind: SiteKind,
+}
+
+/// The `--path`/`--tests` filter a trace was answered under, carried so a consumer can tell a
+/// filtered answer apart and read what each section left out (KT-127). The caller omissions live on
+/// each [`CallerLevel`]; the counts here are for the one-of-a-kind sections. Left out of the JSON
+/// entirely when no filter was applied, so an unfiltered trace serializes exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedTraceFilter {
+    #[serde(flatten)]
+    pub filter: SiteFilter,
+    /// Listed usage sites the filter dropped, the `others` behind the Usages heading.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub usages_omitted: usize,
+    /// Files whose every usage the filter dropped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub usage_files_omitted: usize,
+    /// Annotated declarations the filter dropped (KT-109).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub annotated_omitted: usize,
+    /// Java text-reference sites the filter dropped (KT-112/KT-114/KT-115).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub java_text_references_omitted: usize,
+    /// Kotlin text-reference sites the filter dropped, for a Java-declared definition (KT-112).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub kotlin_text_references_omitted: usize,
 }
 
 /// The complete `trace` answer.
@@ -121,6 +173,10 @@ pub struct TraceReport {
     /// through the KT-102 attribution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kotlin_text_references: Option<crate::text_refs::TextReferences>,
+    /// The `--path`/`--tests` filter the answer was narrowed by, present only when one was applied
+    /// (KT-127). Left out of the JSON otherwise, so an unfiltered trace serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<AppliedTraceFilter>,
 }
 
 /// Everything `build_trace` needs, gathered by the caller from the engine and the parser.
@@ -132,6 +188,11 @@ pub struct TraceInput<'a> {
     pub reference_sites: Vec<Location>,
     pub skeletons: &'a [FileSkeleton],
     pub options: GroupingOptions,
+    /// The `--path`/`--tests` filter to narrow callers and usages by, or `None` for the full answer
+    /// (KT-127). Implementors and the definition are never filtered. When present, the callers and
+    /// usages are built from the sites that survive it, and the counts it left out travel in the
+    /// report so the headings can state them.
+    pub filter: Option<SiteFilter>,
 }
 
 impl TraceReport {
@@ -139,8 +200,37 @@ impl TraceReport {
     /// one more than the deepest level already present.
     pub fn with_deeper_callers(mut self, callers: Vec<RelatedDeclaration>) -> Self {
         let depth = self.callers.len() + 1;
-        self.callers.push(CallerLevel { depth, callers });
+        self.callers.push(CallerLevel::new(depth, callers));
         self
+    }
+
+    /// Attaches a deeper caller level that a `--path`/`--tests` filter has already trimmed, carrying
+    /// how many production and test callers it left out so the level's heading can state them
+    /// (KT-127).
+    pub fn with_deeper_level(
+        mut self,
+        callers: Vec<RelatedDeclaration>,
+        production_omitted: usize,
+        test_omitted: usize,
+    ) -> Self {
+        let depth = self.callers.len() + 1;
+        self.callers.push(CallerLevel {
+            depth,
+            callers,
+            production_omitted,
+            test_omitted,
+        });
+        self
+    }
+
+    /// Records how many annotated, Java and Kotlin text-reference sites a filter dropped, after the
+    /// CLI has filtered those later-attached sections (KT-127). A no-op when no filter was applied.
+    pub fn record_filtered_omissions(&mut self, annotated: usize, java: usize, kotlin: usize) {
+        if let Some(filter) = &mut self.filter {
+            filter.annotated_omitted += annotated;
+            filter.java_text_references_omitted += java;
+            filter.kotlin_text_references_omitted += kotlin;
+        }
     }
 
     /// The direct callers, from which a deeper level is requested.
@@ -195,7 +285,9 @@ impl TraceReport {
 }
 
 /// Builds the answer: implementors and direct callers attributed to their enclosing declarations,
-/// and every reference site grouped by file.
+/// and every reference site grouped by file. When a filter is set, callers and usages are built
+/// from the sites that survive it, and the counts it left out are recorded for the headings;
+/// implementors and the definition are never filtered (KT-127).
 pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
     let skeletons = SkeletonIndex::new(input.skeletons);
     let implementation_sites =
@@ -208,12 +300,35 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
 
     let mut set_aside = vec![input.definition_site.clone()];
     set_aside.extend(implementation_sites.iter().cloned());
-    let direct = callers_of(&input.reference_sites, &set_aside, input.skeletons);
 
-    let (usage_sites, mut excluded_sites) =
-        partition_by_kind(&input.reference_sites, &input.definition_site);
+    let (kept, dropped) = partition_sites(&input.reference_sites, input.filter.as_ref());
+    let direct = callers_of(&kept, &set_aside, input.skeletons);
+
+    let (usage_sites, mut excluded_sites) = partition_by_kind(&kept, &input.definition_site);
     excluded_sites.sort_by(|a, b| (&a.path, a.line, a.kind).cmp(&(&b.path, b.line, b.kind)));
     let usages = group_references(&usage_sites, input.skeletons, input.options);
+
+    let bookkeeping = input.filter.map(|request| {
+        let dropped_callers = callers_of(&dropped, &set_aside, input.skeletons);
+        let dropped_files: std::collections::BTreeSet<&str> =
+            dropped.iter().map(|site| site.path.as_str()).collect();
+        let applied = AppliedTraceFilter {
+            filter: request,
+            usages_omitted: dropped.len(),
+            usage_files_omitted: dropped_files.len(),
+            annotated_omitted: 0,
+            java_text_references_omitted: 0,
+            kotlin_text_references_omitted: 0,
+        };
+        let production_omitted = dropped_callers.iter().filter(|c| !c.test).count();
+        let test_omitted = dropped_callers.iter().filter(|c| c.test).count();
+        (applied, production_omitted, test_omitted)
+    });
+    let (filter, production_omitted, test_omitted) = match bookkeeping {
+        Some((applied, production, test)) => (Some(applied), production, test),
+        None => (None, 0, 0),
+    };
+
     TraceReport {
         symbol: input.definition.qualified_name.clone(),
         index: input.index,
@@ -223,13 +338,31 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
         callers: vec![CallerLevel {
             depth: 1,
             callers: direct,
+            production_omitted,
+            test_omitted,
         }],
-        sites: input.reference_sites.len(),
+        sites: kept.len(),
         usages,
         excluded_sites,
         annotated: None,
         java_text_references: None,
         kotlin_text_references: None,
+        filter,
+    }
+}
+
+/// Splits reference sites into those a filter keeps and those it drops. With no filter every site is
+/// kept and none dropped, which is what keeps an unfiltered trace byte-identical.
+fn partition_sites(
+    sites: &[Location],
+    filter: Option<&SiteFilter>,
+) -> (Vec<Location>, Vec<Location>) {
+    match filter {
+        None => (sites.to_vec(), Vec::new()),
+        Some(filter) => sites
+            .iter()
+            .cloned()
+            .partition(|site| filter.matches(&site.path, is_test_source(&site.path))),
     }
 }
 
@@ -409,6 +542,7 @@ mod tests {
             ],
             skeletons,
             options: GroupingOptions::default(),
+            filter: None,
         }
     }
 
@@ -468,6 +602,8 @@ mod tests {
                     ),
                     related("lib/Unparsed.kt", 9, None, None, 1),
                 ],
+                production_omitted: 0,
+                test_omitted: 0,
             }],
             6,
             4,
@@ -505,6 +641,7 @@ mod tests {
             ],
             skeletons: &skeletons,
             options: GroupingOptions::default(),
+            filter: None,
         };
 
         let report = build_trace(echoed);
@@ -557,6 +694,7 @@ mod tests {
                 reference_sites: vec![],
                 skeletons,
                 options: GroupingOptions::default(),
+                filter: None,
             })
             .implementors
             .len()
@@ -606,6 +744,7 @@ mod tests {
             ],
             skeletons: &skeletons,
             options: GroupingOptions::default(),
+            filter: None,
         });
 
         let listed_lines: Vec<u32> = report
@@ -675,5 +814,68 @@ mod tests {
                 serde_json::json!("shop.app.main")
             )
         );
+    }
+
+    /// A `--path` filter keeps only the callers and usage sites under the prefix, leaves the
+    /// definition and implementors untouched, records what it dropped on the depth-1 level and the
+    /// report, and the headings state the filter and the count left out (KT-127). Composed over a
+    /// trace with one in-prefix caller, one out-of-prefix caller, and an unfiltered implementor.
+    #[test]
+    fn a_path_filter_narrows_callers_and_usages_and_the_headings_state_what_it_left_out() {
+        use crate::filter::{SiteFilter, TestScope};
+
+        let skeletons = vec![
+            FileSkeleton::new("core/OrderRepository.kt")
+                .in_package("shop.order")
+                .with_declarations(vec![Declaration::interface("OrderRepository", 3)
+                    .containing(vec![Declaration::function("save", 4)])]),
+            FileSkeleton::new("db/JdbcOrderRepository.kt")
+                .in_package("shop.db")
+                .with_declarations(vec![Declaration::class("JdbcOrderRepository", 5)
+                    .containing(vec![Declaration::function("save", 8)])]),
+            FileSkeleton::new("app/CheckoutService.kt")
+                .in_package("shop.app.checkout")
+                .with_declarations(vec![Declaration::class("CheckoutService", 8)
+                    .containing(vec![Declaration::function("placeOrder", 12)])]),
+            FileSkeleton::new("lib/Importer.kt")
+                .in_package("shop.lib")
+                .with_declarations(vec![Declaration::class("Importer", 3)
+                    .containing(vec![Declaration::function("load", 4)])]),
+        ];
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "shop.order.OrderRepository.save".to_string(),
+                path: "core/OrderRepository.kt".to_string(),
+                line: 4,
+                signature: "fun save(order: Order): OrderId".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("core/OrderRepository.kt", 4),
+            implementation_sites: vec![Location::new("db/JdbcOrderRepository.kt", 8)],
+            reference_sites: vec![
+                Location::new("core/OrderRepository.kt", 4),
+                Location::new("db/JdbcOrderRepository.kt", 8),
+                Location::new("app/CheckoutService.kt", 13),
+                Location::new("lib/Importer.kt", 5),
+            ],
+            skeletons: &skeletons,
+            options: GroupingOptions::default(),
+            filter: SiteFilter::new(vec!["app/".to_string()], TestScope::All),
+        });
+        let rendered = crate::render::render_trace_markdown(&report);
+
+        let observed = (
+            report
+                .callers
+                .first()
+                .map(|level| (level.callers.len(), level.production_omitted)),
+            report.implementors.len(),
+            report.filter.as_ref().map(|applied| applied.usages_omitted),
+            rendered.contains("## Implementors (1)\n"),
+            rendered.contains("## Callers (1 under app/; 1 others)\n"),
+            rendered.contains("## Usages (1 site in 1 file under app/; 3 others)\n"),
+        );
+
+        assert_eq!(observed, (Some((1, 1)), 1, Some(3), true, true, true));
     }
 }

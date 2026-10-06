@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::annotated::AnnotatedDeclaration;
 use crate::budget::emit_within_budget;
+use crate::filter::SiteFilter;
 use crate::references::declaration_span_at;
 use crate::render::{context_caller_line, related_line, render_skeleton, RenderOptions};
 use crate::skeleton::{Declaration, FileSkeleton};
@@ -168,6 +169,28 @@ pub struct ForeignReference {
     pub text: Option<String>,
 }
 
+/// The `--path`/`--tests` filter a bundle was narrowed by, carried so a consumer can tell a filtered
+/// answer apart and read what each section left out (KT-127). Left out of the JSON entirely when no
+/// filter was applied, so an unfiltered bundle serializes exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppliedContextFilter {
+    #[serde(flatten)]
+    pub filter: SiteFilter,
+    /// Callers the filter dropped, the `others` behind the Callers heading, counted before the
+    /// KT-118 test-caller cap.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub callers_omitted: usize,
+    /// Annotated declarations the filter dropped (KT-109).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub annotated_omitted: usize,
+    /// Java text-reference sites the filter dropped (KT-112/KT-114/KT-115).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub java_text_references_omitted: usize,
+    /// Kotlin text-reference sites the filter dropped, for a Java-declared definition (KT-112).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub kotlin_text_references_omitted: usize,
+}
+
 /// A budgeted context bundle for one symbol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolContext {
@@ -216,6 +239,10 @@ pub struct SymbolContext {
     #[serde(skip_serializing_if = "ContextSection::is_absent")]
     pub kotlin_text_references: ContextSection<ForeignReference>,
     pub implementors: ContextSection<RelatedDeclaration>,
+    /// The `--path`/`--tests` filter the bundle was narrowed by, present only when one was applied
+    /// (KT-127). Left out of the JSON otherwise, so an unfiltered bundle serializes exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<AppliedContextFilter>,
     pub budget: usize,
     /// Conservative upper bound on the tokens the emitted content occupies, as
     /// [`crate::BudgetedEmission::token_upper_bound`] defines it: never above `budget`.
@@ -269,6 +296,10 @@ pub struct ContextInput<'a> {
     pub kotlin_text_references: &'a [ForeignReference],
     pub implementors: &'a [RelatedDeclaration],
     pub budget: usize,
+    /// The `--path`/`--tests` filter the bundle was narrowed by, or `None` for the full bundle
+    /// (KT-127). The caller filters the caller, annotated and text-reference slices it passes and
+    /// records the counts here; `build_context` only carries this onto the bundle for the headings.
+    pub filter: Option<AppliedContextFilter>,
 }
 
 /// Builds the bundle, emitting as much of the priority order as the budget affords.
@@ -301,6 +332,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
             available.kotlin_text_references,
         ),
         implementors: section(kept.implementors, available.implementors),
+        filter: input.filter,
         definition: input.definition,
         budget: input.budget,
         token_upper_bound: emission.token_upper_bound,
@@ -782,9 +814,60 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget,
+                filter: None,
             },
             &ByteRatioEstimator,
         )
+    }
+
+    /// KT-127: a `--path` filter on `context` keeps only the callers under the prefix, states the
+    /// filter and the count it left out on the Callers heading, and carries the filter in the
+    /// bundle; the unfiltered bundle is unchanged. One caller is under `app/`, one under `lib/`.
+    #[test]
+    fn a_context_filter_states_the_filter_on_the_callers_heading() {
+        use crate::filter::{SiteFilter, TestScope};
+
+        let file = repository_file();
+        let callers = [
+            related("app/Checkout.kt", 12, "shop.app.Checkout.place", 1),
+            related("lib/Importer.kt", 8, "shop.lib.Importer.load", 1),
+        ];
+        let filter = SiteFilter::new(vec!["app/".to_string()], TestScope::All).unwrap();
+        let kept: Vec<_> = callers
+            .iter()
+            .filter(|caller| filter.matches(&caller.path, caller.test))
+            .cloned()
+            .collect();
+        let bundle = build_context(
+            ContextInput {
+                definition: definition(),
+                index: IndexCompleteness::Complete,
+                sections: ContextSections::all(),
+                file: Some(&file),
+                source: None,
+                source_match: None,
+                callers: &kept,
+                annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
+                implementors: &implementors(),
+                budget: 10_000,
+                filter: Some(AppliedContextFilter {
+                    filter,
+                    callers_omitted: 1,
+                    annotated_omitted: 0,
+                    java_text_references_omitted: 0,
+                    kotlin_text_references_omitted: 0,
+                }),
+            },
+            &ByteRatioEstimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+
+        assert!(
+            rendered.contains("## Callers (1 under app/; 1 others)\n"),
+            "rendered was:\n{rendered}"
+        );
     }
 
     /// KT-126: a definition read from a `.java` file fences its declaration signature as `java`,
@@ -808,6 +891,7 @@ mod tests {
                     kotlin_text_references: &[],
                     implementors: &[],
                     budget: 10_000,
+                    filter: None,
                 },
                 &ByteRatioEstimator,
             )
@@ -946,6 +1030,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1024,6 +1109,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1080,6 +1166,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &[],
                 budget,
+                filter: None,
             },
             &estimator,
         );
@@ -1123,6 +1210,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1160,6 +1248,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1263,6 +1352,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1334,6 +1424,7 @@ mod tests {
                     kotlin_text_references: &[],
                     implementors: &[],
                     budget: 10_000,
+                    filter: None,
                 },
                 &ByteRatioEstimator,
             )
@@ -1393,6 +1484,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1440,6 +1532,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         );
@@ -1527,6 +1620,7 @@ mod tests {
                     kotlin_text_references: &[],
                     implementors: &implementors(),
                     budget: 10_000,
+                    filter: None,
                 },
                 &ByteRatioEstimator,
             )
@@ -1568,6 +1662,7 @@ mod tests {
                     kotlin_text_references: &[],
                     implementors: &implementors(),
                     budget: 10_000,
+                    filter: None,
                 },
                 &ByteRatioEstimator,
             ))
@@ -1628,6 +1723,7 @@ mod tests {
                     kotlin_text_references: &kotlin_refs,
                     implementors: &implementors(),
                     budget: 10_000,
+                    filter: None,
                 },
                 &ByteRatioEstimator,
             )
@@ -1694,6 +1790,7 @@ mod tests {
                 kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
+                filter: None,
             },
             &ByteRatioEstimator,
         )

@@ -25,6 +25,7 @@
 use std::borrow::Cow;
 
 use crate::context::{ContextSection, MatchedSource, SymbolContext};
+use crate::filter::SiteFilter;
 use crate::imports::ImportGraph;
 use crate::references::{ReferenceGroup, SiteKind};
 use crate::repo_map::RepoMap;
@@ -469,12 +470,22 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
         }
     }
 
+    let site_filter = report.filter.as_ref();
+
     for level in &report.callers {
-        append_caller_level(&mut out, level, report.java_text_references.is_some());
+        append_caller_level(
+            &mut out,
+            level,
+            report.java_text_references.is_some(),
+            site_filter.map(|applied| &applied.filter),
+        );
     }
 
+    let usages_note = site_filter.map_or_else(String::new, |applied| {
+        filter_note(&applied.filter, applied.usages_omitted)
+    });
     out.push_str(&format!(
-        "\n## Usages ({} in {})\n",
+        "\n## Usages ({} in {}{usages_note})\n",
         pluralize(report.sites, "site"),
         pluralize(report.usages.len(), "file")
     ));
@@ -487,20 +498,34 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
 
     if let Some(annotated) = &report.annotated {
         if !annotated.is_empty() {
+            let note = site_filter.map_or_else(String::new, |applied| {
+                filter_note(&applied.filter, applied.annotated_omitted)
+            });
             out.push('\n');
-            out.push_str(&render_annotated_markdown(annotated));
+            out.push_str(&render_annotated_titled(annotated, &note));
         }
     }
 
     if let Some(java) = &report.java_text_references {
+        let note = site_filter.map_or_else(String::new, |applied| {
+            filter_note(&applied.filter, applied.java_text_references_omitted)
+        });
         out.push('\n');
-        out.push_str(&render_text_references_titled(java, "Java text references"));
+        out.push_str(&render_text_references_with_note(
+            java,
+            "Java text references",
+            &note,
+        ));
     }
     if let Some(kotlin) = &report.kotlin_text_references {
+        let note = site_filter.map_or_else(String::new, |applied| {
+            filter_note(&applied.filter, applied.kotlin_text_references_omitted)
+        });
         out.push('\n');
-        out.push_str(&render_text_references_titled(
+        out.push_str(&render_text_references_with_note(
             kotlin,
             "Kotlin text references",
+            &note,
         ));
     }
     if report.definition.path.ends_with(".java") {
@@ -516,13 +541,29 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
     out
 }
 
+/// The ` under src/main; 31 others` a filtered heading carries after its own count (KT-127): the
+/// filter described, then how many sites it left out, appended inside a heading's parentheses.
+fn filter_note(filter: &SiteFilter, omitted: usize) -> String {
+    format!(" {}; {} others", filter.describe(), omitted)
+}
+
 /// Renders the declarations an annotation is written on (KT-109), grouped by file: each declaration
 /// as its fully-qualified name, kind and line, under the file that holds it. States
 /// `precision: syntax (matched by name)` because the attachment is a parse fact while the
 /// annotation's identity was matched by simple name, never resolved. Paths and names are neutralized
 /// on the way out like every other source-derived text.
 pub fn render_annotated_markdown(annotated: &crate::annotated::AnnotatedDeclarations) -> String {
-    let mut out = format!("## Annotated ({})\n", annotated.total);
+    render_annotated_titled(annotated, "")
+}
+
+/// The annotated listing with an optional filter note in its heading, so a filtered `trace` or
+/// `context` can read `## Annotated (2 under src/main; 7 others)` (KT-127). An empty note renders
+/// exactly as the unfiltered listing.
+pub fn render_annotated_titled(
+    annotated: &crate::annotated::AnnotatedDeclarations,
+    filter_note: &str,
+) -> String {
+    let mut out = format!("## Annotated ({}{filter_note})\n", annotated.total);
     out.push_str(&format!("precision: {}\n", annotated.precision));
     for group in &annotated.groups {
         out.push_str(&format!("\n{}\n", neutralize(&group.path)));
@@ -567,8 +608,19 @@ pub fn render_text_references_markdown(refs: &TextReferences) -> String {
 /// leading with its enclosing FQN when the Kotlin-against-a-Java-definition scan attributed one, so
 /// that listing and the KT-94 listing are byte-identical to before.
 pub fn render_text_references_titled(refs: &TextReferences, heading: &str) -> String {
+    render_text_references_with_note(refs, heading, "")
+}
+
+/// The text-reference listing with an optional filter note in its heading, so a filtered `trace` or
+/// `context` can read `## Java text references (6 sites in 2 files under src/main; 31 others)`
+/// (KT-127). An empty note renders exactly as the unfiltered listing.
+pub fn render_text_references_with_note(
+    refs: &TextReferences,
+    heading: &str,
+    filter_note: &str,
+) -> String {
     let mut out = format!(
-        "## {heading} ({} in {})\n",
+        "## {heading} ({} in {}{filter_note})\n",
         pluralize(refs.total_sites, "site"),
         pluralize(refs.file_count, "file"),
     );
@@ -774,11 +826,14 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
 
     if context.sections.callers {
         let callers = context.callers.available() + context.test_callers_omitted;
-        let count = if context.java_text_references.available() > 0 {
+        let mut count = if context.java_text_references.available() > 0 {
             format!("{callers} from Kotlin")
         } else {
             callers.to_string()
         };
+        if let Some(applied) = &context.filter {
+            count.push_str(&filter_note(&applied.filter, applied.callers_omitted));
+        }
         out.push_str(&format!("\n## Callers ({count})\n"));
         append_context_lines(&mut out, &context.callers, context_caller_line);
         if context.test_callers_omitted > 0 {
@@ -791,16 +846,22 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     }
 
     if context.annotated.available() > 0 {
+        let note = context.filter.as_ref().map_or_else(String::new, |applied| {
+            filter_note(&applied.filter, applied.annotated_omitted)
+        });
         out.push_str(&format!(
-            "\n## Annotated ({})\n",
+            "\n## Annotated ({}{note})\n",
             context.annotated.available()
         ));
         append_context_lines(&mut out, &context.annotated, annotated_context_line);
     }
 
     if context.java_text_references.available() > 0 {
+        let note = context.filter.as_ref().map_or_else(String::new, |applied| {
+            filter_note(&applied.filter, applied.java_text_references_omitted)
+        });
         out.push_str(&format!(
-            "\n## Java text references ({})\n",
+            "\n## Java text references ({}{note})\n",
             context.java_text_references.available()
         ));
         out.push_str("precision: text match\n");
@@ -812,8 +873,11 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     }
 
     if context.kotlin_text_references.available() > 0 {
+        let note = context.filter.as_ref().map_or_else(String::new, |applied| {
+            filter_note(&applied.filter, applied.kotlin_text_references_omitted)
+        });
         out.push_str(&format!(
-            "\n## Kotlin text references ({})\n",
+            "\n## Kotlin text references ({}{note})\n",
             context.kotlin_text_references.available()
         ));
         out.push_str("precision: text match\n");
@@ -990,7 +1054,12 @@ pub(crate) fn context_caller_line(declaration: &RelatedDeclaration) -> String {
 /// applies at every level (KT-91). When Java text references accompany the answer, the depth-1
 /// production heading reads `## Callers (N from Kotlin)`, so a reader never mistakes a count the
 /// engine can only give for Kotlin as the absence of callers (KT-112).
-fn append_caller_level(out: &mut String, level: &CallerLevel, from_kotlin: bool) {
+fn append_caller_level(
+    out: &mut String,
+    level: &CallerLevel,
+    from_kotlin: bool,
+    filter: Option<&SiteFilter>,
+) {
     let (production, tests): (Vec<&RelatedDeclaration>, Vec<&RelatedDeclaration>) =
         level.callers.iter().partition(|caller| !caller.test);
     let (production_heading, test_heading) = match level.depth {
@@ -1000,15 +1069,22 @@ fn append_caller_level(out: &mut String, level: &CallerLevel, from_kotlin: bool)
             format!("### Test callers at depth {depth}"),
         ),
     };
-    let production_count = if from_kotlin && level.depth == 1 {
+    let mut production_count = if from_kotlin && level.depth == 1 {
         format!("{} from Kotlin", production.len())
     } else {
         production.len().to_string()
     };
+    if let Some(filter) = filter {
+        production_count.push_str(&filter_note(filter, level.production_omitted));
+    }
     out.push_str(&format!("\n{production_heading} ({production_count})\n"));
     append_lines(out, &production, |caller| related_line(caller));
     if !tests.is_empty() {
-        out.push_str(&format!("\n{test_heading} ({})\n", tests.len()));
+        let mut test_count = tests.len().to_string();
+        if let Some(filter) = filter {
+            test_count.push_str(&filter_note(filter, level.test_omitted));
+        }
+        out.push_str(&format!("\n{test_heading} ({test_count})\n"));
         append_lines(out, &tests, |caller| related_line(caller));
     }
 }
@@ -1564,6 +1640,7 @@ mod tests {
                 reference_sites: vec![],
                 skeletons: &[],
                 options: GroupingOptions::default(),
+                filter: None,
             })
         };
 
@@ -1607,6 +1684,7 @@ mod tests {
                 reference_sites: vec![],
                 skeletons: &[],
                 options: GroupingOptions::default(),
+                filter: None,
             })
         };
         let java = build_text_references(
@@ -1677,6 +1755,7 @@ mod tests {
             reference_sites: vec![],
             skeletons: &[],
             options: GroupingOptions::default(),
+            filter: None,
         })
         .with_supertype_implementors(SupertypeImplementors {
             precision: crate::implementors::SUPERTYPE_PRECISION,
@@ -2491,6 +2570,7 @@ mod tests {
             reference_sites,
             skeletons: &[skeleton],
             options: GroupingOptions::default().with_limit(2),
+            filter: None,
         });
 
         let rendered = render_trace_markdown(&report);
@@ -2551,6 +2631,7 @@ mod tests {
             ],
             skeletons: &[skeleton],
             options: GroupingOptions::default(),
+            filter: None,
         });
 
         let rendered = render_trace_markdown(&report);
@@ -2593,6 +2674,7 @@ mod tests {
             ],
             skeletons: &[skeleton],
             options: GroupingOptions::default(),
+            filter: None,
         });
 
         let rendered = render_trace_markdown(&report);
@@ -2634,6 +2716,7 @@ mod tests {
             ],
             skeletons: &[production, test],
             options: GroupingOptions::default(),
+            filter: None,
         });
 
         let rendered = render_trace_markdown(&report);

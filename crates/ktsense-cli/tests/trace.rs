@@ -795,3 +795,17 @@ mod real {
         );
     }
 }
+
+/// KT-127: `--tests` together with `--no-tests` is a contradictory invocation clap refuses with
+/// exit 2, before any engine work, so the two source-set filters can never both be requested.
+#[test]
+fn tests_and_no_tests_together_is_a_usage_error() {
+    let output = Command::cargo_bin("ktsense")
+        .expect("binary builds")
+        .args(["--root", FIXTURE, "trace", "save", "--tests", "--no-tests"])
+        .current_dir(WORKSPACE_ROOT)
+        .output()
+        .expect("binary runs");
+
+    assert_eq!(output.status.code(), Some(2));
+}

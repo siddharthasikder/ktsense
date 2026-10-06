@@ -16,9 +16,9 @@ use std::path::Path;
 use ktsense_core::{
     build_annotated, build_text_references, build_text_references_attributed,
     build_text_references_with_text, classify_java_sites, fully_qualified_enclosing,
-    java_enclosing_declarations, render_annotated_markdown, render_text_references_markdown,
-    render_text_references_titled, AnnotatedDeclaration, AnnotatedDeclarations, FileSkeleton,
-    ForeignReference, Location, TextReferences,
+    java_enclosing_declarations, render_annotated_titled, render_text_references_with_note,
+    AnnotatedDeclaration, AnnotatedDeclarations, FileSkeleton, ForeignReference, Location,
+    SiteFilter, TextReferences,
 };
 
 use crate::{collect_kotlin_files, normalized_path, CommandError, CommandOutcome, Exit, Format};
@@ -35,28 +35,83 @@ const JAVA_NOT_FOUND_SENTENCE: &str =
     "Java-only names and generated accessors (Lombok, AutoValue, Immutables) appear under Java \
      text references below.";
 
+/// Keeps the items whose path survives `filter`, returning them and how many it dropped (KT-127).
+/// With no filter every item is kept and none dropped, so an unfiltered answer is byte-identical.
+fn filtered<T>(
+    items: Vec<T>,
+    filter: Option<&SiteFilter>,
+    path_of: impl Fn(&T) -> &str,
+) -> (Vec<T>, usize) {
+    match filter {
+        None => (items, 0),
+        Some(filter) => {
+            let total = items.len();
+            let kept: Vec<T> = items
+                .into_iter()
+                .filter(|item| filter.matches_path(path_of(item)))
+                .collect();
+            let omitted = total - kept.len();
+            (kept, omitted)
+        }
+    }
+}
+
+/// The ` under src/main; 31 others` a filtered heading carries, or an empty string with no filter,
+/// so an unfiltered not-found answer renders byte-identically (KT-127).
+fn note(filter: Option<&SiteFilter>, omitted: usize) -> String {
+    filter.map_or_else(String::new, |filter| {
+        format!(" {}; {} others", filter.describe(), omitted)
+    })
+}
+
+/// The text-reference evidence a not-found answer renders, each section with the count a filter left
+/// out so the headings can state it (KT-127).
+struct NotFound<'a> {
+    symbol: &'a str,
+    annotated: Option<&'a AnnotatedDeclarations>,
+    annotated_omitted: usize,
+    references: TextReferences,
+    references_omitted: usize,
+    java: Option<TextReferences>,
+    java_omitted: usize,
+    filter: Option<&'a SiteFilter>,
+    root: &'a Path,
+    command: &'a str,
+}
+
 /// Builds the answer for a name the workspace does not declare: the KT-87 not-found wording, then
 /// the text-reference evidence, on stdout with a failing exit and no stderr, so a routed daemon and
-/// the in-process path render the same bytes and the MCP layer carries the same answer.
+/// the in-process path render the same bytes and the MCP layer carries the same answer. A
+/// `--path`/`--tests` filter narrows every section and the headings state what it left out (KT-127).
 pub(crate) fn not_found_outcome(
     root: &Path,
     symbol: &str,
     limit: Option<usize>,
     format: Format,
     command: &str,
+    filter: Option<&SiteFilter>,
 ) -> Result<CommandOutcome, CommandError> {
-    let references = build_text_references(symbol, &collect_text_sites(root, symbol)?, limit);
-    let uses = collect_annotation_uses(root, symbol)?;
+    let (sites, references_omitted) = filtered(collect_text_sites(root, symbol)?, filter, |site| {
+        site.path.as_str()
+    });
+    let references = build_text_references(symbol, &sites, limit);
+    let (uses, annotated_omitted) = collect_annotation_uses(root, symbol, filter)?;
     let annotated = (!uses.is_empty()).then(|| build_annotated(symbol, &uses));
-    let java = java_text_references(root, symbol, limit)?;
+    let (java, java_omitted) = java_text_references(root, symbol, limit, filter)?;
     let text = present(
-        symbol,
-        annotated.as_ref(),
-        references,
-        java,
+        &NotFound {
+            symbol,
+            annotated: annotated.as_ref(),
+            annotated_omitted,
+            references,
+            references_omitted,
+            java,
+            java_omitted,
+            filter,
+            root,
+            command,
+        },
         format,
-        command,
-        root,
     )?;
     Ok(CommandOutcome {
         text,
@@ -70,6 +125,8 @@ pub(crate) fn not_found_outcome(
 /// as an annotation when there are any, skipped otherwise so an undeclared name that annotates
 /// nothing serializes exactly as before (KT-109). `java_text_references` carries the Java sites when
 /// `.java` sources hold the name, skipped otherwise so a root with no Java is byte-identical (KT-115).
+/// `filter` carries the applied `--path`/`--tests` filter and what it left out, skipped when none,
+/// so an unfiltered answer serializes exactly as before (KT-127).
 #[derive(serde::Serialize)]
 struct NotFoundAnswer<'a> {
     found: bool,
@@ -79,18 +136,42 @@ struct NotFoundAnswer<'a> {
     annotated: Option<&'a AnnotatedDeclarations>,
     text_references: TextReferences,
     #[serde(skip_serializing_if = "Option::is_none")]
-    java_text_references: Option<TextReferences>,
+    java_text_references: Option<&'a TextReferences>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filter: Option<NotFoundFilter<'a>>,
 }
 
-fn present(
-    symbol: &str,
-    annotated: Option<&AnnotatedDeclarations>,
-    references: TextReferences,
-    java: Option<TextReferences>,
-    format: Format,
-    command: &str,
-    root: &Path,
-) -> Result<String, CommandError> {
+/// The filter a not-found answer was narrowed by, with what each section left out, for JSON consumers
+/// (KT-127). Present only when a filter was applied.
+#[derive(serde::Serialize)]
+struct NotFoundFilter<'a> {
+    #[serde(flatten)]
+    filter: &'a SiteFilter,
+    #[serde(skip_serializing_if = "is_zero")]
+    text_references_omitted: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    annotated_omitted: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    java_text_references_omitted: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
+fn present(not_found: &NotFound<'_>, format: Format) -> Result<String, CommandError> {
+    let NotFound {
+        symbol,
+        annotated,
+        annotated_omitted,
+        references,
+        references_omitted,
+        java,
+        java_omitted,
+        filter,
+        root,
+        command,
+    } = not_found;
     match format {
         Format::Md => {
             let mut out = crate::no_symbol_message_scoped(symbol, root);
@@ -100,13 +181,24 @@ fn present(
             }
             out.push_str("\n\n");
             if let Some(annotated) = annotated {
-                out.push_str(&render_annotated_markdown(annotated));
+                out.push_str(&render_annotated_titled(
+                    annotated,
+                    &note(*filter, *annotated_omitted),
+                ));
                 out.push('\n');
             }
-            out.push_str(&render_text_references_markdown(&references));
-            if let Some(java) = &java {
+            out.push_str(&render_text_references_with_note(
+                references,
+                "Text references",
+                &note(*filter, *references_omitted),
+            ));
+            if let Some(java) = java {
                 out.push('\n');
-                out.push_str(&render_text_references_titled(java, "Java text references"));
+                out.push_str(&render_text_references_with_note(
+                    java,
+                    "Java text references",
+                    &note(*filter, *java_omitted),
+                ));
             }
             Ok(out)
         }
@@ -114,9 +206,15 @@ fn present(
             found: false,
             symbol,
             message: crate::no_symbol_message_scoped(symbol, root),
-            annotated,
-            text_references: references,
-            java_text_references: java,
+            annotated: *annotated,
+            text_references: references.clone(),
+            java_text_references: java.as_ref(),
+            filter: filter.map(|filter| NotFoundFilter {
+                filter,
+                text_references_omitted: *references_omitted,
+                annotated_omitted: *annotated_omitted,
+                java_text_references_omitted: *java_omitted,
+            }),
         }),
         Format::Dot => Err(CommandError::unsupported_format(command)),
     }
@@ -167,7 +265,8 @@ fn scan_file_for_sites(root: &Path, path: &Path, symbol: &str, sites: &mut Vec<L
 pub(crate) fn collect_annotation_uses(
     root: &Path,
     annotation: &str,
-) -> Result<Vec<AnnotatedDeclaration>, CommandError> {
+    filter: Option<&SiteFilter>,
+) -> Result<(Vec<AnnotatedDeclaration>, usize), CommandError> {
     let mut declarations = Vec::new();
     let mut scanned = std::collections::HashSet::new();
     for path in collect_kotlin_files(root)? {
@@ -179,7 +278,9 @@ pub(crate) fn collect_annotation_uses(
             scan_file_for_annotations(root, &path, annotation, &mut declarations);
         }
     }
-    Ok(declarations)
+    Ok(filtered(declarations, filter, |declaration| {
+        declaration.path.as_str()
+    }))
 }
 
 /// Appends every declaration in one file written with `@<annotation>`. A file that cannot be read
@@ -244,35 +345,45 @@ pub(crate) fn java_text_references(
     root: &Path,
     symbol: &str,
     limit: Option<usize>,
-) -> Result<Option<TextReferences>, CommandError> {
-    let scan = scan_java(root, symbol)?;
-    if scan.sites.is_empty() {
-        return Ok(None);
+    filter: Option<&SiteFilter>,
+) -> Result<(Option<TextReferences>, usize), CommandError> {
+    let JavaScan { sites, attribution } = scan_java(root, symbol)?;
+    let (sites, omitted) = filtered(sites, filter, |site| site.path.as_str());
+    if sites.is_empty() {
+        return Ok((None, omitted));
     }
-    Ok(Some(build_text_references_with_text(
-        symbol,
-        &scan.sites,
-        limit,
-        |path, line| scan.attribution(path, line),
-    )))
+    let references = build_text_references_with_text(symbol, &sites, limit, |path, line| {
+        attribution
+            .get(&(path.to_string(), line))
+            .cloned()
+            .unwrap_or((None, None))
+    });
+    Ok((Some(references), omitted))
 }
 
 /// Kotlin text references for `symbol`, each attributed to its enclosing declaration, or `None` when
 /// no Kotlin source mentions the name. Used when the resolved definition is in a `.java` file, where
-/// the engine resolves no Kotlin references to it (KT-112).
+/// the engine resolves no Kotlin references to it (KT-112). The `--path`/`--tests` filter narrows the
+/// sites and the count it dropped travels alongside (KT-127).
 pub(crate) fn kotlin_text_references(
     root: &Path,
     symbol: &str,
     limit: Option<usize>,
-) -> Result<Option<TextReferences>, CommandError> {
-    let sites = collect_text_sites(root, symbol)?;
+    filter: Option<&SiteFilter>,
+) -> Result<(Option<TextReferences>, usize), CommandError> {
+    let (sites, omitted) = filtered(collect_text_sites(root, symbol)?, filter, |site| {
+        site.path.as_str()
+    });
     if sites.is_empty() {
-        return Ok(None);
+        return Ok((None, omitted));
     }
     let skeletons = skeletons_for_sites(root, &sites);
-    Ok(Some(build_text_references_attributed(
-        symbol, &sites, &skeletons, limit,
-    )))
+    Ok((
+        Some(build_text_references_attributed(
+            symbol, &sites, &skeletons, limit,
+        )),
+        omitted,
+    ))
 }
 
 /// The Java text references as flat, budget-ready lines for a `context` bundle (KT-112): sorted by
@@ -280,13 +391,17 @@ pub(crate) fn kotlin_text_references(
 pub(crate) fn java_foreign_references(
     root: &Path,
     symbol: &str,
-) -> Result<Vec<ForeignReference>, CommandError> {
-    let scan = scan_java(root, symbol)?;
-    let mut references: Vec<ForeignReference> = scan
-        .sites
+    filter: Option<&SiteFilter>,
+) -> Result<(Vec<ForeignReference>, usize), CommandError> {
+    let JavaScan { sites, attribution } = scan_java(root, symbol)?;
+    let (sites, omitted) = filtered(sites, filter, |site| site.path.as_str());
+    let mut references: Vec<ForeignReference> = sites
         .iter()
         .map(|site| {
-            let (enclosing, text) = scan.attribution(&site.path, site.line);
+            let (enclosing, text) = attribution
+                .get(&(site.path.clone(), site.line))
+                .cloned()
+                .unwrap_or((None, None));
             ForeignReference {
                 path: site.path.clone(),
                 line: site.line,
@@ -296,17 +411,21 @@ pub(crate) fn java_foreign_references(
         })
         .collect();
     references.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
-    Ok(references)
+    Ok((references, omitted))
 }
 
 /// The Kotlin text references as flat, budget-ready lines for a `context` bundle whose definition is
 /// in a `.java` file (KT-112): each attributed to its enclosing declaration through the KT-102
-/// attribution, sorted by path then line.
+/// attribution, sorted by path then line. The `--path`/`--tests` filter narrows them and the count
+/// it dropped travels alongside (KT-127).
 pub(crate) fn kotlin_foreign_references(
     root: &Path,
     symbol: &str,
-) -> Result<Vec<ForeignReference>, CommandError> {
-    let sites = collect_text_sites(root, symbol)?;
+    filter: Option<&SiteFilter>,
+) -> Result<(Vec<ForeignReference>, usize), CommandError> {
+    let (sites, omitted) = filtered(collect_text_sites(root, symbol)?, filter, |site| {
+        site.path.as_str()
+    });
     let skeletons = skeletons_for_sites(root, &sites);
     let by_path: std::collections::HashMap<&str, &FileSkeleton> = skeletons
         .iter()
@@ -328,7 +447,7 @@ pub(crate) fn kotlin_foreign_references(
         })
         .collect();
     references.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
-    Ok(references)
+    Ok((references, omitted))
 }
 
 /// Every whole-word text match of `symbol` in the workspace's `.java` sources, each classified by
@@ -348,17 +467,6 @@ fn scan_java(root: &Path, symbol: &str) -> Result<JavaScan, CommandError> {
 struct JavaScan {
     sites: Vec<Location>,
     attribution: std::collections::HashMap<(String, u32), (Option<String>, Option<String>)>,
-}
-
-impl JavaScan {
-    /// The enclosing declaration and source line of the site at `(path, line)`, or `(None, None)`
-    /// when the scan recorded neither.
-    fn attribution(&self, path: &str, line: u32) -> (Option<String>, Option<String>) {
-        self.attribution
-            .get(&(path.to_string(), line))
-            .cloned()
-            .unwrap_or((None, None))
-    }
 }
 
 /// Appends every classified whole-word site of `symbol` in one Java file, and records each matched
@@ -453,12 +561,10 @@ mod tests {
         )
         .expect("write kotlin");
 
-        let java = java_text_references(root, "executeUpdate", None)
-            .expect("scan")
-            .expect("java hits");
-        let kotlin = kotlin_text_references(root, "executeUpdate", None)
-            .expect("scan")
-            .expect("kotlin hits");
+        let (java, _) = java_text_references(root, "executeUpdate", None, None).expect("scan");
+        let java = java.expect("java hits");
+        let (kotlin, _) = kotlin_text_references(root, "executeUpdate", None, None).expect("scan");
+        let kotlin = kotlin.expect("kotlin hits");
 
         let java_code_site = &java.groups[0].sites[0];
         let observed = (
@@ -510,7 +616,7 @@ mod tests {
         fs::write(kotlin_only.path().join("Caller.kt"), kotlin).expect("write kotlin");
 
         let render = |root: &Path| {
-            not_found_outcome(root, "setStagingEnabled", None, Format::Md, "trace")
+            not_found_outcome(root, "setStagingEnabled", None, Format::Md, "trace", None)
                 .expect("renders")
                 .text
         };

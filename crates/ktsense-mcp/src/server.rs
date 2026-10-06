@@ -234,6 +234,14 @@ pub struct TraceParams {
     pub depth: Option<u8>,
     /// Show at most this many reference sites per file.
     pub limit: Option<usize>,
+    /// Restrict callers, usages, text references and annotated sites to files whose
+    /// workspace-relative path starts with a prefix; repeat for several (a site is kept if it
+    /// matches any). The definition and implementors are never filtered.
+    #[serde(default)]
+    pub path: Vec<String>,
+    /// Limit callers and sites to test sources (true) or production sources (false); both when
+    /// unset.
+    pub tests: Option<bool>,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -298,6 +306,14 @@ pub struct ContextParams {
     pub match_pattern: Option<String>,
     /// Context lines to keep on each side of a `match` hit; defaults to 1.
     pub around: Option<usize>,
+    /// Restrict callers, text references and annotated sites to files whose workspace-relative path
+    /// starts with a prefix; repeat for several (a site is kept if it matches any). The declaration,
+    /// its source and implementors are never filtered.
+    #[serde(default)]
+    pub path: Vec<String>,
+    /// Limit callers and sites to test sources (true) or production sources (false); both when
+    /// unset.
+    pub tests: Option<bool>,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -701,7 +717,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "trace_kotlin_symbol",
-        description = "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+        description = "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. Pass path to keep only callers and sites under one or more workspace-relative path prefixes, and tests to keep only test (true) or production (false) sources; the definition and implementors are never filtered and the headings state how many sites the filter left out. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -714,7 +730,10 @@ impl KtsenseServer {
             .maybe_positional(params.symbol)
             .option("pick", params.pick)
             .option("depth", params.depth)
-            .option("limit", params.limit);
+            .option("limit", params.limit)
+            .repeated_option("path", &params.path)
+            .flag("tests", params.tests == Some(true))
+            .flag("no-tests", params.tests == Some(false));
         self.invoke(&crate::TRACE, args.0).await
     }
 
@@ -775,7 +794,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "explain_kotlin_symbol",
-        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. Pass match with a regular expression to keep only the Source lines matching it, plus around context lines, so a question about one branch in a long body is answered from that declaration alone. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
+        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. Pass match with a regular expression to keep only the Source lines matching it, plus around context lines, so a question about one branch in a long body is answered from that declaration alone. Pass path to keep only callers and sites under one or more workspace-relative path prefixes, and tests to keep only test (true) or production (false) sources; the declaration, its source and implementors are never filtered. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -790,7 +809,10 @@ impl KtsenseServer {
             .option("budget", params.budget)
             .option_list("only", &params.only)
             .option("match", params.match_pattern)
-            .option("around", params.around);
+            .option("around", params.around)
+            .repeated_option("path", &params.path)
+            .flag("tests", params.tests == Some(true))
+            .flag("no-tests", params.tests == Some(false));
         self.invoke(&crate::CONTEXT, args.0).await
     }
 
@@ -1043,6 +1065,8 @@ mod tests {
                 pick: Some("shop.order.OrderRepository.save".to_string()),
                 depth: Some(2),
                 limit: None,
+                path: Vec::new(),
+                tests: None,
                 root: Some("/repo".to_string()),
             }))
             .await
@@ -1315,6 +1339,8 @@ mod tests {
                 pick: None,
                 depth: None,
                 limit: None,
+                path: Vec::new(),
+                tests: None,
                 root: None,
             })
         };
@@ -1383,6 +1409,8 @@ mod tests {
                 pick: Some("shop.Repo.save".to_string()),
                 depth: None,
                 limit: None,
+                path: Vec::new(),
+                tests: None,
                 root: None,
             }))
             .await
@@ -1395,6 +1423,8 @@ mod tests {
                 only: Vec::new(),
                 match_pattern: None,
                 around: None,
+                path: Vec::new(),
+                tests: None,
                 root: None,
             }))
             .await

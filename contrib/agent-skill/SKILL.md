@@ -22,11 +22,11 @@ the reference index carry a marker saying how complete that index was. Take both
 |---|---|---|
 | What is this file's API surface? (annotations and internals on request) | `get_kotlin_outline` | fast |
 | Where is `Foo` declared? A partial name such as every `*Handler`? | `find_kotlin_symbol` (`contains` for partial names) | needs index |
-| Who calls `Type.member`, or what extends or implements `Type`, Java included? | `trace_kotlin_symbol` | needs index |
+| Who calls `Type.member`, or what extends or implements `Type`, Java included? | `trace_kotlin_symbol` (`path` and `tests` to scope the callers and sites) | needs index |
 | What depends on what? Are there cycles? | `analyze_kotlin_dependencies` | fast |
 | I have never seen this repository, or I want the files under one path | `get_kotlin_repo_map` (`compact` with `path` or `focus`) | fast |
 | Did my edit parse? | `check_kotlin_syntax` | fast |
-| Give me everything about `Foo` in one bundle, or one branch of its body | `explain_kotlin_symbol` (`only` and `match` to narrow it) | needs index |
+| Give me everything about `Foo` in one bundle, or one branch of its body | `explain_kotlin_symbol` (`only` and `match` to narrow it; `path` and `tests` to scope the callers) | needs index |
 | Where do several terms or a call-site pattern appear as text (Kotlin and Java)? | `search_kotlin_text` (pass `path`) | fast |
 | Is the index complete yet? | `ktsense_status` | fast |
 

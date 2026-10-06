@@ -46,7 +46,10 @@ use std::path::{Path, PathBuf};
 /// Version 10 added the daemon's idle limit to its status snapshot, so `daemon status` reads the
 /// window the daemon will idle out after; a version-9 daemon returns a snapshot without it and is
 /// treated as a mismatch rather than read short (KT-125).
-pub const PROTOCOL_VERSION: u32 = 10;
+/// Version 11 added the routed `trace` and `context` path and test filters, so `--path` and
+/// `--tests`/`--no-tests` cross the wire; a version-10 daemon would silently ignore them and answer
+/// unfiltered (KT-127).
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

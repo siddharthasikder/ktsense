@@ -231,6 +231,17 @@ enum Command {
         /// is always marked complete.
         #[arg(long)]
         wait_index: bool,
+        /// Restrict callers, usages, text references and annotated sites to files whose
+        /// workspace-relative path starts with this prefix. Repeatable; a site is kept if it
+        /// matches any (OR). The definition and implementors are never filtered.
+        #[arg(long, value_name = "PREFIX")]
+        path: Vec<String>,
+        /// Keep only test-source callers and sites (by the source-set and filename conventions).
+        #[arg(long, conflicts_with = "no_tests")]
+        tests: bool,
+        /// Keep only production-source callers and sites.
+        #[arg(long)]
+        no_tests: bool,
     },
     /// Import graph of the workspace
     Deps {
@@ -289,6 +300,17 @@ enum Command {
         /// Context lines to keep on each side of a --match hit.
         #[arg(long, default_value_t = 1)]
         around: usize,
+        /// Restrict callers, text references and annotated sites to files whose workspace-relative
+        /// path starts with this prefix. Repeatable; a site is kept if it matches any (OR). The
+        /// declaration, its source and implementors are never filtered.
+        #[arg(long, value_name = "PREFIX")]
+        path: Vec<String>,
+        /// Keep only test-source callers and sites (by the source-set and filename conventions).
+        #[arg(long, conflicts_with = "no_tests")]
+        tests: bool,
+        /// Keep only production-source callers and sites.
+        #[arg(long)]
+        no_tests: bool,
     },
     /// Index phase, counts and engine version
     Status,
@@ -690,6 +712,9 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             depth,
             limit,
             wait_index,
+            path,
+            tests,
+            no_tests,
         } => route(
             &base,
             routing::RoutedCommand::Trace {
@@ -698,6 +723,8 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 depth,
                 limit,
                 wait_index,
+                path,
+                tests: ktsense_core::TestScope::from_flags(tests, no_tests),
             },
             format,
         ),
@@ -719,6 +746,9 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             only,
             match_pattern,
             around,
+            path,
+            tests,
+            no_tests,
         } => route(
             &base,
             routing::RoutedCommand::Context {
@@ -728,6 +758,8 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 sections: context_sections(&only),
                 match_pattern,
                 around,
+                path,
+                tests: ktsense_core::TestScope::from_flags(tests, no_tests),
             },
             format,
         ),

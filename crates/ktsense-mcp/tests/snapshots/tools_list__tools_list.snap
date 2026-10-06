@@ -302,7 +302,7 @@ expression: listed
     },
     {
       "name": "explain_kotlin_symbol",
-      "description": "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. Pass match with a regular expression to keep only the Source lines matching it, plus around context lines, so a question about one branch in a long body is answered from that declaration alone. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
+      "description": "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. Pass match with a regular expression to keep only the Source lines matching it, plus around context lines, so a question about one branch in a long body is answered from that declaration alone. Pass path to keep only callers and sites under one or more workspace-relative path prefixes, and tests to keep only test (true) or production (false) sources; the declaration, its source and implementors are never filtered. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -339,6 +339,14 @@ expression: listed
             },
             "type": "array"
           },
+          "path": {
+            "default": [],
+            "description": "Restrict callers, text references and annotated sites to files whose workspace-relative path\nstarts with a prefix; repeat for several (a site is kept if it matches any). The declaration,\nits source and implementors are never filtered.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "pick": {
             "description": "Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is\nambiguous.",
             "type": [
@@ -357,6 +365,13 @@ expression: listed
             "description": "Declaration name to explain; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of. Optional when `pick` is given, in which case\nthe pick's last dot segment is the name.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "tests": {
+            "description": "Limit callers and sites to test sources (true) or production sources (false); both when\nunset.",
+            "type": [
+              "boolean",
               "null"
             ]
           }
@@ -1344,7 +1359,7 @@ expression: listed
     },
     {
       "name": "trace_kotlin_symbol",
-      "description": "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+      "description": "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. Pass path to keep only callers and sites under one or more workspace-relative path prefixes, and tests to keep only test (true) or production (false) sources; the definition and implementors are never filtered and the headings state how many sites the filter left out. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1367,6 +1382,14 @@ expression: listed
               "null"
             ]
           },
+          "path": {
+            "default": [],
+            "description": "Restrict callers, usages, text references and annotated sites to files whose\nworkspace-relative path starts with a prefix; repeat for several (a site is kept if it\nmatches any). The definition and implementors are never filtered.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "pick": {
             "description": "Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is\nambiguous.",
             "type": [
@@ -1385,6 +1408,13 @@ expression: listed
             "description": "Declaration name to trace; a dotted `Type.member` such as `OrderRepository.save` selects the\none candidate the whole name is a dot-suffix of. Optional when `pick` is given, in which case\nthe pick's last dot segment is the name.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "tests": {
+            "description": "Limit callers and sites to test sources (true) or production sources (false); both when\nunset.",
+            "type": [
+              "boolean",
               "null"
             ]
           }

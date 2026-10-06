@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use ktsense_core::{DepLevel, RenderOptions};
+use ktsense_core::{DepLevel, RenderOptions, SiteFilter, TestScope};
 use ktsense_daemon::{Client, ClientError, Engine, EngineRequest, HandlerOutcome, WarmEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,6 +66,10 @@ pub(crate) enum RoutedCommand {
         depth: u8,
         limit: Option<usize>,
         wait_index: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
+        #[serde(default = "all_scope", skip_serializing_if = "TestScope::is_all")]
+        tests: TestScope,
     },
     Map {
         budget: usize,
@@ -81,7 +85,17 @@ pub(crate) enum RoutedCommand {
         sections: ktsense_core::ContextSections,
         match_pattern: Option<String>,
         around: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
+        #[serde(default = "all_scope", skip_serializing_if = "TestScope::is_all")]
+        tests: TestScope,
     },
+}
+
+/// The default test scope on the wire, so an older client's routed command without the field reads
+/// as the unfiltered scope rather than failing to deserialize.
+fn all_scope() -> TestScope {
+    TestScope::All
 }
 
 impl RoutedCommand {
@@ -188,6 +202,8 @@ pub(crate) fn run_in_process(
             depth,
             limit,
             wait_index,
+            path,
+            tests,
         } => crate::trace::trace(trace_request(
             root,
             symbol,
@@ -195,6 +211,7 @@ pub(crate) fn run_in_process(
             *depth,
             *limit,
             *wait_index,
+            SiteFilter::new(path.clone(), *tests),
             format,
         )),
         RoutedCommand::Map {
@@ -220,6 +237,8 @@ pub(crate) fn run_in_process(
             sections,
             match_pattern,
             around,
+            path,
+            tests,
         } => crate::context::context(context_request(
             root,
             symbol,
@@ -228,6 +247,7 @@ pub(crate) fn run_in_process(
             *sections,
             match_pattern,
             *around,
+            SiteFilter::new(path.clone(), *tests),
             format,
         )?),
     }
@@ -246,6 +266,7 @@ fn context_request<'a>(
     sections: ktsense_core::ContextSections,
     match_pattern: &Option<String>,
     around: usize,
+    filter: Option<SiteFilter>,
     format: Format,
 ) -> Result<crate::context::ContextRequest<'a>, CommandError> {
     let source_match = match match_pattern {
@@ -260,11 +281,13 @@ fn context_request<'a>(
         sections,
         source_match,
         format,
+        filter,
     })
 }
 
 /// Rebuilds a [`TraceRequest`] from the wire fields, borrowing `root` and the owned strings the
 /// routed command carries, so the fresh and warm paths construct an identical request.
+#[allow(clippy::too_many_arguments)]
 fn trace_request<'a>(
     root: &'a Path,
     symbol: &'a str,
@@ -272,6 +295,7 @@ fn trace_request<'a>(
     depth: u8,
     limit: Option<usize>,
     wait_index: bool,
+    filter: Option<SiteFilter>,
     format: Format,
 ) -> TraceRequest<'a> {
     TraceRequest {
@@ -282,6 +306,7 @@ fn trace_request<'a>(
         limit,
         wait: IndexWaitPolicy::from_flag(wait_index),
         format,
+        filter,
     }
 }
 
@@ -515,6 +540,8 @@ impl CommandEngine {
                 depth,
                 limit,
                 wait_index,
+                path,
+                tests,
             } => {
                 crate::trace::trace_warm(
                     &self.engine,
@@ -525,6 +552,7 @@ impl CommandEngine {
                         *depth,
                         *limit,
                         *wait_index,
+                        SiteFilter::new(path.clone(), *tests),
                         format,
                     ),
                 )
@@ -553,6 +581,8 @@ impl CommandEngine {
                 sections,
                 match_pattern,
                 around,
+                path,
+                tests,
             } => {
                 crate::context::context_warm(
                     &self.engine,
@@ -564,6 +594,7 @@ impl CommandEngine {
                         *sections,
                         match_pattern,
                         *around,
+                        SiteFilter::new(path.clone(), *tests),
                         format,
                     )?,
                 )
@@ -609,6 +640,8 @@ mod tests {
                     depth: 1,
                     limit: None,
                     wait_index: false,
+                    path: Vec::new(),
+                    tests: TestScope::All,
                 }),
                 engine_backed(RoutedCommand::Context {
                     symbol: "save".to_string(),
@@ -617,6 +650,8 @@ mod tests {
                     sections: ktsense_core::ContextSections::all(),
                     match_pattern: None,
                     around: 1,
+                    path: Vec::new(),
+                    tests: TestScope::All,
                 }),
                 engine_backed(RoutedCommand::Outline {
                     file: PathBuf::from("src/A.kt"),
@@ -657,6 +692,8 @@ mod tests {
                 depth: 2,
                 limit: Some(5),
                 wait_index: true,
+                path: vec!["app/src/main".to_string()],
+                tests: TestScope::Production,
             },
             RoutedCommand::Map {
                 budget: 4000,
@@ -672,6 +709,8 @@ mod tests {
                 sections: ktsense_core::ContextSections::all(),
                 match_pattern: None,
                 around: 1,
+                path: Vec::new(),
+                tests: TestScope::Tests,
             },
         ];
         let shapes: Vec<Value> = every_command
@@ -688,18 +727,20 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                10,
+                11,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },
                     { "command": "deps", "level": "file", "format": "md" },
                     { "command": "trace", "symbol": "save", "pick": "shop.order.OrderRepository.save",
-                      "depth": 2, "limit": 5, "wait_index": true, "format": "md" },
+                      "depth": 2, "limit": 5, "wait_index": true, "path": ["app/src/main"],
+                      "tests": "production", "format": "md" },
                     { "command": "map", "budget": 4000, "compact": true, "focus": "Plugin",
                       "fill": true, "path": ["activity"], "format": "md" },
                     { "command": "context", "symbol": "save", "pick": null, "budget": 2000,
                       "sections": { "source": true, "outline": true, "callers": true,
-                      "implementors": true }, "match_pattern": null, "around": 1, "format": "md" }
+                      "implementors": true }, "match_pattern": null, "around": 1,
+                      "tests": "tests", "format": "md" }
                 ])
             ),
             "a routed wire shape changed: bump ktsense_daemon::PROTOCOL_VERSION and repin this test"
@@ -747,6 +788,8 @@ mod tests {
                 depth: 2,
                 limit: Some(5),
                 wait_index: true,
+                path: Vec::new(),
+                tests: TestScope::All,
             },
             format: WireFormat::Md,
         };
@@ -785,6 +828,8 @@ mod tests {
                 sections: ktsense_core::ContextSections::all(),
                 match_pattern: Some("return".to_string()),
                 around: 2,
+                path: Vec::new(),
+                tests: TestScope::All,
             },
             format: WireFormat::Md,
         };

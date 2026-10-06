@@ -293,6 +293,60 @@ fn routed_context_matches_the_in_process_answer_and_names_a_source_section() {
     );
 }
 
+/// KT-127: the path and test filters cross the wire (protocol 11), so a filtered trace and a filtered
+/// context answered by the daemon must equal the in-process answers byte for byte, in markdown and
+/// JSON, and each must actually say it was filtered. One record per case, compared as a whole.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn routed_filtered_trace_and_context_match_the_in_process_answers_byte_for_byte() {
+    let runtime = tempfile::tempdir().expect("runtime dir");
+    let started = daemon(runtime.path(), &["daemon", "start", "--root", FIXTURE]);
+    assert_eq!(started.code, Some(0), "start failed: {}", started.stderr);
+
+    let cases: [&[&str]; 4] = [
+        &["trace", "OrderRepository.save", "--path", "app/"],
+        &["trace", "OrderRepository.save", "--no-tests"],
+        &[
+            "--format",
+            "json",
+            "trace",
+            "OrderRepository.save",
+            "--path",
+            "app/",
+            "--no-tests",
+        ],
+        &["context", "OrderRepository.save", "--path", "app/"],
+    ];
+    let mut transcripts = Vec::new();
+    let observed: Vec<(Parity, bool)> = cases
+        .iter()
+        .map(|args| {
+            let (record, transcript) = parity(runtime.path(), FIXTURE, args);
+            let in_process = routed(runtime.path(), FIXTURE, "KTSENSE_NO_DAEMON", args);
+            transcripts.push(transcript);
+            let names_the_filter = in_process.stdout.contains("under app/")
+                || in_process.stdout.contains("\"filter\"");
+            (record, names_the_filter || args.contains(&"--no-tests"))
+        })
+        .collect();
+
+    let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", FIXTURE]);
+    let matched = Parity {
+        identical: true,
+        daemon_code: Some(0),
+        in_process_code: Some(0),
+        both_silent: true,
+        produced_output: true,
+    };
+
+    assert_eq!(
+        (observed, stopped.code),
+        (vec![(matched, true); cases.len()], Some(0)),
+        "\n{}",
+        transcripts.join("\n")
+    );
+}
+
 /// KT-111: a `context --match` answer renders the declaration as one `<fqn>  <path>:<line>` location
 /// line with no `## Declaration` heading, and the routed answer is byte-identical to the in-process
 /// one in markdown and JSON. `--match` already crosses the wire (protocol 5), and KT-111 only changes

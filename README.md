@@ -235,12 +235,12 @@ Sixty-six lines of source, twelve lines of signatures. That is the whole idea.
 |---|---|
 | `outline <file>` | Compressed declaration skeleton of one file |
 | `symbols <name>` | Declarations matching a name across the workspace |
-| `trace <name>` | Definition, usages, implementors and callers of one symbol |
+| `trace <name>` | Definition, usages, implementors and callers of one symbol (`--path <prefix>`, repeatable, and `--tests`/`--no-tests` narrow callers, usages, text references and annotated sites to one scope; the definition and implementors are never filtered) |
 | `deps` | Import graph of the workspace, including cycles (`--format dot` for Graphviz) |
 | `map` | Token-budgeted map of the most central files (`--budget`, default 4000; `--compact` for names only; `--compact --focus <regex>` to list matching declarations and stop; add `--fill` to then spend the rest of the budget on the ranked map; `--path <substring>`, repeatable, to map only files whose path contains it) |
 | `check <paths>` | Syntax check; exits non-zero when a file has errors |
 | `diagnose <file>` | Semantic diagnostics on one file |
-| `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it; `--match <regex>` to filter the shown source lines) |
+| `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it; `--match <regex>` to filter the shown source lines; `--path <prefix>`, repeatable, and `--tests`/`--no-tests` to narrow callers and sites to one scope) |
 | `grep <regex>` | Text search over Kotlin and Java sources, each hit attributed to its declaration (`--path`, `--tests`/`--no-tests`, `--limit`, `--kotlin-only` for Kotlin alone, and `-w`/`-i`/`-F` like ripgrep) |
 | `status` | Index phase, file and symbol counts, engine version |
 | `mcp` | Run the MCP stdio server |

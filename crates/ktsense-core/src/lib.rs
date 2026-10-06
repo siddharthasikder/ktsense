@@ -10,6 +10,7 @@
 pub mod annotated;
 pub mod budget;
 pub mod context;
+pub mod filter;
 pub mod implementors;
 pub mod imports;
 pub mod java_enclosing;
@@ -33,9 +34,11 @@ pub use annotated::{
 };
 pub use budget::{emit_within_budget, BudgetedEmission};
 pub use context::{
-    build_context, ContextInput, ContextSection, ContextSections, ForeignReference, LineMatcher,
-    MatchedLine, MatchedSource, SourceMatch, SourceSection, SymbolContext,
+    build_context, AppliedContextFilter, ContextInput, ContextSection, ContextSections,
+    ForeignReference, LineMatcher, MatchedLine, MatchedSource, SourceMatch, SourceSection,
+    SymbolContext,
 };
+pub use filter::{SiteFilter, TestScope};
 pub use implementors::{
     resolve_supertype_implementors, SupertypeImplementor, SupertypeImplementors, TypeNode,
     SUPERTYPE_PRECISION,
@@ -53,10 +56,11 @@ pub use references::{
     SiteKind,
 };
 pub use render::{
-    render_annotated_markdown, render_context_markdown, render_deps_dot, render_deps_markdown,
-    render_map_markdown, render_markdown, render_member_summary, render_skeleton,
-    render_text_references_markdown, render_text_references_titled, render_text_search_markdown,
-    render_trace_markdown, RenderOptions,
+    render_annotated_markdown, render_annotated_titled, render_context_markdown, render_deps_dot,
+    render_deps_markdown, render_map_markdown, render_markdown, render_member_summary,
+    render_skeleton, render_text_references_markdown, render_text_references_titled,
+    render_text_references_with_note, render_text_search_markdown, render_trace_markdown,
+    RenderOptions,
 };
 pub use repo_map::{
     build_repo_map, FocusMatches, FocusSpec, MappedFile, NameMatcher, OmittedDirectory,
@@ -78,8 +82,8 @@ pub use text_search::{
     TextSearchLine,
 };
 pub use trace::{
-    build_trace, callers_of, CallerLevel, Definition, ExcludedSite, IndexCompleteness,
-    RelatedDeclaration, TraceInput, TraceReport,
+    build_trace, callers_of, AppliedTraceFilter, CallerLevel, Definition, ExcludedSite,
+    IndexCompleteness, RelatedDeclaration, TraceInput, TraceReport,
 };
 
 /// Estimates the token cost of rendered output so budgeted commands can stop in time.

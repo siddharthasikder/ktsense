@@ -30,7 +30,7 @@ use std::time::Duration;
 use ktsense_core::{
     build_trace, callers_of, declaration_starting_at, render_trace_markdown, AnnotatedDeclaration,
     AnnotatedDeclarations, Definition, FileSkeleton, GroupingOptions, IndexCompleteness, Location,
-    RelatedDeclaration, SiteKind, TraceInput, TraceReport,
+    RelatedDeclaration, SiteFilter, SiteKind, TraceInput, TraceReport,
 };
 use ktsense_daemon::{WarmEngine, WarmResolution};
 use ktsense_lsp::{
@@ -58,6 +58,10 @@ pub(crate) struct TraceRequest<'a> {
     pub limit: Option<usize>,
     pub wait: IndexWaitPolicy,
     pub format: Format,
+    /// The `--path`/`--tests` filter to narrow callers, usages, text references and annotated sites
+    /// by, or `None` for the full answer (KT-127). `context` passes the same filter so its bundle is
+    /// narrowed the same way.
+    pub filter: Option<SiteFilter>,
 }
 
 /// How long a cold session waits for the index before answering. The cap is the default because
@@ -146,7 +150,7 @@ pub(crate) async fn resolve_warm(
             candidate,
             definition,
         } => {
-            let report = Session::new(request.root, request.limit)
+            let report = Session::new(request.root, request.limit, request.filter.clone())
                 .run(
                     engine.client(),
                     &candidate,
@@ -298,7 +302,7 @@ async fn indexed_trace(
             candidate,
             definition,
         } => {
-            let report = Session::new(request.root, request.limit)
+            let report = Session::new(request.root, request.limit, request.filter.clone())
                 .run(client, &candidate, definition, request.depth, index)
                 .await
                 .map_err(CommandError::engine)?;
@@ -369,7 +373,7 @@ async fn collect_fresh(
     definition: Definition,
 ) -> Result<TraceReport, LspError> {
     let (mut client, index) = open_fresh_session(request).await?;
-    let outcome = Session::new(request.root, request.limit)
+    let outcome = Session::new(request.root, request.limit, request.filter.clone())
         .run(&client, candidate, definition, request.depth, index)
         .await;
     let _ = client.shutdown().await;
@@ -448,15 +452,20 @@ struct Session<'a> {
     canonical_root: PathBuf,
     limit: Option<usize>,
     skeletons: Skeletons,
+    /// The `--path`/`--tests` filter narrowing callers and usages, or `None` for the full answer
+    /// (KT-127). Passed to `build_trace` for the direct callers and usages, and applied to each
+    /// deeper caller level here.
+    filter: Option<SiteFilter>,
 }
 
 impl<'a> Session<'a> {
-    fn new(root: &'a Path, limit: Option<usize>) -> Self {
+    fn new(root: &'a Path, limit: Option<usize>, filter: Option<SiteFilter>) -> Self {
         Self {
             root,
             canonical_root: canonical(root),
             limit,
             skeletons: Skeletons::default(),
+            filter,
         }
     }
 
@@ -483,6 +492,7 @@ impl<'a> Session<'a> {
         let definition_site = Location::new(definition.path.clone(), definition.line);
         self.skeletons.load(self.root, &definition.path);
         let options = self.grouping();
+        let filter = self.filter.clone();
         let mut report = build_trace(TraceInput {
             definition,
             index,
@@ -491,6 +501,7 @@ impl<'a> Session<'a> {
             reference_sites,
             skeletons: self.skeletons.all(),
             options,
+            filter,
         });
 
         let mut frontier: Vec<RelatedDeclaration> = report.direct_callers().to_vec();
@@ -499,10 +510,31 @@ impl<'a> Session<'a> {
                 break;
             }
             let next = self.callers_of_each(client, &frontier).await?;
-            frontier = next.clone();
-            report = report.with_deeper_callers(next);
+            let (kept, production_omitted, test_omitted) = self.filter_callers(next);
+            frontier = kept.clone();
+            report = report.with_deeper_level(kept, production_omitted, test_omitted);
         }
         Ok(report)
+    }
+
+    /// Splits deeper callers into those the filter keeps and the production and test counts it
+    /// dropped, so a filtered `--depth` trace narrows every level the way the direct callers are
+    /// narrowed (KT-127). With no filter every caller is kept and nothing dropped.
+    fn filter_callers(
+        &self,
+        callers: Vec<RelatedDeclaration>,
+    ) -> (Vec<RelatedDeclaration>, usize, usize) {
+        match &self.filter {
+            None => (callers, 0, 0),
+            Some(filter) => {
+                let (kept, dropped): (Vec<_>, Vec<_>) = callers
+                    .into_iter()
+                    .partition(|caller| filter.matches(&caller.path, caller.test));
+                let production_omitted = dropped.iter().filter(|caller| !caller.test).count();
+                let test_omitted = dropped.iter().filter(|caller| caller.test).count();
+                (kept, production_omitted, test_omitted)
+            }
+        }
     }
 
     /// The declarations referring to any of `callers`, asked one caller at a time at the position
@@ -728,53 +760,68 @@ fn present_resolved(
     mut report: TraceReport,
     request: &TraceRequest<'_>,
 ) -> Result<CommandOutcome, CommandError> {
+    let filter = request.filter.as_ref();
     if let Some(implementors) =
         crate::implementors::supertype_implementors(request.root, &report.definition)?
     {
         report = report.with_supertype_implementors(implementors);
     }
-    if let Some(annotated) = annotation_class_answer(request.root, &report.definition)? {
+    let (annotated, annotated_omitted) =
+        annotation_class_answer(request.root, &report.definition, filter)?;
+    if let Some(annotated) = annotated {
         report = report.with_annotated(annotated);
     }
     let name = ktsense_core::last_segment(request.symbol);
-    if let Some(java) = crate::text_refs::java_text_references(request.root, name, request.limit)? {
+    let (java, java_omitted) =
+        crate::text_refs::java_text_references(request.root, name, request.limit, filter)?;
+    if let Some(java) = java {
         report = report.with_java_text_references(java);
     }
+    let mut kotlin_omitted = 0;
     if report.definition.path.ends_with(".java") {
-        if let Some(kotlin) =
-            crate::text_refs::kotlin_text_references(request.root, name, request.limit)?
-        {
+        let (kotlin, omitted) =
+            crate::text_refs::kotlin_text_references(request.root, name, request.limit, filter)?;
+        kotlin_omitted = omitted;
+        if let Some(kotlin) = kotlin {
             report = report.with_kotlin_text_references(kotlin);
         }
     }
+    report.record_filtered_omissions(annotated_omitted, java_omitted, kotlin_omitted);
     present(&report, request.format).map(CommandOutcome::success)
 }
 
-/// The annotation use sites a resolved trace lists, or `None` when the resolved declaration is not
-/// an annotation class or nothing carries it. The non-empty guard keeps a trace of an annotation
-/// used nowhere byte-identical to one before this listing existed.
+/// The annotation use sites a resolved trace lists, and how many a filter dropped, or `None` when
+/// the resolved declaration is not an annotation class or nothing carries it. The non-empty guard
+/// keeps a trace of an annotation used nowhere byte-identical to one before this listing existed.
 fn annotation_class_answer(
     root: &Path,
     definition: &Definition,
-) -> Result<Option<AnnotatedDeclarations>, CommandError> {
-    let uses = annotation_class_uses(root, definition)?;
+    filter: Option<&SiteFilter>,
+) -> Result<(Option<AnnotatedDeclarations>, usize), CommandError> {
+    let (uses, omitted) = annotation_class_uses(root, definition, filter)?;
     let name = ktsense_core::last_segment(&definition.qualified_name);
-    Ok((!uses.is_empty()).then(|| ktsense_core::build_annotated(name, &uses)))
+    Ok((
+        (!uses.is_empty()).then(|| ktsense_core::build_annotated(name, &uses)),
+        omitted,
+    ))
 }
 
-/// Every declaration the resolved annotation class is written on, or an empty list when the resolved
-/// declaration is not an annotation class. Shared with `context`, so the two commands decide the
-/// same way whether a symbol is an annotation and scan for the same sites.
+/// Every declaration the resolved annotation class is written on, and how many a `--path`/`--tests`
+/// filter dropped, or an empty list when the resolved declaration is not an annotation class. Shared
+/// with `context`, so the two commands decide the same way whether a symbol is an annotation and
+/// scan for the same sites.
 pub(crate) fn annotation_class_uses(
     root: &Path,
     definition: &Definition,
-) -> Result<Vec<AnnotatedDeclaration>, CommandError> {
+    filter: Option<&SiteFilter>,
+) -> Result<(Vec<AnnotatedDeclaration>, usize), CommandError> {
     if !is_annotation_class(root, definition) {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     }
     crate::text_refs::collect_annotation_uses(
         root,
         ktsense_core::last_segment(&definition.qualified_name),
+        filter,
     )
 }
 
@@ -807,6 +854,7 @@ fn not_found(request: &TraceRequest<'_>) -> Result<CommandOutcome, CommandError>
         request.limit,
         request.format,
         "trace",
+        request.filter.as_ref(),
     )
 }
 
