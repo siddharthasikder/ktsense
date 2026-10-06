@@ -14,8 +14,9 @@
 use std::path::Path;
 
 use ktsense_core::{
-    build_annotated, build_text_references, build_text_references_attributed, classify_java_sites,
-    fully_qualified_enclosing, render_annotated_markdown, render_text_references_markdown,
+    build_annotated, build_text_references, build_text_references_attributed,
+    build_text_references_with_text, classify_java_sites, fully_qualified_enclosing,
+    java_enclosing_declarations, render_annotated_markdown, render_text_references_markdown,
     AnnotatedDeclaration, AnnotatedDeclarations, FileSkeleton, ForeignReference, Location,
     TextReferences,
 };
@@ -213,15 +214,24 @@ fn is_identifier_byte(byte: u8) -> bool {
 }
 
 /// Java text references for `symbol` under `root`, grouped and capped, or `None` when no `.java`
-/// file mentions the name (KT-112). A root with no Java yields `None`, so `trace` and `context` stay
-/// byte-identical on an all-Kotlin workspace.
+/// file mentions the name (KT-112). Each site carries its enclosing Java declaration and its source
+/// line, so the listing reads like a KT-102 grep hit (KT-114). A root with no Java yields `None`, so
+/// `trace` and `context` stay byte-identical on an all-Kotlin workspace.
 pub(crate) fn java_text_references(
     root: &Path,
     symbol: &str,
     limit: Option<usize>,
 ) -> Result<Option<TextReferences>, CommandError> {
-    let sites = collect_java_sites(root, symbol)?;
-    Ok((!sites.is_empty()).then(|| build_text_references(symbol, &sites, limit)))
+    let scan = scan_java(root, symbol)?;
+    if scan.sites.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(build_text_references_with_text(
+        symbol,
+        &scan.sites,
+        limit,
+        |path, line| scan.attribution(path, line),
+    )))
 }
 
 /// Kotlin text references for `symbol`, each attributed to its enclosing declaration, or `None` when
@@ -243,17 +253,23 @@ pub(crate) fn kotlin_text_references(
 }
 
 /// The Java text references as flat, budget-ready lines for a `context` bundle (KT-112): sorted by
-/// path then line, carrying no enclosing declaration because the Java scan does not attribute.
+/// path then line, each carrying its enclosing Java declaration and its source line (KT-114).
 pub(crate) fn java_foreign_references(
     root: &Path,
     symbol: &str,
 ) -> Result<Vec<ForeignReference>, CommandError> {
-    let mut references: Vec<ForeignReference> = collect_java_sites(root, symbol)?
-        .into_iter()
-        .map(|site| ForeignReference {
-            path: site.path,
-            line: site.line,
-            enclosing: None,
+    let scan = scan_java(root, symbol)?;
+    let mut references: Vec<ForeignReference> = scan
+        .sites
+        .iter()
+        .map(|site| {
+            let (enclosing, text) = scan.attribution(&site.path, site.line);
+            ForeignReference {
+                path: site.path.clone(),
+                line: site.line,
+                enclosing,
+                text,
+            }
         })
         .collect();
     references.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
@@ -284,6 +300,7 @@ pub(crate) fn kotlin_foreign_references(
                 path: site.path,
                 line: site.line,
                 enclosing,
+                text: None,
             }
         })
         .collect();
@@ -291,20 +308,40 @@ pub(crate) fn kotlin_foreign_references(
     Ok(references)
 }
 
-/// Every whole-word text match of `symbol` in the workspace's `.java` sources, classified by the
-/// pure Java lexer so a mention in a comment or string is counted apart from a use in code (KT-112).
-/// A file that cannot be read is skipped rather than failing the scan.
-fn collect_java_sites(root: &Path, symbol: &str) -> Result<Vec<Location>, CommandError> {
-    let mut sites = Vec::new();
+/// Every whole-word text match of `symbol` in the workspace's `.java` sources, each classified by
+/// the pure Java lexer (KT-112) and attributed to its enclosing Java declaration and source line by
+/// the pure Java enclosing scan (KT-114). A file that cannot be read is skipped rather than failing.
+fn scan_java(root: &Path, symbol: &str) -> Result<JavaScan, CommandError> {
+    let mut scan = JavaScan::default();
     for path in crate::collect_java_files(root)? {
-        scan_java_file_for_sites(root, &path, symbol, &mut sites);
+        scan_java_file(root, &path, symbol, &mut scan);
     }
-    Ok(sites)
+    Ok(scan)
 }
 
-/// Appends every classified whole-word site of `symbol` in one Java file. A file that cannot be read
-/// contributes nothing, and one that does not mention the name is never classified.
-fn scan_java_file_for_sites(root: &Path, path: &Path, symbol: &str, sites: &mut Vec<Location>) {
+/// Classified Java sites plus, per `(path, line)`, the enclosing declaration and the source line to
+/// render beside the site. Keyed by line because a listing groups and renders by line.
+#[derive(Default)]
+struct JavaScan {
+    sites: Vec<Location>,
+    attribution: std::collections::HashMap<(String, u32), (Option<String>, Option<String>)>,
+}
+
+impl JavaScan {
+    /// The enclosing declaration and source line of the site at `(path, line)`, or `(None, None)`
+    /// when the scan recorded neither.
+    fn attribution(&self, path: &str, line: u32) -> (Option<String>, Option<String>) {
+        self.attribution
+            .get(&(path.to_string(), line))
+            .cloned()
+            .unwrap_or((None, None))
+    }
+}
+
+/// Appends every classified whole-word site of `symbol` in one Java file, and records each matched
+/// line's enclosing declaration and source text. A file that cannot be read contributes nothing, and
+/// one that does not mention the name is never scanned.
+fn scan_java_file(root: &Path, path: &Path, symbol: &str, scan: &mut JavaScan) {
     let Ok(source) = std::fs::read_to_string(path) else {
         return;
     };
@@ -312,11 +349,23 @@ fn scan_java_file_for_sites(root: &Path, path: &Path, symbol: &str, sites: &mut 
     if matches.is_empty() {
         return;
     }
+    let display = normalized_path(root, path);
     let coordinates: Vec<(u32, u32)> = matches.clone();
     let kinds = classify_java_sites(&source, &coordinates);
-    let display = normalized_path(root, path);
-    for ((line, _), kind) in matches.into_iter().zip(kinds) {
-        sites.push(Location::new(display.clone(), line).with_kind(kind));
+    for ((line, _), kind) in matches.iter().copied().zip(kinds) {
+        scan.sites
+            .push(Location::new(display.clone(), line).with_kind(kind));
+    }
+
+    let lines: Vec<u32> = matches.iter().map(|&(line, _)| line).collect();
+    let enclosings = java_enclosing_declarations(&source, &lines);
+    let source_lines: Vec<&str> = source.lines().collect();
+    for (line, enclosing) in lines.into_iter().zip(enclosings) {
+        let text = source_lines
+            .get(line as usize - 1)
+            .map(|line| line.to_string());
+        scan.attribution
+            .insert((display.clone(), line), (enclosing, text));
     }
 }
 
@@ -359,9 +408,10 @@ mod tests {
         assert_eq!(observed, vec![(1, 17), (2, 2), (4, 4), (5, 12)]);
     }
 
-    /// KT-112 scanning end to end over a temp workspace with one Java and one Kotlin file: the Java
-    /// scan counts a comment mention apart from a code use and does not read the Kotlin file, while
-    /// the Kotlin scan attributes its hit to the enclosing declaration. Composed as one value.
+    /// KT-114 scanning end to end over a temp workspace with one Java and one Kotlin file: the Java
+    /// scan counts a comment mention apart from a code use, attributes the code use to its enclosing
+    /// Java method and carries its source line, and does not read the Kotlin file, while the Kotlin
+    /// scan attributes its hit to the enclosing declaration. Composed as one value.
     #[test]
     fn the_java_and_kotlin_scans_separate_sources_count_mentions_and_attribute_kotlin() {
         use std::fs;
@@ -387,13 +437,27 @@ mod tests {
             .expect("scan")
             .expect("kotlin hits");
 
+        let java_code_site = &java.groups[0].sites[0];
         let observed = (
             java.total_sites,
             java.text_mention_sites,
             java.file_count,
+            java_code_site.enclosing.clone(),
+            java_code_site.text.clone(),
             kotlin.total_sites,
             kotlin.groups[0].sites[0].enclosing.clone(),
         );
-        assert_eq!(observed, (2, 1, 1, 1, Some("app.B.run".to_string())));
+        assert_eq!(
+            observed,
+            (
+                2,
+                1,
+                1,
+                Some("A.run".to_string()),
+                Some("  void run() { executeUpdate(1); }".to_string()),
+                1,
+                Some("app.B.run".to_string()),
+            )
+        );
     }
 }

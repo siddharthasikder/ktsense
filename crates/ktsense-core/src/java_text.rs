@@ -43,7 +43,7 @@ pub fn classify_java_sites(source: &str, sites: &[(u32, u32)]) -> Vec<SiteKind> 
 /// The lexical state a character sits in. Only the distinctions honesty needs: code, the two comment
 /// forms, and the three literal forms that carry text a name can hide in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LexState {
+pub(crate) enum LexState {
     Code,
     LineComment,
     BlockComment,
@@ -53,6 +53,12 @@ enum LexState {
 }
 
 impl LexState {
+    /// Whether a character in this state is Java code rather than a comment or a literal, so the
+    /// enclosing scan (KT-114) can walk structure over the same lexer this classifier uses.
+    pub(crate) fn is_code(self) -> bool {
+        matches!(self, LexState::Code)
+    }
+
     fn site_kind(self) -> SiteKind {
         match self {
             LexState::Code => SiteKind::Code,
@@ -67,7 +73,7 @@ impl LexState {
 /// Walks `source` once, yielding each character's byte offset and the lexical state it falls in. The
 /// state reported for a character is the state active at its first byte, so an identifier inside a
 /// string reports [`LexState::StringLiteral`] and one in code reports [`LexState::Code`].
-fn lex(source: &str) -> Vec<(usize, LexState)> {
+pub(crate) fn lex(source: &str) -> Vec<(usize, LexState)> {
     let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut classified = Vec::with_capacity(chars.len());
     let peek = |index: usize| chars.get(index).map(|&(_, character)| character);

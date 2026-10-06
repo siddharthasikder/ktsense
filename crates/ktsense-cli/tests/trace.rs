@@ -719,13 +719,14 @@ mod real {
         String::from_utf8(output.stdout).expect("utf-8 stdout")
     }
 
-    /// KT-112 against the real engine on the mixed Java/Kotlin fixture, composed over both cases. A
+    /// KT-114 against the real engine on the mixed Java/Kotlin fixture, composed over both cases. A
     /// Java-declared `executeUpdate` resolves to its `.java` definition, so its Callers heading
-    /// carries the `from Kotlin` qualifier; the Java text references list the two Java callers, the
-    /// Kotlin text references list the call in `UpdateByDomain.kt` attributed to its enclosing
-    /// declaration, and the Java-definition note is printed. A Kotlin-declared `UpdateGuard` that
-    /// Java sources reference gets the Java text references and the from-Kotlin heading, but no Kotlin
-    /// section and no note. Needs `rg`.
+    /// carries the `from Kotlin` qualifier; the Java text references list each Java call site in the
+    /// grep layout under its enclosing method with its source line, the Kotlin text references list
+    /// the call in `UpdateByDomain.kt` attributed to its enclosing declaration, and the
+    /// Java-definition note is printed. A Kotlin-declared `UpdateGuard` that Java sources reference
+    /// gets the Java text references and the from-Kotlin heading, but no Kotlin section and no note.
+    /// Needs `rg`.
     #[test]
     fn java_sources_holding_references_are_reported_as_text_matches() {
         let note =
@@ -737,8 +738,9 @@ mod real {
             java_def.contains("src/main/java/app/UpdateBase.java:5"),
             java_def.contains("from Kotlin)"),
             java_def.contains("## Java text references"),
-            java_def.contains("UpdateById.java\n- 5"),
-            java_def.contains("UpdateByName.java\n- 5"),
+            java_def.contains("UpdateById.java\nUpdateById.run\n  5: return executeUpdate(id);"),
+            java_def
+                .contains("UpdateByName.java\nUpdateByName.run\n  5: return executeUpdate(name);"),
             java_def.contains("- 5  app.UpdateByDomain.run"),
             java_def.contains(note),
             kotlin_def.contains("## Java text references"),

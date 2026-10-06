@@ -146,15 +146,19 @@ pub struct SourceMatch<'a> {
 
 /// One place the queried name appears as text in a foreign source, carried in a `context` bundle
 /// after the callers (KT-112). `enclosing` names the declaration the site sits inside when the scan
-/// attributed it (the Kotlin-against-a-Java-definition listing); it is absent for the Java listing,
-/// which is not attributed. A flat line rather than a file-grouped block, because `context` lists
-/// its callers flat and the budget spends on lines, not headings.
+/// attributed it (the Kotlin-against-a-Java-definition listing, and KT-114's Java listing through
+/// the pure Java enclosing scan). `text` is the trimmed source line a Java site renders beside its
+/// location (KT-114); it is absent for the Kotlin listing, which renders its location alone. A flat
+/// line rather than a file-grouped block, because `context` lists its callers flat and the budget
+/// spends on lines, not headings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignReference {
     pub path: String,
     pub line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enclosing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A budgeted context bundle for one symbol.
@@ -1491,12 +1495,14 @@ mod tests {
         let java_refs = vec![ForeignReference {
             path: "src/A.java".to_string(),
             line: 5,
-            enclosing: None,
+            enclosing: Some("A.run".to_string()),
+            text: Some("db.executeUpdate(sql);".to_string()),
         }];
         let kotlin_refs = vec![ForeignReference {
             path: "app/B.kt".to_string(),
             line: 7,
             enclosing: Some("app.B.use".to_string()),
+            text: None,
         }];
         let build_with = |sections: ContextSections| {
             build_context(

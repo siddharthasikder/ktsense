@@ -30,8 +30,10 @@ fn text_match_precision() -> &'static str {
 /// One place a name appears as text: a 1-based line and the syntax node the match falls in. Code and
 /// prose are both listed; the kind is what lets a reader tell a use from a mention. `enclosing` names
 /// the declaration the site sits inside when the scan attributed it (KT-112's Kotlin text references
-/// reuse the KT-102 attribution); it is absent for a scan that does not attribute, such as the Java
-/// scan and the KT-94 undeclared-name listing, so those serialize exactly as before.
+/// reuse the KT-102 attribution; KT-114's Java text references use the pure Java enclosing scan); it
+/// is absent for a scan that does not attribute, such as the KT-94 undeclared-name listing. `text`
+/// is the trimmed source line a Java site renders beside its line number (KT-114), so the listing
+/// reads like a grep hit; it is absent for the line-only listings, which serialize exactly as before.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextReferenceSite {
     pub line: u32,
@@ -39,6 +41,8 @@ pub struct TextReferenceSite {
     pub kind: SiteKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enclosing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Every text match in one file, ordered by line and capped, with the count the cap dropped.
@@ -70,14 +74,13 @@ pub struct TextReferences {
 /// Groups classified text-match sites by file, orders each file's sites by line, caps each file at
 /// `limit`, and counts the comment or string share apart from code. The counts are taken over every
 /// site found, before the cap, so the heading states what exists and each group says what it hid.
-/// Sites carry no enclosing declaration; the Java scan and the KT-94 undeclared-name listing use
-/// this.
+/// Sites carry no enclosing declaration or source text; the KT-94 undeclared-name listing uses this.
 pub fn build_text_references(
     symbol: &str,
     sites: &[Location],
     limit: Option<usize>,
 ) -> TextReferences {
-    build_grouped(symbol, sites, limit, |_, _| None)
+    build_grouped(symbol, sites, limit, |_, _| (None, None))
 }
 
 /// Like [`build_text_references`], but attributes each site to the declaration enclosing it, so a
@@ -96,21 +99,36 @@ pub fn build_text_references_attributed(
         .map(|skeleton| (skeleton.path.as_str(), skeleton))
         .collect();
     build_grouped(symbol, sites, limit, |path, line| {
-        skeleton_by_path
+        let enclosing = skeleton_by_path
             .get(path)
             .and_then(|skeleton| fully_qualified_enclosing(skeleton, line))
-            .map(|enclosing| enclosing.fqn)
+            .map(|enclosing| enclosing.fqn);
+        (enclosing, None)
     })
 }
 
-/// The shared body of the two builders: group by file, order and cap each file, count mentions apart
-/// from code, and attribute each surviving site through `attribute`, which names the enclosing
-/// declaration or returns `None` for an unattributed scan.
+/// Like [`build_text_references`], but `attribute` supplies both the declaration enclosing each site
+/// and the trimmed source line to render beside it, so a Java text reference reads like a KT-102 grep
+/// hit (KT-114). The enclosing comes from the pure Java enclosing scan the adapter runs per file; the
+/// text is the file's source line. Returning `(None, None)` leaves a site a bare line, so the
+/// adapter chooses per site.
+pub fn build_text_references_with_text(
+    symbol: &str,
+    sites: &[Location],
+    limit: Option<usize>,
+    attribute: impl Fn(&str, u32) -> (Option<String>, Option<String>),
+) -> TextReferences {
+    build_grouped(symbol, sites, limit, attribute)
+}
+
+/// The shared body of the builders: group by file, order and cap each file, count mentions apart
+/// from code, and attribute each surviving site through `attribute`, which returns the enclosing
+/// declaration and the source text, each `None` for a listing that does not carry it.
 fn build_grouped(
     symbol: &str,
     sites: &[Location],
     limit: Option<usize>,
-    attribute: impl Fn(&str, u32) -> Option<String>,
+    attribute: impl Fn(&str, u32) -> (Option<String>, Option<String>),
 ) -> TextReferences {
     let total_sites = sites.len();
     let text_mention_sites = sites
@@ -139,10 +157,14 @@ fn build_grouped(
                 path: path.to_string(),
                 sites: file_sites
                     .into_iter()
-                    .map(|site| TextReferenceSite {
-                        line: site.line,
-                        kind: site.kind,
-                        enclosing: attribute(path, site.line),
+                    .map(|site| {
+                        let (enclosing, text) = attribute(path, site.line);
+                        TextReferenceSite {
+                            line: site.line,
+                            kind: site.kind,
+                            enclosing,
+                            text,
+                        }
                     })
                     .collect(),
                 omitted,
@@ -195,11 +217,13 @@ mod tests {
                                 line: 3,
                                 kind: SiteKind::Code,
                                 enclosing: None,
+                                text: None,
                             },
                             TextReferenceSite {
                                 line: 5,
                                 kind: SiteKind::Code,
                                 enclosing: None,
+                                text: None,
                             },
                         ],
                         omitted: 1,
@@ -210,6 +234,7 @@ mod tests {
                             line: 7,
                             kind: SiteKind::String,
                             enclosing: None,
+                            text: None,
                         }],
                         omitted: 0,
                     },
@@ -252,6 +277,7 @@ mod tests {
                             line: 2,
                             kind: SiteKind::Code,
                             enclosing: None,
+                            text: None,
                         }],
                         omitted: 0,
                     },
@@ -261,10 +287,63 @@ mod tests {
                             line: 6,
                             kind: SiteKind::Code,
                             enclosing: Some("shop.order.OrderRepository.save".to_string()),
+                            text: None,
                         }],
                         omitted: 0,
                     },
                 ],
+            }
+        );
+    }
+
+    /// The with-text builder (KT-114) carries both the enclosing declaration and the trimmed source
+    /// line the closure supplies, so a Java site renders like a grep hit, while the mention counting
+    /// is unchanged. Checked as one composed value over a code hit and a comment hit.
+    #[test]
+    fn the_with_text_builder_carries_enclosing_and_source_text_per_site() {
+        let sites = vec![
+            Location::new("j/Dao.java", 12),
+            Location::new("j/Dao.java", 20).with_kind(SiteKind::Comment),
+        ];
+        let text = |_: &str, line: u32| match line {
+            12 => (
+                Some("Dao.save".to_string()),
+                Some("db.save(row);".to_string()),
+            ),
+            _ => (
+                Some("Dao.save".to_string()),
+                Some("// save the row".to_string()),
+            ),
+        };
+
+        let refs = build_text_references_with_text("save", &sites, None, text);
+
+        assert_eq!(
+            refs,
+            TextReferences {
+                symbol: "save".to_string(),
+                precision: "text match",
+                total_sites: 2,
+                file_count: 1,
+                text_mention_sites: 1,
+                groups: vec![TextReferenceGroup {
+                    path: "j/Dao.java".to_string(),
+                    sites: vec![
+                        TextReferenceSite {
+                            line: 12,
+                            kind: SiteKind::Code,
+                            enclosing: Some("Dao.save".to_string()),
+                            text: Some("db.save(row);".to_string()),
+                        },
+                        TextReferenceSite {
+                            line: 20,
+                            kind: SiteKind::Comment,
+                            enclosing: Some("Dao.save".to_string()),
+                            text: Some("// save the row".to_string()),
+                        },
+                    ],
+                    omitted: 0,
+                }],
             }
         );
     }

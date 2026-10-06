@@ -33,7 +33,7 @@ use crate::skeleton::{
     MAX_NESTING_DEPTH,
 };
 use crate::text::{fence_for, neutralize};
-use crate::text_refs::TextReferences;
+use crate::text_refs::{TextReferenceGroup, TextReferences};
 use crate::text_search::TextSearch;
 use crate::trace::{CallerLevel, IndexCompleteness, RelatedDeclaration, TraceReport};
 
@@ -534,10 +534,12 @@ pub fn render_text_references_markdown(refs: &TextReferences) -> String {
 }
 
 /// Renders a text-reference listing under a given heading, so KT-112 can label the same model
-/// `Java text references` and `Kotlin text references` while KT-94 keeps `Text references`. A site
-/// carrying an enclosing declaration (the Kotlin-against-a-Java-definition listing) prints it beside
-/// the line; a site without one prints the line alone, so the Java listing and the KT-94 listing are
-/// byte-identical to a bare line listing.
+/// `Java text references` and `Kotlin text references` while KT-94 keeps `Text references`. A file
+/// whose sites carry source text (a Java listing, KT-114) renders in the KT-102 grep layout: each
+/// site is `  <line>: <trimmed source line>` under the `Type.method` enclosing it (or `(file header)`
+/// for an import or package line). A file whose sites carry no text renders a bare line per site,
+/// leading with its enclosing FQN when the Kotlin-against-a-Java-definition scan attributed one, so
+/// that listing and the KT-94 listing are byte-identical to before.
 pub fn render_text_references_titled(refs: &TextReferences, heading: &str) -> String {
     let mut out = format!(
         "## {heading} ({} in {})\n",
@@ -554,17 +556,48 @@ pub fn render_text_references_titled(refs: &TextReferences, heading: &str) -> St
     }
     for group in &refs.groups {
         out.push_str(&format!("\n{}\n", neutralize(&group.path)));
-        for site in &group.sites {
-            match &site.enclosing {
-                Some(fqn) => out.push_str(&format!("- {}  {}\n", site.line, neutralize(fqn))),
-                None => out.push_str(&format!("- {}\n", site.line)),
-            }
-        }
-        if group.omitted > 0 {
-            out.push_str(&format!("- ... {} more\n", group.omitted));
+        if group.sites.iter().any(|site| site.text.is_some()) {
+            append_grep_layout(&mut out, group);
+        } else {
+            append_line_layout(&mut out, group);
         }
     }
     out
+}
+
+/// A file's sites in the KT-102 grep layout: consecutive sites sharing an enclosing declaration sit
+/// under one header (its `Type.method`, or `(file header)` when none), each as `  <line>: <source>`
+/// with the source trimmed and cut like a grep hit. The per-file cap reports what it dropped as
+/// `  ... N more`, matching the grep renderer.
+fn append_grep_layout(out: &mut String, group: &TextReferenceGroup) {
+    let mut current: Option<&Option<String>> = None;
+    for site in &group.sites {
+        if current != Some(&site.enclosing) {
+            let header = site.enclosing.as_deref().unwrap_or("(file header)");
+            out.push_str(&format!("{}\n", neutralize(header)));
+            current = Some(&site.enclosing);
+        }
+        let text = site.text.as_deref().unwrap_or_default();
+        out.push_str(&format!("  {}: {}\n", site.line, trimmed_hit_line(text)));
+    }
+    if group.omitted > 0 {
+        out.push_str(&format!("  ... {} more\n", group.omitted));
+    }
+}
+
+/// A file's sites as a bare line per site: the enclosing FQN beside the line when the scan attributed
+/// one (KT-112's Kotlin listing), the line alone otherwise (the KT-94 listing). The per-file cap
+/// reports what it dropped as `- ... N more`.
+fn append_line_layout(out: &mut String, group: &TextReferenceGroup) {
+    for site in &group.sites {
+        match &site.enclosing {
+            Some(fqn) => out.push_str(&format!("- {}  {}\n", site.line, neutralize(fqn))),
+            None => out.push_str(&format!("- {}\n", site.line)),
+        }
+    }
+    if group.omitted > 0 {
+        out.push_str(&format!("- ... {} more\n", group.omitted));
+    }
 }
 
 /// The longest a rendered hit line is allowed to grow before it is cut, so one long generated or
@@ -953,11 +986,12 @@ pub(crate) fn annotated_context_line(
 }
 
 /// One foreign text reference as a `context` list line (KT-112): a Kotlin hit against a Java-declared
-/// definition leads with its enclosing declaration's fully-qualified name, a Java hit (which is not
-/// attributed) with its location alone. Measured as the line the renderer emits so the budget never
-/// underestimates it, like a caller line.
+/// definition leads with its enclosing declaration's fully-qualified name, a Java hit with its
+/// enclosing Java declaration and its trimmed source line (KT-114), and an unattributed hit with its
+/// location alone. Measured as the line the renderer emits so the budget never underestimates it,
+/// like a caller line.
 pub(crate) fn foreign_reference_line(reference: &crate::context::ForeignReference) -> String {
-    match &reference.enclosing {
+    let location = match &reference.enclosing {
         Some(fqn) => format!(
             "- {}  {}:{}",
             neutralize(fqn),
@@ -965,6 +999,10 @@ pub(crate) fn foreign_reference_line(reference: &crate::context::ForeignReferenc
             reference.line
         ),
         None => format!("- {}:{}", neutralize(&reference.path), reference.line),
+    };
+    match &reference.text {
+        Some(text) => format!("{location}: {}", trimmed_hit_line(text)),
+        None => location,
     }
 }
 
@@ -1501,6 +1539,77 @@ mod tests {
         );
     }
 
+    /// A Java text-reference listing (KT-114) renders in the KT-102 grep layout: the count heading,
+    /// the text-match precision and the code-versus-mention split, then each site as
+    /// `  <line>: <trimmed source>` under the `Type.method` enclosing it, with an import under
+    /// `(file header)`, consecutive sites sharing an enclosing under one header, source indentation
+    /// trimmed, and a per-file `  ... N more`. Asserted once against the exact text.
+    #[test]
+    fn java_text_references_render_in_the_grep_layout_grouped_by_enclosing_declaration() {
+        let refs = TextReferences {
+            symbol: "save".to_string(),
+            precision: "text match",
+            total_sites: 4,
+            file_count: 2,
+            text_mention_sites: 1,
+            groups: vec![
+                TextReferenceGroup {
+                    path: "dao/Order.java".to_string(),
+                    sites: vec![
+                        TextReferenceSite {
+                            line: 2,
+                            kind: SiteKind::Code,
+                            enclosing: None,
+                            text: Some("import shop.Order;".to_string()),
+                        },
+                        TextReferenceSite {
+                            line: 12,
+                            kind: SiteKind::Code,
+                            enclosing: Some("OrderDao.save".to_string()),
+                            text: Some("        db.save(row);".to_string()),
+                        },
+                        TextReferenceSite {
+                            line: 18,
+                            kind: SiteKind::Comment,
+                            enclosing: Some("OrderDao.save".to_string()),
+                            text: Some("// save the row".to_string()),
+                        },
+                    ],
+                    omitted: 1,
+                },
+                TextReferenceGroup {
+                    path: "dao/Other.java".to_string(),
+                    sites: vec![TextReferenceSite {
+                        line: 7,
+                        kind: SiteKind::Code,
+                        enclosing: Some("Other.use".to_string()),
+                        text: Some("dao.save(id)".to_string()),
+                    }],
+                    omitted: 0,
+                },
+            ],
+        };
+
+        assert_eq!(
+            render_text_references_titled(&refs, "Java text references"),
+            concat!(
+                "## Java text references (4 sites in 2 files)\n",
+                "precision: text match\n",
+                "3 in code, 1 in comments or strings.\n",
+                "\ndao/Order.java\n",
+                "(file header)\n",
+                "  2: import shop.Order;\n",
+                "OrderDao.save\n",
+                "  12: db.save(row);\n",
+                "  18: // save the row\n",
+                "  ... 1 more\n",
+                "\ndao/Other.java\n",
+                "Other.use\n",
+                "  7: dao.save(id)\n",
+            )
+        );
+    }
+
     /// The whole rendered block for a name the workspace does not declare: the count heading, the
     /// text-match precision, the code-versus-mention split over every site before the cap, and the
     /// sites grouped by file with a per-file `... N more`. Asserted once against the exact text.
@@ -1520,11 +1629,13 @@ mod tests {
                             line: 12,
                             kind: SiteKind::Code,
                             enclosing: None,
+                            text: None,
                         },
                         TextReferenceSite {
                             line: 19,
                             kind: SiteKind::Comment,
                             enclosing: None,
+                            text: None,
                         },
                     ],
                     omitted: 1,
@@ -1535,6 +1646,7 @@ mod tests {
                         line: 7,
                         kind: SiteKind::Code,
                         enclosing: None,
+                        text: None,
                     }],
                     omitted: 0,
                 },
