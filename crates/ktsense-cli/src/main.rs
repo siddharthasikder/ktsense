@@ -242,6 +242,10 @@ enum Command {
         /// Requires --focus.
         #[arg(long, requires = "focus")]
         fill: bool,
+        /// Map only files whose workspace-relative path contains this substring. Repeatable; a file
+        /// is kept if it matches any (OR). Composes with --compact, --focus and --fill.
+        #[arg(long, value_name = "SUBSTRING")]
+        path: Vec<String>,
     },
     /// Syntax-check files; exits non-zero when a file has errors
     Check { path: PathBuf },
@@ -633,6 +637,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             compact,
             focus,
             fill,
+            path,
         } => route(
             &base,
             routing::RoutedCommand::Map {
@@ -640,6 +645,7 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 compact,
                 focus,
                 fill,
+                path,
             },
             format,
         ),
@@ -962,6 +968,7 @@ fn repository_map(
     compact: bool,
     focus: Option<&str>,
     fill: bool,
+    path: &[String],
     format: Format,
 ) -> Result<String, CommandError> {
     let files = collect_kotlin_files(root)?;
@@ -992,6 +999,7 @@ fn repository_map(
                 matcher,
             }),
             fill,
+            path,
         },
         &ByteRatioEstimator,
     );

@@ -42,7 +42,8 @@ use std::path::{Path, PathBuf};
 /// Version 6 added the routed `map` compact flag, so `--compact` crosses the wire (KT-97).
 /// Version 7 added the routed `map` focus pattern, so `--focus` crosses the wire (KT-108).
 /// Version 8 added the routed `map` fill flag, so `--fill` crosses the wire (KT-110).
-pub const PROTOCOL_VERSION: u32 = 8;
+/// Version 9 added the routed `map` path filter, so `--path` crosses the wire (KT-120).
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

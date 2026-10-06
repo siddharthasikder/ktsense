@@ -425,3 +425,52 @@ fn fill_requires_focus() {
     let observed = (run.code, run.stderr.contains("focus"));
     assert_eq!(observed, (Some(2), true), "stderr: {}", run.stderr);
 }
+
+/// KT-120: `--path db` maps only files whose workspace-relative path contains `db`, the header
+/// states the kept and total counts, and the full map shows more files than the filtered one. It
+/// composes with `--compact`. `db` matches only the `db/` module in this fixture, so every mapped
+/// file heading is under `db/`.
+#[test]
+fn path_filter_maps_only_matching_files_and_names_the_counts() {
+    let filtered = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--path",
+        "db",
+    ]);
+    let full = map(&["map", "--budget", "4000", "--root", "fixtures/multi-module"]);
+    let headings = |run: &Run| {
+        run.stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("## "))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let filtered_headings = headings(&filtered);
+
+    let observed = (
+        filtered.code,
+        filtered
+            .stdout
+            .lines()
+            .any(|line| line.starts_with("Path filter db: ")),
+        !filtered_headings.is_empty(),
+        filtered_headings
+            .iter()
+            .all(|heading| heading.contains("db/")),
+        headings(&full).len() > filtered_headings.len(),
+        full.stdout.contains("Path filter"),
+        filtered.stderr.is_empty(),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, true, true, true, false, true),
+        "filtered: {}\nfull: {}",
+        filtered.stdout,
+        full.stdout
+    );
+}

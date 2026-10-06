@@ -84,6 +84,17 @@ pub struct OmittedDirectory {
     pub files: usize,
 }
 
+/// The `--path` restriction applied to a map (KT-120): the substrings a mapped file's
+/// workspace-relative path had to contain (any of them, so repeated flags are an OR), the total
+/// mapped files before the filter, and how many the filter kept. Carried so the header can state
+/// `Path filter <s>: K of N files` and a JSON consumer can read the same.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PathFilter {
+    pub substrings: Vec<String>,
+    pub total_files: usize,
+    pub matched_files: usize,
+}
+
 /// The `--focus` section: every public top-level declaration whose name the focus pattern matches,
 /// grouped by file in the map's own file-rank order, each as kind and name alone. It is emitted
 /// before the ranked map and claims the budget first (KT-108), so a question that names a kind of
@@ -101,6 +112,10 @@ pub struct FocusMatches {
 /// A budgeted map of a repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RepoMap {
+    /// The path restriction applied, present only when the caller passed `--path` (KT-120). Left out
+    /// of the JSON otherwise, so an unrestricted map serializes exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_filter: Option<PathFilter>,
     /// The focus section, present only when the caller passed `--focus`. Left out of the JSON
     /// otherwise, so an unfocused map serializes exactly as before.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -151,6 +166,11 @@ pub struct RepoMapInput<'a> {
     pub files: &'a [FileSkeleton],
     pub references: &'a ReferenceCounts,
     pub budget: usize,
+    /// Workspace-relative path substrings a mapped file must contain to be kept, any of them, so a
+    /// repeated flag is an OR (KT-120). Empty means no restriction and the map is byte-identical to
+    /// before. Applied before ranking and budgeting, so every downstream count is over the kept
+    /// files alone.
+    pub path: &'a [String],
     /// Render each declaration as its kind and name alone rather than its full signature, so the
     /// same budget covers more of the module. Ranking and the public-visibility filter are
     /// unchanged; only the text each declaration occupies shrinks.
@@ -186,7 +206,13 @@ pub trait NameMatcher {
 /// count, then its importer count, then path ascending, so the same repository maps identically on
 /// every machine regardless of traversal order.
 pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E) -> RepoMap {
-    let files = input.files;
+    let restricted = restrict_to_path(input.files, input.path);
+    let files: &[FileSkeleton] = restricted.as_deref().unwrap_or(input.files);
+    let path_filter = (!input.path.is_empty()).then(|| PathFilter {
+        substrings: input.path.to_vec(),
+        total_files: input.files.len(),
+        matched_files: files.len(),
+    });
     let package_scores = package_scores(files);
     let importers = importer_counts(files);
     let ranking = Ranking {
@@ -226,12 +252,14 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
     }
 
     if input.focus.is_some() && !input.fill {
-        return focus_only_map(
+        let mut map = focus_only_map(
             focus_build,
             candidate_paths.len(),
             files_without_public_declarations,
             input.budget,
         );
+        map.path_filter = path_filter;
+        return map;
     }
 
     // Emitting once at the full budget shows which files would be dropped when nothing is reserved.
@@ -261,6 +289,7 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
         .unwrap_or(0);
 
     RepoMap {
+        path_filter,
         focus: focus_build.matches,
         fill: input.focus.is_some().then_some(true),
         other_files_not_mapped: None,
@@ -272,6 +301,27 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
         omitted_directories_shown,
         files_without_public_declarations,
     }
+}
+
+/// The files whose workspace-relative path contains any of `substrings`, cloned into an owned list,
+/// or `None` when no substring was given so the caller maps every file without a clone (KT-120).
+/// Matching is a plain substring test over the skeleton's already-normalized, `/`-separated path,
+/// and several substrings are an OR.
+fn restrict_to_path(files: &[FileSkeleton], substrings: &[String]) -> Option<Vec<FileSkeleton>> {
+    if substrings.is_empty() {
+        return None;
+    }
+    Some(
+        files
+            .iter()
+            .filter(|file| {
+                substrings
+                    .iter()
+                    .any(|needle| file.path.contains(needle.as_str()))
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 /// How much of the budget to hold back for the omission summary before files are chosen: nothing
@@ -560,6 +610,7 @@ fn focus_only_map(
     budget: usize,
 ) -> RepoMap {
     RepoMap {
+        path_filter: None,
         other_files_not_mapped: Some(candidate_files - focus_build.match_files),
         focus: focus_build.matches,
         fill: Some(false),
@@ -736,6 +787,7 @@ mod tests {
                 compact: false,
                 focus: None,
                 fill: false,
+                path: &[],
             },
             &ByteRatioEstimator,
         )
@@ -775,6 +827,7 @@ mod tests {
                 compact: false,
                 focus: None,
                 fill: false,
+                path: &[],
             },
             &ByteRatioEstimator,
         );
@@ -832,6 +885,7 @@ mod tests {
                 compact: false,
                 focus: None,
                 fill: false,
+                path: &[],
             },
             &ByteRatioEstimator,
         );
@@ -878,6 +932,7 @@ mod tests {
                 compact: false,
                 focus: None,
                 fill: false,
+                path: &[],
             },
             &ByteRatioEstimator,
         );
@@ -1030,6 +1085,7 @@ mod tests {
                     compact: false,
                     focus: None,
                     fill: false,
+                    path: &[],
                 },
                 &ByteRatioEstimator,
             );
@@ -1119,6 +1175,7 @@ mod tests {
                 compact: false,
                 focus: None,
                 fill: false,
+                path: &[],
             },
             &ByteRatioEstimator,
         );
@@ -1130,6 +1187,7 @@ mod tests {
                 compact: true,
                 focus: None,
                 fill: false,
+                path: &[],
             },
             &ByteRatioEstimator,
         );
@@ -1203,6 +1261,7 @@ mod tests {
                         matcher: &matcher,
                     }),
                     fill: true,
+                    path: &[],
                 },
                 &ByteRatioEstimator,
             )
@@ -1279,6 +1338,7 @@ mod tests {
                         matcher: &matcher,
                     }),
                     fill,
+                    path: &[],
                 },
                 &ByteRatioEstimator,
             )
@@ -1315,6 +1375,93 @@ mod tests {
                 )],
                 true,
                 Some(true),
+                None,
+                false,
+            )
+        );
+    }
+
+    /// KT-120: `--path` keeps only files whose workspace-relative path contains a substring, several
+    /// substrings are an OR, the header names the kept and total counts, and an empty filter leaves
+    /// the map byte-identical (no `path_filter`, no header line).
+    #[test]
+    fn path_filter_restricts_to_matching_files_composes_or_and_names_the_counts() {
+        let files = vec![
+            file(
+                "src/main/activity/ActivityBase.kt",
+                "a.activity",
+                &[],
+                &[("ActivityBase", 1)],
+            ),
+            file(
+                "src/main/activity/UpdateActivity.kt",
+                "a.activity",
+                &[],
+                &[("UpdateActivity", 1)],
+            ),
+            file(
+                "src/main/config/Config.kt",
+                "a.config",
+                &[],
+                &[("Config", 1)],
+            ),
+            file(
+                "src/main/predicate/Predicate.kt",
+                "a.predicate",
+                &[],
+                &[("Predicate", 1)],
+            ),
+        ];
+        let build = |path: &[String]| {
+            build_repo_map(
+                RepoMapInput {
+                    files: &files,
+                    references: &ReferenceCounts::default(),
+                    budget: 10_000,
+                    compact: true,
+                    focus: None,
+                    fill: false,
+                    path,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let activity = build(&["activity".to_string()]);
+        let activity_or_config = build(&["activity".to_string(), "config".to_string()]);
+        let unfiltered = build(&[]);
+        let activity_md = crate::render_map_markdown(&activity);
+        let unfiltered_md = crate::render_map_markdown(&unfiltered);
+        let mapped_paths = |map: &RepoMap| {
+            let mut paths: Vec<String> = map.files.iter().map(|file| file.path.clone()).collect();
+            paths.sort();
+            paths
+        };
+
+        let observed = (
+            activity.path_filter.clone(),
+            mapped_paths(&activity),
+            activity_md.contains("Path filter activity: 2 of 4 files"),
+            activity_or_config
+                .path_filter
+                .as_ref()
+                .map(|f| f.matched_files),
+            unfiltered.path_filter.clone(),
+            unfiltered_md.contains("Path filter"),
+        );
+        assert_eq!(
+            observed,
+            (
+                Some(PathFilter {
+                    substrings: vec!["activity".to_string()],
+                    total_files: 4,
+                    matched_files: 2,
+                }),
+                vec![
+                    "src/main/activity/ActivityBase.kt".to_string(),
+                    "src/main/activity/UpdateActivity.kt".to_string(),
+                ],
+                true,
+                Some(3),
                 None,
                 false,
             )

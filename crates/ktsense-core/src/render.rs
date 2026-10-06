@@ -303,6 +303,14 @@ pub fn render_deps_dot(graph: &ImportGraph) -> String {
 /// silently included scaffolding would not be the figure the packing decision used.
 pub fn render_map_markdown(map: &RepoMap) -> String {
     let mut out = String::from("# Repository map\n\n");
+    if let Some(filter) = &map.path_filter {
+        out.push_str(&format!(
+            "Path filter {}: {} of {} files\n",
+            neutralize(&filter.substrings.join(", ")),
+            filter.matched_files,
+            filter.total_files,
+        ));
+    }
     if let Some(other_files_not_mapped) = map.other_files_not_mapped {
         out.push_str(&format!(
             "Budget {} tokens, content bound {}. {}\n",

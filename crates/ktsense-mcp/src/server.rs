@@ -261,6 +261,10 @@ pub struct MapParams {
     /// focus does. Without it a focused map renders the focus section and stops. Requires focus.
     #[serde(default)]
     pub fill: bool,
+    /// Map only files whose workspace-relative path contains a substring; repeat for several (a file
+    /// is kept if it matches any). Composes with compact, focus and fill.
+    #[serde(default)]
+    pub path: Vec<String>,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -634,6 +638,16 @@ impl Args {
         }
         self
     }
+
+    /// A repeatable option, as `--name a --name b`, matching a CLI `Vec<String>` flag that is not
+    /// comma-delimited (such as `map --path`). An empty list leaves the flag off.
+    fn repeated_option(mut self, name: &str, values: &[String]) -> Self {
+        for value in values {
+            self.0.args.push(format!("--{name}"));
+            self.0.args.push(value.clone());
+        }
+        self
+    }
 }
 
 #[tool_router]
@@ -713,7 +727,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "get_kotlin_repo_map",
-        description = "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Pass compact to list each file's declarations as kind and name only, no signatures, so the same budget covers far more of the module. Pass focus with a regex to list the declarations whose name matches it first, grouped by file, and stop there; focus implies compact. Add fill to then spend the rest of the budget on the ranked map, as a map without a focus does. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
+        description = "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Pass compact to list each file's declarations as kind and name only, no signatures, so the same budget covers far more of the module. Pass focus with a regex to list the declarations whose name matches it first, grouped by file, and stop there; focus implies compact. Add fill to then spend the rest of the budget on the ranked map, as a map without a focus does. Pass path to map only files whose workspace-relative path contains a substring, repeatable for several (a file is kept if it matches any); the header then states how many of the files the filter kept. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -726,7 +740,8 @@ impl KtsenseServer {
             .option("budget", params.budget)
             .flag("compact", params.compact || params.focus.is_some())
             .option("focus", params.focus)
-            .flag("fill", params.fill);
+            .flag("fill", params.fill)
+            .repeated_option("path", &params.path);
         self.invoke(&crate::MAP, args.0).await
     }
 
@@ -1392,6 +1407,41 @@ mod tests {
                     "--pick".to_string(),
                     "x.y.Z.run".to_string(),
                 ],
+            ]
+        );
+    }
+
+    /// KT-120: `get_kotlin_repo_map` passes each `path` value as its own `--path` flag, so a repeated
+    /// path filter reaches the CLI as the repeatable flag it expects rather than a joined list.
+    #[tokio::test]
+    async fn repo_map_passes_each_path_as_its_own_flag() {
+        let runner = Recorded::replying(0, "", "");
+        let server = KtsenseServer::new(runner.clone());
+
+        server
+            .get_kotlin_repo_map(Parameters(MapParams {
+                budget: Some(4000),
+                compact: true,
+                focus: None,
+                fill: false,
+                path: vec!["activity".to_string(), "merchant".to_string()],
+                root: None,
+            }))
+            .await
+            .expect("map call");
+
+        let args = runner.calls.lock().unwrap()[0].args.clone();
+        assert_eq!(
+            args,
+            vec![
+                "map".to_string(),
+                "--budget".to_string(),
+                "4000".to_string(),
+                "--compact".to_string(),
+                "--path".to_string(),
+                "activity".to_string(),
+                "--path".to_string(),
+                "merchant".to_string(),
             ]
         );
     }
