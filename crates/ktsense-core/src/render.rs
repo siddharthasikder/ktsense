@@ -825,7 +825,8 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     }
 
     if context.sections.callers {
-        let callers = context.callers.available() + context.test_callers_omitted;
+        let callers =
+            context.callers.available() + context.test_callers_omitted + context.callers_omitted;
         let mut count = if context.java_text_references.available() > 0 {
             format!("{callers} from Kotlin")
         } else {
@@ -836,6 +837,13 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
         }
         out.push_str(&format!("\n## Callers ({count})\n"));
         append_context_lines(&mut out, &context.callers, context_caller_line);
+        if context.callers_omitted > 0 {
+            out.push_str(&format!(
+                "\n{} more callers; trace {} lists them all\n",
+                context.callers_omitted,
+                neutralize(&context.symbol),
+            ));
+        }
         if context.test_callers_omitted > 0 {
             out.push_str(&format!(
                 "\n{} more test callers; trace {} lists them all\n",

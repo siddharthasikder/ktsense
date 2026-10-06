@@ -218,6 +218,11 @@ pub struct SymbolContext {
     /// The outline of the declaration's file, one balanced block per top-level declaration.
     pub file_outline: ContextSection<String>,
     pub callers: ContextSection<RelatedDeclaration>,
+    /// How many production callers the default cap left out of the listing (KT-128), distinct from
+    /// the callers the budget dropped. Zero when `--only callers` lifted the cap or there were ten
+    /// or fewer; left out of the JSON then, so an uncapped bundle serializes as before.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub callers_omitted: usize,
     /// How many test callers the default cap left out of the listing (KT-118), distinct from the
     /// callers the budget dropped. Zero when `--only callers` lifted the cap or there were three or
     /// fewer test callers; left out of the JSON then, so an uncapped bundle serializes as before.
@@ -305,8 +310,11 @@ pub struct ContextInput<'a> {
 /// Builds the bundle, emitting as much of the priority order as the budget affords.
 pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) -> SymbolContext {
     let body = input.sections.source.then(|| source_body(&input)).flatten();
-    let cap = (!input.sections.is_callers_only()).then_some(DEFAULT_TEST_CALLER_CAP);
-    let (callers, test_callers_omitted) = cap_test_callers(input.callers, cap);
+    let caps = (!input.sections.is_callers_only()).then_some(CallerCaps {
+        production: DEFAULT_PRODUCTION_CALLER_CAP,
+        test: DEFAULT_TEST_CALLER_CAP,
+    });
+    let (callers, callers_omitted, test_callers_omitted) = cap_callers(input.callers, caps);
     let offered = units_in_priority_order(&input, body.as_ref(), &callers);
     let available = Available::of(&offered);
 
@@ -324,6 +332,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
         matched_source,
         file_outline: section(kept.file_outline, available.file_outline),
         callers: section(kept.callers, available.callers),
+        callers_omitted,
         test_callers_omitted,
         annotated: section(kept.annotated, available.annotated),
         java_text_references: section(kept.java_text_references, available.java_text_references),
@@ -340,38 +349,53 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
 }
 
 /// How many test callers a default `context` bundle lists before summarizing the rest. Production
-/// callers answer who depends on the symbol in shipping code and are never capped; a long tail of
-/// test callers otherwise spends the budget the source, outline and production callers need, so the
-/// default keeps a sample and points at `trace` for the full list (KT-118).
+/// callers answer who depends on the symbol in shipping code and are capped more generously; a long
+/// tail of test callers otherwise spends the budget the source, outline and production callers need,
+/// so the default keeps a sample and points at `trace` for the full list (KT-118).
 const DEFAULT_TEST_CALLER_CAP: usize = 3;
 
-/// Keeps every production caller and at most `cap` test callers, returning the trimmed list and how
-/// many test callers it left out. `None` keeps them all, which is the `--only callers` request.
-/// Production callers already lead the slice (KT-91), but the partition is explicit so a reordering
-/// upstream cannot silently drop a production caller past the cap.
-fn cap_test_callers(
+/// How many production callers a default `context` bundle lists before summarizing the rest, so a
+/// symbol called from a hundred production sites does not spend the whole budget proving an ordering
+/// a reader can confirm from `trace` (KT-128). `--only callers` lifts both caps.
+const DEFAULT_PRODUCTION_CALLER_CAP: usize = 10;
+
+/// The two caller caps a default bundle applies, or `None` for the `--only callers` request that
+/// lifts them both.
+#[derive(Debug, Clone, Copy)]
+struct CallerCaps {
+    production: usize,
+    test: usize,
+}
+
+/// Keeps at most `caps.production` production callers and `caps.test` test callers, in the KT-91
+/// order the slice already carries (production first), returning the trimmed list and how many of
+/// each kind it left out. `None` keeps them all, which is the `--only callers` request.
+fn cap_callers(
     callers: &[RelatedDeclaration],
-    cap: Option<usize>,
-) -> (Vec<RelatedDeclaration>, usize) {
-    let Some(cap) = cap else {
-        return (callers.to_vec(), 0);
+    caps: Option<CallerCaps>,
+) -> (Vec<RelatedDeclaration>, usize, usize) {
+    let Some(caps) = caps else {
+        return (callers.to_vec(), 0, 0);
     };
     let mut kept = Vec::with_capacity(callers.len());
-    let mut tests_kept = 0;
-    let mut omitted = 0;
+    let (mut production_kept, mut test_kept) = (0, 0);
+    let (mut production_omitted, mut test_omitted) = (0, 0);
     for caller in callers {
         if caller.test {
-            if tests_kept < cap {
+            if test_kept < caps.test {
                 kept.push(caller.clone());
-                tests_kept += 1;
+                test_kept += 1;
             } else {
-                omitted += 1;
+                test_omitted += 1;
             }
-        } else {
+        } else if production_kept < caps.production {
             kept.push(caller.clone());
+            production_kept += 1;
+        } else {
+            production_omitted += 1;
         }
     }
-    (kept, omitted)
+    (kept, production_omitted, test_omitted)
 }
 
 /// Whether a count is zero, for the `serde` skip that keeps a value out of the JSON when it has
@@ -868,6 +892,59 @@ mod tests {
             rendered.contains("## Callers (1 under app/; 1 others)\n"),
             "rendered was:\n{rendered}"
         );
+    }
+
+    /// KT-128: a default `context` lists at most ten production callers, says how many more there
+    /// are, and the heading still counts every caller; `--only callers` lifts the cap. Built with
+    /// thirteen production callers and a budget large enough that only the cap, not the budget,
+    /// trims them.
+    #[test]
+    fn production_callers_are_capped_at_ten_and_only_callers_lifts_it() {
+        let file = repository_file();
+        let callers: Vec<RelatedDeclaration> = (0..13)
+            .map(|i| related(&format!("app/C{i}.kt"), 4, &format!("shop.app.C{i}.run"), 1))
+            .collect();
+        let build = |sections| {
+            build_context(
+                ContextInput {
+                    definition: definition(),
+                    index: IndexCompleteness::Complete,
+                    sections,
+                    file: Some(&file),
+                    source: None,
+                    source_match: None,
+                    callers: &callers,
+                    annotated: &[],
+                    java_text_references: &[],
+                    kotlin_text_references: &[],
+                    implementors: &[],
+                    budget: 10_000,
+                    filter: None,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let default = build(ContextSections::all());
+        let only = build(ContextSections {
+            source: false,
+            outline: false,
+            callers: true,
+            implementors: false,
+        });
+        let rendered = render_context_markdown(&default);
+
+        let observed = (
+            default.callers.items.len(),
+            default.callers_omitted,
+            only.callers.items.len(),
+            only.callers_omitted,
+            rendered.contains("## Callers (13)\n"),
+            rendered.contains(
+                "\n3 more callers; trace shop.order.OrderRepository.save lists them all\n",
+            ),
+        );
+
+        assert_eq!(observed, (10, 3, 13, 0, true, true));
     }
 
     /// KT-126: a definition read from a `.java` file fences its declaration signature as `java`,
