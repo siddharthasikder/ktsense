@@ -210,6 +210,24 @@ impl Declaration {
         self
     }
 
+    /// False only for a class Kotlin makes final: one that is not `open`, `abstract` or `sealed`.
+    /// An `enum` class keeps entries with bodies as subclasses, and an `expect` class is completed
+    /// by an `actual` elsewhere, so both count as subtypable. Every non-class kind is answered true,
+    /// because an interface is implemented and a function can be overridden.
+    pub fn can_be_subtyped(&self) -> bool {
+        self.kind != DeclKind::Class
+            || self.modifiers.iter().any(|modifier| {
+                matches!(
+                    modifier,
+                    Modifier::Open
+                        | Modifier::Abstract
+                        | Modifier::Sealed
+                        | Modifier::Enum
+                        | Modifier::Expect
+                )
+            })
+    }
+
     pub fn with_type_parameters(mut self, type_parameters: impl Into<String>) -> Self {
         self.type_parameters = Some(type_parameters.into());
         self

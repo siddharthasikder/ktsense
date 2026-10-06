@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::references::{
-    enclosing_declaration, group_references, GroupingOptions, Location, ReferenceGroup,
+    declaration_starting_at, enclosing_declaration, group_references, GroupingOptions, Location,
+    ReferenceGroup,
 };
 use crate::skeleton::{DeclKind, FileSkeleton};
 
@@ -116,7 +117,11 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
     let skeletons = SkeletonIndex::new(input.skeletons);
     let implementation_sites =
         implementations_other_than(&input.implementation_sites, &input.definition_site);
-    let implementors = related_declarations(&implementation_sites, &skeletons);
+    let implementors = if skeletons.cannot_be_subtyped(&input.definition_site) {
+        Vec::new()
+    } else {
+        related_declarations(&implementation_sites, &skeletons)
+    };
 
     let mut set_aside = vec![input.definition_site.clone()];
     set_aside.extend(implementation_sites.iter().cloned());
@@ -182,6 +187,18 @@ impl<'a> SkeletonIndex<'a> {
         }
     }
 
+    /// kmp-lsp 0.26.0 answers `textDocument/implementation` on a final class with name matches
+    /// such as `FooTest`, so a class Kotlin makes final is answered from its own modifiers instead.
+    /// An unresolved or partially parsed definition is not judged, because a parse error can drop
+    /// the very `open` that makes a class subtypable, and keeps the engine's answer.
+    fn cannot_be_subtyped(&self, definition: &Location) -> bool {
+        self.by_path
+            .get(definition.path.as_str())
+            .filter(|skeleton| !skeleton.partial)
+            .and_then(|skeleton| declaration_starting_at(skeleton, definition.line))
+            .is_some_and(|declaration| !declaration.can_be_subtyped())
+    }
+
     /// The declaration enclosing `site`, fully qualified with its file's package, when the file's
     /// skeleton is known and a declaration spans the line.
     fn resolve(&self, site: &Location) -> Option<(String, DeclKind, u32)> {
@@ -232,7 +249,7 @@ fn related_declarations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton::Declaration;
+    use crate::skeleton::{Declaration, Modifier};
 
     fn shop() -> Vec<FileSkeleton> {
         vec![
@@ -388,6 +405,57 @@ mod tests {
                 )]
             )
         );
+    }
+
+    fn partially_parsed(mut skeletons: Vec<FileSkeleton>) -> Vec<FileSkeleton> {
+        skeletons[0] = skeletons[0].clone().marked_partial();
+        skeletons
+    }
+
+    #[test]
+    fn a_class_that_cannot_be_subtyped_has_no_implementors_whatever_the_engine_says() {
+        let class_named = |modifiers: Vec<Modifier>| {
+            vec![
+                FileSkeleton::new("app/Factory.kt")
+                    .in_package("shop.app")
+                    .with_declarations(vec![
+                        Declaration::class("Factory", 3).with_modifiers(modifiers)
+                    ]),
+                FileSkeleton::new("test/FactoryTest.kt")
+                    .in_package("shop.app")
+                    .with_declarations(vec![Declaration::class("FactoryTest", 5)]),
+            ]
+        };
+        let implementors_of = |skeletons: &[FileSkeleton]| {
+            build_trace(TraceInput {
+                definition: Definition {
+                    qualified_name: "shop.app.Factory".to_string(),
+                    path: "app/Factory.kt".to_string(),
+                    line: 3,
+                    signature: "class Factory".to_string(),
+                },
+                index: IndexCompleteness::Complete,
+                definition_site: Location::new("app/Factory.kt", 3),
+                implementation_sites: vec![Location::new("test/FactoryTest.kt", 5)],
+                reference_sites: vec![],
+                skeletons,
+                options: GroupingOptions::default(),
+            })
+            .implementors
+            .len()
+        };
+
+        let observed = (
+            implementors_of(&class_named(vec![])),
+            implementors_of(&class_named(vec![Modifier::Data])),
+            implementors_of(&class_named(vec![Modifier::Open])),
+            implementors_of(&class_named(vec![Modifier::Abstract])),
+            implementors_of(&class_named(vec![Modifier::Sealed])),
+            implementors_of(&class_named(vec![Modifier::Enum])),
+            implementors_of(&class_named(vec![Modifier::Expect])),
+            implementors_of(&partially_parsed(class_named(vec![]))),
+        );
+        assert_eq!(observed, (0, 0, 1, 1, 1, 1, 1, 1));
     }
 
     #[test]

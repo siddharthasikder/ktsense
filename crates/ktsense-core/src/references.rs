@@ -210,6 +210,14 @@ pub(crate) fn enclosing_declaration(
     (!chain.is_empty()).then(|| EnclosingDeclaration::from_chain(&chain))
 }
 
+/// The innermost declaration that starts exactly on `line`, when the skeleton has one.
+pub(crate) fn declaration_starting_at(skeleton: &FileSkeleton, line: u32) -> Option<&Declaration> {
+    enclosing_chain(&skeleton.declarations, line, None)
+        .into_iter()
+        .rev()
+        .find(|declaration| declaration.line == line)
+}
+
 /// The declarations from outermost to innermost whose spans contain `line`, empty when none do.
 fn enclosing_chain(
     siblings: &[Declaration],
