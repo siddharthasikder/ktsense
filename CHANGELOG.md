@@ -16,6 +16,7 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Fixed
 
+- `symbols` now qualifies a class, object or function declared inside a function or property body. Such a local declaration was reported with no kind, package or enclosing chain because the file skeleton drops it with the body; the enrichment now falls back to a tree-sitter walk that finds it, so it carries its real kind, its package and a qualified name through its enclosing declarations (for example `io.ktor.server.application.ApplicationPluginTest.test_routing_scoped_install.Config`), is marked `(local)` in Markdown and `"local": true` in JSON, and is selectable with `--pick`. Top-level and member declarations are unchanged (KT-98).
 - Signatures, supertypes and annotations lifted across several source lines now render on one line. The syntax adapter folds each such span through a pure `ktsense-core::text` normalizer that collapses whitespace runs, drops spaces just inside brackets and before commas, and drops a trailing comma before a closer, while leaving string literals and comments byte for byte so a default like `= "a  b"` and a multi-line raw string keep their contents (KT-92).
 
 - `trace` and `context` no longer count comment, KDoc or string text, or a same-named declaration such as a `companion object`, as a caller. Each reference site is classified by the syntax node it falls in, only code uses become callers and usage rows, and the Usages line says how many text mentions and same-named declarations it left out (KT-83).

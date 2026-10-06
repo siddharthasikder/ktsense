@@ -9,7 +9,7 @@ pub mod classify;
 pub mod extract;
 
 pub use classify::classify_reference_sites;
-pub use extract::extract;
+pub use extract::{extract, locate_local, LocalDeclaration};
 
 use anyhow::{Context, Result};
 use tree_sitter::{Parser, Tree};

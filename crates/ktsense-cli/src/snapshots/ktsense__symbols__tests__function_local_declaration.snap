@@ -1,0 +1,22 @@
+---
+source: crates/ktsense-cli/src/symbols.rs
+expression: "format!(\"exit {}\\n{}\\n---json---\\n{}\", markdown.exit.code(), markdown.text,\njson.text)"
+---
+exit 0
+## Symbols: Local
+
+```text
+demo.Outer.make.Local  class (local)  Local.kt:5  class Local(val id: Int)
+```
+
+---json---
+[
+  {
+    "fqn": "demo.Outer.make.Local",
+    "kind": "class",
+    "file": "Local.kt",
+    "line": 5,
+    "signature": "class Local(val id: Int)",
+    "local": true
+  }
+]

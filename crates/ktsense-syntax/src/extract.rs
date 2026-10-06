@@ -95,6 +95,67 @@ pub fn extract(path: impl Into<String>, source: &str) -> Result<FileSkeleton> {
     Ok(file)
 }
 
+/// A declaration found inside a function or property body, with the package and the names of the
+/// declarations enclosing it, so an enrichment can qualify a name the file skeleton omits.
+///
+/// [`extract`] keeps only top-level and member declarations; a class, object or function declared
+/// inside a body is dropped along with the body. [`locate_local`] recovers one such declaration by
+/// name and line for the `symbols` enrichment, which otherwise reports it as a bare name with no
+/// kind or package.
+pub struct LocalDeclaration {
+    pub package: Option<String>,
+    pub ancestors: Vec<String>,
+    pub declaration: Declaration,
+}
+
+/// Deepest CST level [`locate_local`] descends into. Unlike [`extract`], whose bound counts only
+/// declaration nesting, this walk visits every syntax node to reach a declaration buried in an
+/// expression, so an adversarial or generated file could otherwise drive the recursion past the
+/// thread stack. Real Kotlin reaches a local declaration in a handful of levels, so this is far
+/// above any legitimate source yet small enough to stay within a worker thread's stack.
+const MAX_LOCAL_SCAN_DEPTH: usize = 512;
+
+/// Whether a declaration's body holds members, which the skeleton already reaches, rather than
+/// local declarations. A class, interface, object or companion object body holds members; a
+/// function, property, constructor or alias body is where a local declaration lives.
+fn holds_members(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_declaration" | "object_declaration" | "companion_object"
+    )
+}
+
+/// Finds a declaration that lives inside a function or property body, by name and line.
+///
+/// Returns the declaration together with the package and the names of the declarations enclosing
+/// it, so a caller can compose a fully-qualified name from the outside in. A declaration the file
+/// skeleton already carries (top-level or member) is not local and yields `None`, as does a name
+/// the file does not declare inside any body.
+pub fn locate_local(source: &str, name: &str, line: u32) -> Option<LocalDeclaration> {
+    let tree = crate::parse(source).ok()?;
+    let root = tree.root_node();
+    let extractor = Extractor {
+        source,
+        truncated: Cell::new(false),
+    };
+
+    let mut cursor = root.walk();
+    let package = root
+        .children(&mut cursor)
+        .find(|node| node.kind() == "package_header")
+        .and_then(|header| extractor.first_child_of_kind(header, "identifier"))
+        .map(|identifier| extractor.text(identifier).to_string());
+
+    let mut ancestors = Vec::new();
+    let mut found: Option<(Declaration, Vec<String>)> = None;
+    extractor.find_local(root, name, line, false, 0, &mut ancestors, &mut found);
+    found.map(|(declaration, ancestors)| LocalDeclaration {
+        package,
+        ancestors,
+        declaration,
+    })
+}
+
 struct Extractor<'a> {
     source: &'a str,
     truncated: Cell<bool>,
@@ -544,6 +605,86 @@ impl<'a> Extractor<'a> {
 
     fn line_of(&self, node: Node<'_>) -> u32 {
         node.start_position().row as u32 + 1
+    }
+
+    /// The declaration name of a declaration node, read cheaply without building the whole
+    /// [`Declaration`], so [`Self::find_local`] can maintain the enclosing chain and test each name
+    /// against its target before paying for a full extraction. An extension receiver is dropped: a
+    /// qualified chain names the enclosing declaration, not how it is called.
+    fn declaration_name(&self, node: Node<'_>) -> Option<String> {
+        match node.kind() {
+            "class_declaration" | "object_declaration" | "companion_object" | "type_alias" => self
+                .first_child_of_kind(node, "type_identifier")
+                .map(|name| self.text(name).to_string()),
+            "function_declaration" | "enum_entry" => self
+                .first_child_of_kind(node, "simple_identifier")
+                .map(|name| self.text(name).to_string()),
+            "property_declaration" => self
+                .first_child_of_kind(node, "variable_declaration")
+                .and_then(|variable| self.first_child_of_kind(variable, "simple_identifier"))
+                .map(|name| self.text(name).to_string()),
+            "secondary_constructor" => Some("constructor".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Walks every node under `node`, tracking the enclosing declaration names and whether the walk
+    /// has entered a body that holds local declarations. Records the first declaration named `name`
+    /// that is inside such a body, preferring an exact line match and falling back to the first
+    /// same-named one when the engine and the parser disagree on the line by a hair. Returns `true`
+    /// once an exact match is stored, so the search stops at the first exact hit.
+    #[allow(clippy::too_many_arguments)]
+    fn find_local<'t>(
+        &self,
+        node: Node<'t>,
+        name: &str,
+        line: u32,
+        in_local_scope: bool,
+        depth: usize,
+        ancestors: &mut Vec<String>,
+        best: &mut Option<(Declaration, Vec<String>)>,
+    ) -> bool {
+        if depth >= MAX_LOCAL_SCAN_DEPTH {
+            return false;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor).collect::<Vec<_>>() {
+            let child_name = self.declaration_name(child);
+            let Some(declaration_name) = child_name else {
+                if self.find_local(
+                    child,
+                    name,
+                    line,
+                    in_local_scope,
+                    depth + 1,
+                    ancestors,
+                    best,
+                ) {
+                    return true;
+                }
+                continue;
+            };
+
+            if in_local_scope && declaration_name == name {
+                if let Some(declaration) = self.declaration(child, 0) {
+                    if declaration.line == line {
+                        *best = Some((declaration, ancestors.clone()));
+                        return true;
+                    }
+                    best.get_or_insert((declaration, ancestors.clone()));
+                }
+            }
+
+            let entered_local = in_local_scope || !holds_members(child.kind());
+            ancestors.push(declaration_name);
+            let found =
+                self.find_local(child, name, line, entered_local, depth + 1, ancestors, best);
+            ancestors.pop();
+            if found {
+                return true;
+            }
+        }
+        false
     }
 }
 

@@ -35,6 +35,11 @@ pub(crate) struct ResolvedSymbol {
     pub(crate) line: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) signature: String,
+    /// True for a declaration that lives inside a function or property body, which the file
+    /// skeleton drops. Rendered as a `(local)` marker and, being defaulted-false and skipped when
+    /// false, absent from the JSON of every top-level or member declaration.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) local: bool,
 }
 
 impl ResolvedSymbol {
@@ -251,6 +256,7 @@ fn resolved_from_match(found: SymbolMatch) -> ResolvedSymbol {
         file: found.path,
         line: found.line,
         signature: found.signature,
+        local: false,
     }
 }
 
@@ -426,6 +432,7 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
         file: display.clone(),
         line: candidate.line,
         signature: String::new(),
+        local: false,
     };
     let Ok(source) = std::fs::read_to_string(&candidate.file) else {
         return bare();
@@ -444,9 +451,34 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
             signature: signature_of(&display, found.declaration),
             file: display,
             line: candidate.line,
+            local: false,
         },
-        None => bare(),
+        None => local_declaration(&display, &source, candidate).unwrap_or_else(bare),
     }
+}
+
+/// Enriches a location the file skeleton has no declaration for by looking inside function and
+/// property bodies, which the skeleton drops. A hit qualifies the name through its enclosing
+/// declarations and marks it local, so a function-local class carries its kind, package and chain
+/// rather than the bare name the engine gave. A miss returns `None` so the caller stays bare.
+fn local_declaration(
+    display: &str,
+    source: &str,
+    candidate: &SymbolCandidate,
+) -> Option<ResolvedSymbol> {
+    let local = ktsense_syntax::locate_local(source, &candidate.name, candidate.line)?;
+    Some(ResolvedSymbol {
+        fqn: fqn(
+            local.package.as_deref(),
+            &local.ancestors,
+            &local.declaration.name,
+        ),
+        kind: kind_label(local.declaration.kind).to_string(),
+        signature: signature_of(display, &local.declaration),
+        file: display.to_string(),
+        line: candidate.line,
+        local: true,
+    })
 }
 
 /// A declaration found in a skeleton together with the names of the containers enclosing it, so a
@@ -570,9 +602,14 @@ fn rows(resolved: &[ResolvedSymbol]) -> Vec<String> {
     resolved
         .iter()
         .map(|symbol| {
+            let kind = if symbol.local {
+                format!("{} (local)", symbol.kind)
+            } else {
+                symbol.kind.clone()
+            };
             format!(
                 "{}  {}  {}:{}  {}",
-                symbol.fqn, symbol.kind, symbol.file, symbol.line, symbol.signature
+                symbol.fqn, kind, symbol.file, symbol.line, symbol.signature
             )
         })
         .collect()
@@ -796,5 +833,53 @@ mod tests {
     fn a_name_matching_nothing_exits_one() {
         let (code, text) = present(Vec::new(), None, None, None);
         insta::assert_snapshot!("no_match", format!("exit {code}\n{text}"));
+    }
+
+    #[test]
+    fn a_function_local_declaration_is_qualified_marked_local_and_present_in_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("Local.kt");
+        std::fs::write(
+            &file,
+            "package demo\n\nclass Outer {\n    fun make() {\n        class Local(val id: Int)\n    }\n}\n",
+        )
+        .expect("write fixture");
+        let candidate = SymbolCandidate {
+            name: "Local".to_string(),
+            file: file.to_string_lossy().into_owned(),
+            line: 5,
+            col: 15,
+        };
+
+        let markdown = present_symbols(
+            dir.path(),
+            "Local",
+            vec![candidate.clone()],
+            None,
+            None,
+            None,
+            Format::Md,
+        )
+        .expect("markdown");
+        let json = present_symbols(
+            dir.path(),
+            "Local",
+            vec![candidate],
+            None,
+            None,
+            None,
+            Format::Json,
+        )
+        .expect("json");
+
+        insta::assert_snapshot!(
+            "function_local_declaration",
+            format!(
+                "exit {}\n{}\n---json---\n{}",
+                markdown.exit.code(),
+                markdown.text,
+                json.text
+            )
+        );
     }
 }
