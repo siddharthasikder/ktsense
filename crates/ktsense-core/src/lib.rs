@@ -10,6 +10,7 @@
 pub mod budget;
 pub mod context;
 pub mod imports;
+pub mod pick;
 pub mod rank;
 pub mod references;
 pub mod render;
@@ -23,6 +24,7 @@ pub mod trace;
 pub use budget::{emit_within_budget, BudgetedEmission};
 pub use context::{build_context, ContextInput, ContextSection, SourceSection, SymbolContext};
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
+pub use pick::{match_pick, shortest_unique_suffix, PickMatch};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
     group_references, is_test_source, EnclosingDeclaration, GroupingOptions, Location, Reference,

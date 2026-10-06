@@ -279,7 +279,7 @@ fn an_ambiguous_name_exits_three_and_a_pick_narrows_it_to_one_bundle() {
     );
 
     let hint =
-        "ambiguous: 3 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save";
+        "ambiguous: 3 declarations named save; rerun with --pick InMemoryOrderRepository.save";
     let observed = (
         ambiguous.code,
         ambiguous.stderr.trim().to_string(),

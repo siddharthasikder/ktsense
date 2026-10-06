@@ -73,7 +73,8 @@ did not check beforehand.
 
 An ambiguous name is an answer, not a failure. Ask `find_kotlin_symbol` for `save` in a repository
 with three of them and you get all three, each with its fully qualified name, kind, file and line.
-Choose one and pass its fully qualified name back as `pick`, on either `find_kotlin_symbol` or
+Choose one and pass its fully qualified name, or a dot-boundary suffix that names it alone such as
+`InMemoryOrderRepository.save`, back as `pick`, on either `find_kotlin_symbol` or
 `trace_kotlin_symbol`, to get the single declaration. Do not retry the bare name hoping for a
 different outcome.
 

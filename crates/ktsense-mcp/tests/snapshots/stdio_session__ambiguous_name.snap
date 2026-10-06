@@ -37,7 +37,7 @@ shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOr
 shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
 
-ambiguous: 2 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save
+ambiguous: 2 declarations named save; rerun with --pick InMemoryOrderRepository.save
 
 === explain_kotlin_symbol ===
 isError: false
@@ -72,7 +72,7 @@ shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOr
 shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
 
-ambiguous: 2 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save
+ambiguous: 2 declarations named save; rerun with --pick InMemoryOrderRepository.save
 
 === find_kotlin_symbol ===
 isError: false

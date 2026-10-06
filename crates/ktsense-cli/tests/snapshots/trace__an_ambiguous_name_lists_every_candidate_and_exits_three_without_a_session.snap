@@ -3,7 +3,7 @@ source: crates/ktsense-cli/tests/trace.rs
 expression: record(&run)
 ---
 exit 3
-stderr ambiguous: 3 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save
+stderr ambiguous: 3 declarations named save; rerun with --pick InMemoryOrderRepository.save
 ---
 ## Ambiguous: save (3 candidates)
 
@@ -13,4 +13,4 @@ shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepos
 shop.order.OrderRepository.save  fun  core/src/main/kotlin/shop/order/OrderRepository.kt:4  fun save(order: Order): OrderId
 ```
 
-ambiguous: 3 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save
+ambiguous: 3 declarations named save; rerun with --pick InMemoryOrderRepository.save

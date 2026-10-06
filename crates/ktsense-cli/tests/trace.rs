@@ -345,6 +345,30 @@ fn a_pick_narrows_an_ambiguous_name_to_one_declaration() {
     );
 }
 
+/// A unique dot-boundary suffix picks the same declaration a full FQN would, so an agent need not
+/// copy the whole package path back from the candidate list. `OrderRepository.save` names the
+/// interface method alone, because the other two carry it only inside a longer identifier.
+#[test]
+fn a_unique_suffix_pick_narrows_an_ambiguous_name_like_the_full_fqn() {
+    let run = trace(
+        &["save", "--pick", "OrderRepository.save"],
+        &every_save(),
+        &session(completed_index(), Vec::new()),
+    );
+
+    let observed = (
+        run.code,
+        run.stdout.contains("## Callers (3)"),
+        run.stdout.contains("index: complete"),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, true),
+        "stdout was: {}",
+        run.stdout
+    );
+}
+
 /// The index finishes only after the 150 ms cap: by default the answer is taken at the cap and
 /// marked partial; `--wait-index` removes the cap and the same session ends complete.
 #[test]

@@ -17,8 +17,8 @@
 use std::path::Path;
 
 use ktsense_core::{
-    contained_declarations, render_skeleton, DeclKind, Declaration, FileSkeleton, RenderOptions,
-    SymbolMatch,
+    contained_declarations, match_pick, render_skeleton, shortest_unique_suffix, DeclKind,
+    Declaration, FileSkeleton, PickMatch, RenderOptions, SymbolMatch,
 };
 use ktsense_lsp::SymbolCandidate;
 use serde::Serialize;
@@ -97,7 +97,7 @@ pub(crate) fn present_symbols(
         1 => render(query, &resolved, None, Exit::Success, format),
         _ => {
             let total = resolved.len();
-            let hint = ambiguity_hint(query, total, &resolved[0].fqn);
+            let hint = ambiguity_hint(query, &resolved);
             let shown = limit.unwrap_or(total).min(total);
             let hidden = total - shown;
             resolved.truncate(shown);
@@ -131,11 +131,21 @@ pub(crate) fn select(
 ) -> Result<Selection, CommandError> {
     let mut enriched: Vec<(SymbolCandidate, ResolvedSymbol)> = enrich_sorted(root, candidates);
     if let Some(pick) = pick {
-        return enriched
-            .into_iter()
-            .find(|(_, resolved)| resolved.fqn == pick)
-            .map(|(candidate, resolved)| Selection::One(candidate, resolved))
-            .ok_or_else(|| CommandError::pick_missed(pick));
+        let decision = match_pick(pick, &fqns_of(&enriched));
+        return match decision {
+            PickMatch::Selected(index) => {
+                let (candidate, resolved) = enriched.swap_remove(index);
+                Ok(Selection::One(candidate, resolved))
+            }
+            PickMatch::Ambiguous(indices) => {
+                let subset: Vec<ResolvedSymbol> = retain_indices(enriched, &indices)
+                    .into_iter()
+                    .map(|(_, resolved)| resolved)
+                    .collect();
+                render_ambiguous_selection(query, &subset, format).map(Selection::Ambiguous)
+            }
+            PickMatch::Missed => Err(CommandError::pick_missed(pick)),
+        };
     }
     match enriched.len() {
         0 => Err(CommandError::no_symbol(query)),
@@ -157,10 +167,41 @@ fn pick_one(
     pick: &str,
     format: Format,
 ) -> Result<SymbolsOutcome, CommandError> {
-    match resolved.into_iter().find(|symbol| symbol.fqn == pick) {
-        Some(chosen) => render(query, &[chosen], None, Exit::Success, format),
-        None => Err(CommandError::pick_missed(pick)),
+    let fqns: Vec<&str> = resolved.iter().map(|symbol| symbol.fqn.as_str()).collect();
+    match match_pick(pick, &fqns) {
+        PickMatch::Selected(index) => {
+            let chosen = resolved
+                .into_iter()
+                .nth(index)
+                .expect("index within candidates");
+            render(query, &[chosen], None, Exit::Success, format)
+        }
+        PickMatch::Ambiguous(indices) => {
+            let subset = retain_indices(resolved, &indices);
+            render_ambiguous_selection(query, &subset, format)
+        }
+        PickMatch::Missed => Err(CommandError::pick_missed(pick)),
     }
+}
+
+/// The fully-qualified names of enriched candidates, in their enriched order, for matching a
+/// `--pick` value without borrowing the richer candidate values it indexes into.
+fn fqns_of(enriched: &[(SymbolCandidate, ResolvedSymbol)]) -> Vec<&str> {
+    enriched
+        .iter()
+        .map(|(_, resolved)| resolved.fqn.as_str())
+        .collect()
+}
+
+/// Keeps the items at `indices`, in their original order, dropping the rest. The indices come from
+/// [`match_pick`] over the same list, so they are ascending and in range.
+fn retain_indices<T>(items: Vec<T>, indices: &[usize]) -> Vec<T> {
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| indices.contains(index))
+        .map(|(_, item)| item)
+        .collect()
 }
 
 /// The default cap on a `--contains` listing: a partial-name search can match a great many
@@ -320,7 +361,7 @@ fn render_ambiguous_selection(
     resolved: &[ResolvedSymbol],
     format: Format,
 ) -> Result<SymbolsOutcome, CommandError> {
-    let hint = ambiguity_hint(query, resolved.len(), &resolved[0].fqn);
+    let hint = ambiguity_hint(query, resolved);
     let text = match format {
         Format::Md => ambiguous_markdown(query, resolved, &hint),
         Format::Json => symbols_json(resolved)?,
@@ -334,11 +375,15 @@ fn render_ambiguous_selection(
 }
 
 /// The line that tells the caller how to turn an ambiguous name into an answer: how many
-/// declarations carry it and the fully-qualified name of the first after the deterministic sort, so
-/// a `--pick` reproduces without the caller having to read the list.
-fn ambiguity_hint(query: &str, count: usize, first_fqn: &str) -> String {
+/// declarations carry it and the shortest dot-boundary suffix of the first after the deterministic
+/// sort that names it alone, so a `--pick` reproduces without the caller copying a whole package
+/// path from the list.
+fn ambiguity_hint(query: &str, resolved: &[ResolvedSymbol]) -> String {
+    let fqns: Vec<&str> = resolved.iter().map(|symbol| symbol.fqn.as_str()).collect();
+    let suffix = shortest_unique_suffix(&resolved[0].fqn, &fqns);
+    let count = resolved.len();
     neutralize(&format!(
-        "ambiguous: {count} declarations named {query}; rerun with --pick {first_fqn}"
+        "ambiguous: {count} declarations named {query}; rerun with --pick {suffix}"
     ))
     .into_owned()
 }
@@ -644,7 +689,7 @@ mod tests {
                 3,
                 Some("## Symbols: save".to_string()),
                 Some(
-                    "ambiguous: 3 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save"
+                    "ambiguous: 3 declarations named save; rerun with --pick InMemoryOrderRepository.save"
                         .to_string()
                 ),
             )
@@ -676,6 +721,49 @@ mod tests {
     fn a_pick_that_matches_no_candidate_fails() {
         let (code, text) = present(save_candidates(), None, None, Some("shop.nope.save"));
         insta::assert_snapshot!("pick_missed", format!("exit {code}\n{text}"));
+    }
+
+    #[test]
+    fn a_unique_suffix_picks_the_same_declaration_as_the_full_fqn() {
+        let by_suffix = present(
+            save_candidates(),
+            None,
+            None,
+            Some("JdbcOrderRepository.save"),
+        );
+        let by_fqn = present(
+            save_candidates(),
+            None,
+            None,
+            Some("shop.db.JdbcOrderRepository.save"),
+        );
+        assert_eq!(by_suffix, by_fqn);
+    }
+
+    #[test]
+    fn a_shared_suffix_lists_the_matches_under_the_ambiguous_heading_and_exits_three() {
+        let (code, text) = present(save_candidates(), None, None, Some("save"));
+        let observed = (
+            code,
+            text.lines().next().map(str::to_string),
+            text.lines().filter(|line| line.contains("  fun  ")).count(),
+        );
+        assert_eq!(
+            observed,
+            (3, Some("## Ambiguous: save (3 candidates)".to_string()), 3)
+        );
+    }
+
+    #[test]
+    fn a_mid_identifier_suffix_is_not_a_match_and_keeps_the_pick_missed_error() {
+        let (code, text) = present(save_candidates(), None, None, Some("Repository.save"));
+        assert_eq!(
+            (code, text),
+            (
+                1,
+                "ktsense: no candidate has the fully-qualified name Repository.save\n".to_string()
+            )
+        );
     }
 
     #[test]

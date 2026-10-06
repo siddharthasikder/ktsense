@@ -252,7 +252,7 @@ reviewer reads it once.
 
 `find_kotlin_symbol`, `trace_kotlin_symbol` and `explain_kotlin_symbol` share one resolver, so they
 share one ambiguity contract: a name that matches several declarations comes back as the candidate
-list under exit 3, and `pick` with a fully-qualified name chooses one. Exit 3 rather than 2 because
+list under exit 3, and `pick` with a fully-qualified name or a unique dot-boundary suffix of one chooses one. Exit 3 rather than 2 because
 clap owns 2 for a malformed invocation, and an agent has to be able to tell "I called this wrong",
 which needs the call fixed, from "the name was ambiguous", which needs a candidate chosen.
 

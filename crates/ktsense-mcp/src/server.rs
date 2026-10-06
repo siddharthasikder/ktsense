@@ -208,7 +208,8 @@ pub struct SymbolParams {
     pub kind: Option<String>,
     /// Show at most this many rows when the name is ambiguous.
     pub limit: Option<usize>,
-    /// Select the single candidate with this fully-qualified name.
+    /// Select one candidate by full FQN or a unique dot-boundary suffix of one, such as
+    /// InventoryItemsRepository.createProduct.
     pub pick: Option<String>,
     /// List declarations whose simple name contains the query, from the syntax index, instead of
     /// matching the name exactly.
@@ -222,7 +223,8 @@ pub struct SymbolParams {
 pub struct TraceParams {
     /// Declaration name to trace.
     pub symbol: String,
-    /// Select the single candidate with this fully-qualified name when the name is ambiguous.
+    /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is
+    /// ambiguous.
     pub pick: Option<String>,
     /// How many levels of callers to follow, 1 to 5; 1 is the declarations that refer to it.
     pub depth: Option<u8>,
@@ -260,7 +262,8 @@ pub struct CheckParams {
 pub struct ContextParams {
     /// Declaration name to explain.
     pub symbol: String,
-    /// Select the single candidate with this fully-qualified name when the name is ambiguous.
+    /// Select one candidate by full FQN or a unique dot-boundary suffix of one when the name is
+    /// ambiguous.
     pub pick: Option<String>,
     /// Token budget for the bundle; defaults to 2000.
     pub budget: Option<usize>,

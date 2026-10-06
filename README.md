@@ -410,10 +410,11 @@ io.ktor.server.websocket.WebSockets.Plugin  object  .../WebSockets.kt:111  compa
 ...
 ```
 
-ambiguous: 9 declarations named Plugin; rerun with --pick io.ktor.client.plugins.DefaultRequest.Plugin
+ambiguous: 9 declarations named Plugin; rerun with --pick DefaultRequest.Plugin
 ````
 
-Retry with `--pick <fully.qualified.name>`.
+Retry with `--pick <fully.qualified.name>`, or the shortest dot-boundary suffix that names one
+candidate, such as `--pick DefaultRequest.Plugin`.
 
 **Output carries its own precision level.** A `trace` says how complete the index was when it
 answered, and says where its callers came from:

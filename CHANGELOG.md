@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `--pick` on `symbols`, `trace` and `context`, and the `pick` argument of the `find_kotlin_symbol`, `trace_kotlin_symbol` and `explain_kotlin_symbol` MCP tools, now accepts a dot-boundary suffix of a fully-qualified name as well as a full FQN, such as `InMemoryOrderRepository.save` for `shop.db.InMemoryOrderRepository.save`. An exact FQN wins; a suffix matching one candidate selects it; a suffix matching several lists only those and exits 3; a suffix matching none keeps the pick-missed error. The ambiguity hint now names the shortest unique dot-boundary suffix of its example candidate rather than the whole FQN, so a rerun copies less (KT-95).
+
 ## 0.1.0
 
 First stable release. It follows the `v0.0.1-rc.2` prerelease.

@@ -204,8 +204,9 @@ answered. It is a real answer about what was indexed, not a complete one. Ask ag
 had time, or pass `--wait-index` when driving `trace` from the CLI.
 
 An `exit 3` from `trace` or `explain_kotlin_symbol` means the name was ambiguous, not that the call
-failed: the candidate list ends with a `rerun with --pick <FQN>` hint, also written to stderr, naming
-the first candidate to pick and retry with.
+failed: the candidate list ends with a `rerun with --pick <suffix>` hint, also written to stderr,
+naming the shortest dot-boundary suffix that picks the first candidate. `--pick` also takes a full
+FQN.
 
 An error from `check_kotlin_syntax` or `find_kotlin_symbol` where the tool list itself worked is a
 missing or unusable engine rather than a broken client: the client found `ktsense` and `ktsense` could
