@@ -578,9 +578,12 @@ fn omitted_sites_line(report: &TraceReport) -> Option<String> {
         reasons.push(format!("{by_limit} by the per-file limit"));
     }
     if text_mentions > 0 {
-        reasons.push(format!(
-            "{text_mentions} text mentions (comments, KDoc, strings)"
-        ));
+        let noun = if text_mentions == 1 {
+            "text mention"
+        } else {
+            "text mentions"
+        };
+        reasons.push(format!("{text_mentions} {noun} (comments, KDoc, strings)"));
     }
     if other_declarations > 0 {
         let noun = if other_declarations == 1 {
@@ -1559,6 +1562,44 @@ mod tests {
             ),
         );
         assert_eq!(observed, (true, true), "rendered was:\n{rendered}");
+    }
+
+    /// A single left-out site reads in the singular, as the Mockito reflection filter
+    /// `"recordQualified"` did in a real trace: `1 text mention`, not `1 text mentions`.
+    #[test]
+    fn one_text_mention_reads_in_the_singular() {
+        use crate::references::{GroupingOptions, Location, SiteKind};
+        use crate::trace::{build_trace, Definition, IndexCompleteness, TraceInput};
+
+        let skeleton = FileSkeleton::new("app/Repo.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::class("Repo", 3).containing(vec![
+                Declaration::function("save", 4),
+                Declaration::function("run", 6),
+            ])]);
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "app.Repo.save".to_string(),
+                path: "app/Repo.kt".to_string(),
+                line: 4,
+                signature: "fun save()".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("app/Repo.kt", 4),
+            implementation_sites: vec![],
+            reference_sites: vec![
+                Location::new("app/Repo.kt", 4),
+                Location::new("app/Repo.kt", 7).with_kind(SiteKind::String),
+            ],
+            skeletons: &[skeleton],
+            options: GroupingOptions::default(),
+        });
+
+        let rendered = render_trace_markdown(&report);
+        assert!(
+            rendered.contains("1 site omitted: 1 text mention (comments, KDoc, strings).\n"),
+            "rendered was:\n{rendered}"
+        );
     }
 
     /// KT-91: production callers are listed under `## Callers`, test callers under `## Test callers`,
