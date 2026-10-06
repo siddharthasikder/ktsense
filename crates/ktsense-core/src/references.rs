@@ -218,6 +218,41 @@ pub(crate) fn declaration_starting_at(skeleton: &FileSkeleton, line: u32) -> Opt
         .find(|declaration| declaration.line == line)
 }
 
+/// The 1-based line span of a declaration: its start line and the last line it covers. `end` is
+/// `None` when the declaration runs to the end of the file, having neither a next sibling nor a
+/// bounding parent, which the caller resolves against the file's own length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeclarationSpan {
+    pub start: u32,
+    pub end: Option<u32>,
+}
+
+/// The span of the innermost declaration that starts on `line`, or `None` when none does. The end
+/// is recovered by the same next-sibling logic reference enclosure uses, so a declaration's body
+/// and the enclosure of a reference inside it agree on where it ends.
+pub(crate) fn declaration_span_at(skeleton: &FileSkeleton, line: u32) -> Option<DeclarationSpan> {
+    span_at(&skeleton.declarations, line, None)
+}
+
+fn span_at(
+    siblings: &[Declaration],
+    line: u32,
+    parent_end: Option<u32>,
+) -> Option<DeclarationSpan> {
+    for (index, declaration) in siblings.iter().enumerate() {
+        let end = span_end(siblings, index, parent_end);
+        if declaration.line <= line && end.is_none_or(|last| line <= last) {
+            if let Some(inner) = span_at(&declaration.children, line, end) {
+                return Some(inner);
+            }
+            if declaration.line == line {
+                return Some(DeclarationSpan { start: line, end });
+            }
+        }
+    }
+    None
+}
+
 /// The declarations from outermost to innermost whose spans contain `line`, empty when none do.
 fn enclosing_chain(
     siblings: &[Declaration],

@@ -6,6 +6,7 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Fixed
 
+- A "no declaration named X" answer now says it searched this workspace only, not library dependencies (KT-87).
 - `trace` and `context` no longer list a class as its own implementor (KT-77).
 - A class that Kotlin makes final (not `open`, `abstract`, `sealed`, `enum` or `expect`) now reports no implementors. Before, same-named classes such as `FooTest` could be listed, because kmp-lsp 0.26.0 answers implementation requests on a final class with name matches. A partially parsed file keeps the engine's answer (KT-78).
 - `symbols` candidates, including the ambiguous-name listing shared by `trace` and `context`, are printed in a stable order: qualified name, path, line (KT-81).
@@ -15,6 +16,7 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Added
 
+- `context` includes a `## Source` section with the declaration's own body, right after its signature. A body too long for the budget is cut on a line boundary with the omitted range to read (KT-86).
 - On an ambiguous name, `trace` and `context` title the block `## Ambiguous: <name> (N candidates)` and print a `rerun with --pick <FQN>` hint on stdout and stderr, still exiting 3 (KT-85).
 - `status` reports whether `rg` is on `PATH` and warns when it is missing, because engine `find` and references return nothing without it (KT-80).
 - `outline` states how many private or internal declarations it hid and that `--private` includes them (KT-79).

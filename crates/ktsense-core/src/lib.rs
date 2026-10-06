@@ -20,7 +20,7 @@ pub mod text;
 pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
-pub use context::{build_context, ContextInput, ContextSection, SymbolContext};
+pub use context::{build_context, ContextInput, ContextSection, SourceSection, SymbolContext};
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{

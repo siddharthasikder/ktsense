@@ -628,6 +628,19 @@ pub(crate) fn skeleton_at(root: &Path, path: &str) -> Option<FileSkeleton> {
     ktsense_syntax::extract(path.to_string(), &source).ok()
 }
 
+/// The lines of one file named as the answer names it, or `None` when it cannot be read. Used by
+/// `context` to hand a declaration's own body to `ktsense-core` as plain data, keeping the core's
+/// span-and-budget logic free of the filesystem.
+pub(crate) fn source_lines_at(root: &Path, path: &str) -> Option<Vec<String>> {
+    let absolute = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+    let source = fs::read_to_string(&absolute).ok()?;
+    Some(source.lines().map(str::to_string).collect())
+}
+
 fn present(report: &TraceReport, format: Format) -> Result<String, CommandError> {
     match format {
         Format::Md => Ok(render_trace_markdown(report)),

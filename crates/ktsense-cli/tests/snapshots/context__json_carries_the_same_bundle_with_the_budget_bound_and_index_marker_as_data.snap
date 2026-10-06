@@ -20,6 +20,15 @@ stderr empty
     ],
     "omitted": 0
   },
+  "source": {
+    "lines": [
+      "    fun save(order: Order): OrderId",
+      ""
+    ],
+    "start_line": 4,
+    "end_line": 5,
+    "omitted_lines": 0
+  },
   "file_outline": {
     "items": [
       "interface OrderRepository {\n    fun save(order: Order): OrderId\n    fun findById(id: OrderId): Order?\n}"
@@ -72,5 +81,5 @@ stderr empty
     "omitted": 0
   },
   "budget": 2000,
-  "token_upper_bound": 178
+  "token_upper_bound": 188
 }

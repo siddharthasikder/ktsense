@@ -337,6 +337,8 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     ));
     append_context_blocks(&mut out, &context.declaration, "signature");
 
+    append_source(&mut out, context);
+
     out.push_str(&format!(
         "\n## File outline: {}\n",
         neutralize(&context.definition.path)
@@ -355,10 +357,38 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     out.push_str(
         "\nCallers are the declarations enclosing each reference site; the engine reports no call \
          hierarchy. Resolution is syntactic, not type-checked. The content bound covers the \
-         declaration, outline, caller and implementor lines the budget gated, not the headings \
-         around them.\n",
+         declaration, its source, the outline, and the caller and implementor lines the budget \
+         gated, not the headings around them.\n",
     );
     out
+}
+
+/// The queried declaration's own body as a fenced Kotlin block, placed between its signature and the
+/// file outline so the reader sees the code and not only its shape. Its lines are already
+/// neutralized and the fence is sized to them, so a body carrying a fence terminator sits inside the
+/// block as text rather than closing it. A budget that cut the body short says how many lines it
+/// dropped and the absolute range to read them from, and nothing is printed at all when the caller
+/// supplied no source.
+fn append_source(out: &mut String, context: &SymbolContext) {
+    let Some(source) = &context.source else {
+        return;
+    };
+    out.push_str("\n## Source\n");
+    if !source.lines.is_empty() {
+        let body = source.lines.join("\n");
+        let fence = fence_for(&body);
+        out.push_str(&format!("\n{fence}kotlin\n{body}\n{fence}\n"));
+    }
+    if source.omitted_lines > 0 {
+        let omitted_start = source.start_line + source.lines.len() as u32;
+        out.push_str(&format!(
+            "\n{} more lines omitted; read {}:{}-{}\n",
+            source.omitted_lines,
+            neutralize(&context.definition.path),
+            omitted_start,
+            source.end_line,
+        ));
+    }
 }
 
 /// A fenced Kotlin section, or a line saying why it is empty. `unit` names what was dropped, so

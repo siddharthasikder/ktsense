@@ -55,11 +55,13 @@ pub(crate) fn context(request: ContextRequest<'_>) -> Result<CommandOutcome, Com
     };
 
     let file = trace::skeleton_at(request.root, &report.definition.path);
+    let source = trace::source_lines_at(request.root, &report.definition.path);
     let bundle = build_context(
         ContextInput {
             definition: report.definition.clone(),
             index: report.index,
             file: file.as_ref(),
+            source: source.as_deref(),
             callers: report.direct_callers(),
             implementors: &report.implementors,
             budget: request.budget,

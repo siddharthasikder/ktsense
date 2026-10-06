@@ -1,10 +1,11 @@
 //! Assembles a budgeted context bundle for one symbol, purely.
 //!
 //! The bundle answers "tell me what I need to know about this symbol in at most N tokens". The
-//! priority order is fixed and stated once, here: the declaration itself, then the outline of the
-//! file it lives in, then its callers, then its implementors. [`crate::emit_within_budget`] fills a
-//! prefix of that order, so a budget too small for the outline spends nothing on callers either,
-//! and the whole bundle is gated by the one budget mechanism the crate already has.
+//! priority order is fixed and stated once, here: the declaration itself, then its own source body,
+//! then the outline of the file it lives in, then its callers, then its implementors.
+//! [`crate::emit_within_budget`] fills a prefix of that order, so a budget too small for the outline
+//! spends nothing on callers either, and the whole bundle is gated by the one budget mechanism the
+//! crate already has.
 //!
 //! Three rules follow from that, stated so they can be argued with:
 //!
@@ -24,8 +25,10 @@
 use serde::Serialize;
 
 use crate::budget::emit_within_budget;
+use crate::references::declaration_span_at;
 use crate::render::{related_line, render_skeleton, RenderOptions};
 use crate::skeleton::{Declaration, FileSkeleton};
+use crate::text::neutralize;
 use crate::trace::{Definition, IndexCompleteness, RelatedDeclaration};
 use crate::TokenEstimator;
 
@@ -43,6 +46,18 @@ impl<T> ContextSection<T> {
     }
 }
 
+/// The queried declaration's own source lines that the budget afforded, the absolute 1-based range
+/// they were sliced from, and how many lines the budget dropped. The lines are neutralized, so the
+/// budget measures and the renderer emits the same safe text. `omitted_lines` are the lines from
+/// `start_line + lines.len()` through `end_line` that did not fit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceSection {
+    pub lines: Vec<String>,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub omitted_lines: usize,
+}
+
 /// A budgeted context bundle for one symbol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolContext {
@@ -54,6 +69,9 @@ pub struct SymbolContext {
     /// The traced declaration's own signature, as one line, or nothing when the budget or the
     /// resolver left it without one.
     pub declaration: ContextSection<String>,
+    /// The traced declaration's own body, from its declaration line through the end of its span,
+    /// absent when the caller passed no source or the span could not be located.
+    pub source: Option<SourceSection>,
     /// The outline of the declaration's file, one balanced block per top-level declaration.
     pub file_outline: ContextSection<String>,
     pub callers: ContextSection<RelatedDeclaration>,
@@ -68,6 +86,10 @@ impl SymbolContext {
     /// Units the budget dropped across every section.
     pub fn omitted(&self) -> usize {
         self.declaration.omitted
+            + self
+                .source
+                .as_ref()
+                .map_or(0, |source| source.omitted_lines)
             + self.file_outline.omitted
             + self.callers.omitted
             + self.implementors.omitted
@@ -80,6 +102,10 @@ pub struct ContextInput<'a> {
     pub index: IndexCompleteness,
     /// Skeleton of the file the declaration lives in, absent when it could not be read or parsed.
     pub file: Option<&'a FileSkeleton>,
+    /// The lines of the file the declaration lives in, 1-based (`source[0]` is line 1), from which
+    /// the declaration's own body is sliced. The caller reads the file; core never does. Absent
+    /// when it could not be read.
+    pub source: Option<&'a [String]>,
     pub callers: &'a [RelatedDeclaration],
     pub implementors: &'a [RelatedDeclaration],
     pub budget: usize,
@@ -87,16 +113,25 @@ pub struct ContextInput<'a> {
 
 /// Builds the bundle, emitting as much of the priority order as the budget affords.
 pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) -> SymbolContext {
-    let offered = units_in_priority_order(&input);
+    let body = source_body(&input);
+    let offered = units_in_priority_order(&input, body.as_ref());
     let available = Available::of(&offered);
 
     let emission = emit_within_budget(offered, input.budget, estimator);
     let kept = Kept::of(emission.items);
 
+    let source = body.map(|body| SourceSection {
+        omitted_lines: body.lines.len() - kept.source.len(),
+        lines: kept.source,
+        start_line: body.start_line,
+        end_line: body.end_line,
+    });
+
     SymbolContext {
         symbol: input.definition.qualified_name.clone(),
         index: input.index,
         declaration: section(kept.declaration, available.declaration),
+        source,
         file_outline: section(kept.file_outline, available.file_outline),
         callers: section(kept.callers, available.callers),
         implementors: section(kept.implementors, available.implementors),
@@ -106,9 +141,41 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
     }
 }
 
+/// The queried declaration's body: its neutralized source lines and the absolute range they cover,
+/// or `None` when the caller passed no source, the file did not parse, or no declaration starts on
+/// the definition line. The end of an unbounded span (a declaration running to the end of the file)
+/// is resolved against the source length here, the one place both the span and the file's lines are
+/// in hand. Neutralizing here keeps the budget's measure and the renderer's output the same text.
+struct SourceBody {
+    lines: Vec<String>,
+    start_line: u32,
+    end_line: u32,
+}
+
+fn source_body(input: &ContextInput<'_>) -> Option<SourceBody> {
+    let source = input.source?;
+    let file = input.file?;
+    let span = declaration_span_at(file, input.definition.line)?;
+    let total = source.len() as u32;
+    let end_line = span.end.unwrap_or(total).min(total);
+    if span.start == 0 || span.start > end_line {
+        return None;
+    }
+    let lines = source[(span.start - 1) as usize..end_line as usize]
+        .iter()
+        .map(|line| neutralize(line).into_owned())
+        .collect();
+    Some(SourceBody {
+        lines,
+        start_line: span.start,
+        end_line,
+    })
+}
+
 /// What a unit contributes once it has survived the budget. Variant order is the priority order.
 enum Payload {
     Declaration(String),
+    SourceLine(String),
     FileOutline(String),
     Caller(RelatedDeclaration),
     Implementor(RelatedDeclaration),
@@ -127,13 +194,19 @@ impl AsRef<str> for Unit {
     }
 }
 
-fn units_in_priority_order(input: &ContextInput<'_>) -> Vec<Unit> {
+fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>) -> Vec<Unit> {
     let mut units = Vec::new();
     if !input.definition.signature.is_empty() {
         units.push(Unit {
             text: input.definition.signature.clone(),
             payload: Payload::Declaration(input.definition.signature.clone()),
         });
+    }
+    if let Some(body) = source {
+        units.extend(body.lines.iter().map(|line| Unit {
+            text: line.clone(),
+            payload: Payload::SourceLine(line.clone()),
+        }));
     }
     if let Some(file) = input.file {
         units.extend(outline_blocks(file).into_iter().map(|block| Unit {
@@ -178,6 +251,7 @@ fn outline_block(file: &FileSkeleton, declaration: &Declaration) -> Option<Strin
 /// How many units each section offered, counted before the budget saw any of them.
 struct Available {
     declaration: usize,
+    source: usize,
     file_outline: usize,
     callers: usize,
     implementors: usize,
@@ -187,6 +261,7 @@ impl Available {
     fn of(units: &[Unit]) -> Self {
         let mut counts = Self {
             declaration: 0,
+            source: 0,
             file_outline: 0,
             callers: 0,
             implementors: 0,
@@ -194,6 +269,7 @@ impl Available {
         for unit in units {
             match unit.payload {
                 Payload::Declaration(_) => counts.declaration += 1,
+                Payload::SourceLine(_) => counts.source += 1,
                 Payload::FileOutline(_) => counts.file_outline += 1,
                 Payload::Caller(_) => counts.callers += 1,
                 Payload::Implementor(_) => counts.implementors += 1,
@@ -206,6 +282,7 @@ impl Available {
 /// The surviving units regrouped into their sections, in emission order.
 struct Kept {
     declaration: Vec<String>,
+    source: Vec<String>,
     file_outline: Vec<String>,
     callers: Vec<RelatedDeclaration>,
     implementors: Vec<RelatedDeclaration>,
@@ -215,6 +292,7 @@ impl Kept {
     fn of(units: Vec<Unit>) -> Self {
         let mut kept = Self {
             declaration: Vec::new(),
+            source: Vec::new(),
             file_outline: Vec::new(),
             callers: Vec::new(),
             implementors: Vec::new(),
@@ -222,6 +300,7 @@ impl Kept {
         for unit in units {
             match unit.payload {
                 Payload::Declaration(signature) => kept.declaration.push(signature),
+                Payload::SourceLine(line) => kept.source.push(line),
                 Payload::FileOutline(block) => kept.file_outline.push(block),
                 Payload::Caller(caller) => kept.callers.push(caller),
                 Payload::Implementor(implementor) => kept.implementors.push(implementor),
@@ -241,6 +320,7 @@ fn section<T>(items: Vec<T>, available: usize) -> ContextSection<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_context_markdown;
     use crate::skeleton::{DeclKind, Parameter};
     use crate::ByteRatioEstimator;
 
@@ -312,6 +392,7 @@ mod tests {
                 definition: definition(),
                 index: IndexCompleteness::Complete,
                 file: Some(&file),
+                source: None,
                 callers: &callers(),
                 implementors: &implementors(),
                 budget,
@@ -426,6 +507,7 @@ mod tests {
                 definition: definition(),
                 index: IndexCompleteness::Partial,
                 file: None,
+                source: None,
                 callers: &callers(),
                 implementors: &implementors(),
                 budget: 10_000,
@@ -460,5 +542,145 @@ mod tests {
                 >= ByteRatioEstimator.estimate(rendered.trim_start_matches("- ")),
         );
         assert_eq!(observed, (true, true));
+    }
+
+    fn greeter() -> (FileSkeleton, Vec<String>) {
+        let file = FileSkeleton::new("app/Greeter.kt")
+            .in_package("app")
+            .with_declarations(vec![
+                Declaration::function("greet", 1).returning("String"),
+                Declaration::function("bye", 4).returning("String"),
+            ]);
+        let source = vec![
+            "fun greet(): String {".to_string(),
+            "    return \"hi\"".to_string(),
+            "}".to_string(),
+            "fun bye(): String = \"bye\"".to_string(),
+        ];
+        (file, source)
+    }
+
+    fn greet_definition() -> Definition {
+        Definition {
+            qualified_name: "app.greet".to_string(),
+            path: "app/Greeter.kt".to_string(),
+            line: 1,
+            signature: "fun greet(): String".to_string(),
+        }
+    }
+
+    /// A body that fits appears in full, and between the declaration signature and the file outline
+    /// in the rendered order: `greet` spans lines 1 through 3 (the next declaration, `bye`, starts
+    /// at 4), so its three lines are the whole body and nothing is dropped.
+    #[test]
+    fn a_body_that_fits_appears_in_full_between_the_declaration_and_the_file_outline() {
+        let (file, source) = greeter();
+        let bundle = build_context(
+            ContextInput {
+                definition: greet_definition(),
+                index: IndexCompleteness::Complete,
+                file: Some(&file),
+                source: Some(&source),
+                callers: &[],
+                implementors: &[],
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+        let ordered = rendered.find("## Declaration") < rendered.find("## Source")
+            && rendered.find("## Source") < rendered.find("## File outline");
+
+        assert_eq!(
+            (bundle.source, bundle.token_upper_bound <= 10_000, ordered),
+            (
+                Some(SourceSection {
+                    lines: vec![
+                        "fun greet(): String {".to_string(),
+                        "    return \"hi\"".to_string(),
+                        "}".to_string(),
+                    ],
+                    start_line: 1,
+                    end_line: 3,
+                    omitted_lines: 0,
+                }),
+                true,
+                true,
+            )
+        );
+    }
+
+    /// A body larger than the budget is cut on a line boundary, keeps the prefix that fits, names
+    /// the omitted range by its absolute lines, and never carries the bundle past the budget. The
+    /// budget is set to the declaration plus exactly three body lines, so the fourth is dropped.
+    #[test]
+    fn a_body_too_large_is_cut_on_a_line_boundary_and_names_the_omitted_range_within_budget() {
+        let file = FileSkeleton::new("app/Big.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::function("big", 1)]);
+        let source: Vec<String> = (0..8).map(|n| format!("    line number {n:02}")).collect();
+        let estimator = ByteRatioEstimator;
+        let budget = estimator.estimate("fun big()") + estimator.estimate(&source[0]) * 3;
+        let bundle = build_context(
+            ContextInput {
+                definition: Definition {
+                    qualified_name: "app.big".to_string(),
+                    path: "app/Big.kt".to_string(),
+                    line: 1,
+                    signature: "fun big()".to_string(),
+                },
+                index: IndexCompleteness::Complete,
+                file: Some(&file),
+                source: Some(&source),
+                callers: &[],
+                implementors: &[],
+                budget,
+            },
+            &estimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+
+        assert_eq!(
+            (
+                bundle.source.clone(),
+                bundle.token_upper_bound <= budget,
+                rendered.contains("5 more lines omitted; read app/Big.kt:4-8"),
+            ),
+            (
+                Some(SourceSection {
+                    lines: source[..3].to_vec(),
+                    start_line: 1,
+                    end_line: 8,
+                    omitted_lines: 5,
+                }),
+                true,
+                true,
+            )
+        );
+    }
+
+    /// With no source supplied the bundle carries no source section and the render shows no Source
+    /// heading, so a caller that could not read the file is not told an empty body is the body.
+    #[test]
+    fn no_source_supplied_renders_no_source_section() {
+        let (file, _) = greeter();
+        let bundle = build_context(
+            ContextInput {
+                definition: greet_definition(),
+                index: IndexCompleteness::Complete,
+                file: Some(&file),
+                source: None,
+                callers: &[],
+                implementors: &[],
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+
+        assert_eq!(
+            (bundle.source, rendered.contains("## Source")),
+            (None, false)
+        );
     }
 }

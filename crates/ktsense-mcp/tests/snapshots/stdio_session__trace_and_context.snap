@@ -120,7 +120,7 @@ structuredContent:
 # Context: shop.order.OrderRepository
 
 index: complete
-Budget 2000 tokens, content bound 113. 0 items omitted for budget.
+Budget 2000 tokens, content bound 143. 0 items omitted for budget.
 
 ## Declaration
 
@@ -128,6 +128,16 @@ core/src/main/kotlin/shop/order/OrderRepository.kt:3
 
 ```kotlin
 interface OrderRepository
+```
+
+## Source
+
+```kotlin
+interface OrderRepository {
+    fun save(order: Order): OrderId
+
+    fun findById(id: OrderId): Order?
+}
 ```
 
 ## File outline: core/src/main/kotlin/shop/order/OrderRepository.kt
@@ -146,7 +156,7 @@ interface OrderRepository {
 - shop.db.InMemoryOrderRepository  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:9
 - shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
 
-Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, outline, caller and implementor lines the budget gated, not the headings around them.
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, its source, the outline, and the caller and implementor lines the budget gated, not the headings around them.
 
 === explain_kotlin_symbol ===
 isError: false
@@ -164,10 +174,6 @@ structuredContent:
     {
       "line": 9,
       "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
-    },
-    {
-      "line": 8,
-      "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
     }
   ],
   "citations_omitted": 0,
@@ -176,8 +182,7 @@ structuredContent:
   "files": [
     "core/src/main/kotlin/shop/order/OrderRepository.kt",
     "app/src/main/kotlin/shop/app/checkout/CheckoutService.kt",
-    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
-    "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt"
+    "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt"
   ],
   "index": "complete",
   "requires": "kmp-lsp and a settled index",
@@ -188,7 +193,7 @@ structuredContent:
 # Context: shop.order.OrderRepository
 
 index: complete
-Budget 120 tokens, content bound 113. 0 items omitted for budget.
+Budget 120 tokens, content bound 118. 1 item omitted for budget.
 
 ## Declaration
 
@@ -196,6 +201,16 @@ core/src/main/kotlin/shop/order/OrderRepository.kt:3
 
 ```kotlin
 interface OrderRepository
+```
+
+## Source
+
+```kotlin
+interface OrderRepository {
+    fun save(order: Order): OrderId
+
+    fun findById(id: OrderId): Order?
+}
 ```
 
 ## File outline: core/src/main/kotlin/shop/order/OrderRepository.kt
@@ -212,9 +227,9 @@ interface OrderRepository {
 
 ## Implementors (2)
 - shop.db.InMemoryOrderRepository  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:9
-- shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
+- ... 1 omitted for budget
 
-Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, outline, caller and implementor lines the budget gated, not the headings around them.
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, its source, the outline, and the caller and implementor lines the budget gated, not the headings around them.
 
 server exit: Some(0)
 server stderr: empty

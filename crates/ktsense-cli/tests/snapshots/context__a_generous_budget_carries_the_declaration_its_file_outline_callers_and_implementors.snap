@@ -8,7 +8,7 @@ stderr empty
 # Context: shop.order.OrderRepository.save
 
 index: complete
-Budget 2000 tokens, content bound 178. 0 items omitted for budget.
+Budget 2000 tokens, content bound 188. 0 items omitted for budget.
 
 ## Declaration
 
@@ -16,6 +16,13 @@ core/src/main/kotlin/shop/order/OrderRepository.kt:4
 
 ```kotlin
 fun save(order: Order): OrderId
+```
+
+## Source
+
+```kotlin
+    fun save(order: Order): OrderId
+
 ```
 
 ## File outline: core/src/main/kotlin/shop/order/OrderRepository.kt
@@ -36,4 +43,4 @@ interface OrderRepository {
 - shop.db.InMemoryOrderRepository.save  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13
 - shop.db.JdbcOrderRepository.save  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:8
 
-Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, outline, caller and implementor lines the budget gated, not the headings around them.
+Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked. The content bound covers the declaration, its source, the outline, and the caller and implementor lines the budget gated, not the headings around them.
