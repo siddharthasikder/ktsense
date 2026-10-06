@@ -480,6 +480,16 @@ fn gather_declarations(
             });
         }
         ancestors.push(declaration.name.clone());
+        for property in declaration.constructor_properties() {
+            out.push(SymbolMatch {
+                qualified_name: fqn(package, ancestors, &property.name),
+                simple_name: property.name.clone(),
+                kind: property.kind,
+                path: path.to_string(),
+                line: property.line,
+                signature: signature_of(path, &property),
+            });
+        }
         gather_declarations(package, path, &declaration.children, ancestors, out);
         ancestors.pop();
     }

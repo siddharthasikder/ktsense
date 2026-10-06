@@ -99,6 +99,55 @@ fn contains_names_an_extension_by_its_simple_name_with_a_receiver_free_qualified
     );
 }
 
+/// Primary-constructor `val`/`var` properties are listed under their class by partial name even
+/// though the model carries them as parameters rather than children, so `--contains customerEmail`
+/// finds `shop.order.Order.customerEmail`. A class-body property was already indexed and is listed
+/// the same way, so `--contains currency` finds `shop.app.checkout.CheckoutConfig.currency` (KT-123).
+#[test]
+fn contains_finds_constructor_and_class_body_properties_under_their_class() {
+    let constructor_property = symbols(&[
+        "symbols",
+        "--contains",
+        "customerEmail",
+        "--root",
+        "fixtures/multi-module",
+    ]);
+    let class_body_property = symbols(&[
+        "symbols",
+        "--contains",
+        "currency",
+        "--root",
+        "fixtures/multi-module",
+    ]);
+    let row = |run: &Run| {
+        run.stdout
+            .lines()
+            .find(|line| line.contains(".kt:"))
+            .map(str::to_string)
+    };
+
+    assert_eq!(
+        (
+            constructor_property.code,
+            row(&constructor_property),
+            class_body_property.code,
+            row(&class_body_property),
+        ),
+        (
+            Some(0),
+            Some(
+                "shop.order.Order.customerEmail  val  core/src/main/kotlin/shop/order/Order.kt:5  val customerEmail: String"
+                    .to_string()
+            ),
+            Some(0),
+            Some(
+                "shop.app.checkout.CheckoutConfig.currency  val  app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt:4  const val currency: String"
+                    .to_string()
+            ),
+        )
+    );
+}
+
 /// A query nothing contains is a real "no such declaration" answer: exit 1, and the KT-87 scope
 /// wording saying only this workspace was searched.
 #[test]

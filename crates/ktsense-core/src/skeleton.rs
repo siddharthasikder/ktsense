@@ -367,6 +367,33 @@ impl Declaration {
             })
             .collect()
     }
+
+    /// The primary-constructor `val`/`var` properties as standalone `val`/`var` declarations, so a
+    /// name search lists them under their class like any other property (KT-123). A primary
+    /// constructor models a property as a parameter carrying a [`ParameterProperty`], not as a
+    /// child, so without this they are invisible to the declaration index that walks `children`.
+    /// Each carries the property's name, declared type and visibility and is positioned on the
+    /// class's own line, since the model records no per-parameter line. Empty for a declaration
+    /// with no such properties, which is every kind but a class with a primary constructor.
+    pub fn constructor_properties(&self) -> Vec<Declaration> {
+        self.parameters
+            .iter()
+            .filter_map(|parameter| {
+                let property = parameter.property.as_ref()?;
+                let kind = if property.mutable {
+                    DeclKind::Var
+                } else {
+                    DeclKind::Val
+                };
+                let mut member = Declaration::new(kind, parameter.name.clone(), self.line)
+                    .with_visibility(property.visibility);
+                if !parameter.type_name.is_empty() {
+                    member.return_type = Some(parameter.type_name.clone());
+                }
+                Some(member)
+            })
+            .collect()
+    }
 }
 
 /// The base keyword of a declaration. Variations such as `data`, `sealed` and `companion` are
@@ -577,6 +604,47 @@ pub struct NamedProperty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constructor_properties_surface_each_primary_constructor_val_var_and_skip_plain_parameters() {
+        let class = Declaration::class("Qualification", 3).with_parameters(vec![
+            Parameter::new("qualificationCustomerId", "CustomerId")
+                .declaring_property(Visibility::Public, false),
+            Parameter::new("attempts", "Int").declaring_property(Visibility::Private, true),
+            Parameter::new("clock", "Clock"),
+        ]);
+
+        let observed: Vec<(DeclKind, String, Visibility, Option<String>)> = class
+            .constructor_properties()
+            .into_iter()
+            .map(|member| {
+                (
+                    member.kind,
+                    member.name,
+                    member.visibility,
+                    member.return_type,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                (
+                    DeclKind::Val,
+                    "qualificationCustomerId".to_string(),
+                    Visibility::Public,
+                    Some("CustomerId".to_string()),
+                ),
+                (
+                    DeclKind::Var,
+                    "attempts".to_string(),
+                    Visibility::Private,
+                    Some("Int".to_string()),
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn declaration_count_includes_nested_declarations() {
