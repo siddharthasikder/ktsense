@@ -856,6 +856,10 @@ fn has_kotlin_extension(file: &Path) -> bool {
     )
 }
 
+fn has_java_extension(file: &Path) -> bool {
+    matches!(file.extension().and_then(|ext| ext.to_str()), Some("java"))
+}
+
 /// Outlines `file`, labelling the skeleton with its path relative to `root`, so the same file gets
 /// the same heading whether the root was given as `.`, a relative path or an absolute one, and
 /// whether a daemon or this process answered.
@@ -1065,6 +1069,24 @@ fn join_components(path: &Path) -> String {
 }
 
 fn collect_kotlin_files(root: &Path) -> Result<Vec<PathBuf>, CommandError> {
+    collect_source_files(root, has_kotlin_extension)
+}
+
+/// Every `.java` file under `root`, walked and pruned exactly as [`collect_kotlin_files`] walks the
+/// Kotlin sources, so a mixed workspace's Java text scan sees the same tree the Kotlin answer does
+/// (KT-112). An all-Kotlin workspace yields an empty list, which leaves `trace` and `context`
+/// byte-identical to before.
+pub(crate) fn collect_java_files(root: &Path) -> Result<Vec<PathBuf>, CommandError> {
+    collect_source_files(root, has_java_extension)
+}
+
+/// Walks `root`, returning every file the `keep` predicate accepts, skipping symlinks and the
+/// ignored directory names, bounded by [`MAX_TRAVERSAL_DEPTH`]. Shared by the Kotlin and Java
+/// collectors so the two walk one tree the same way.
+fn collect_source_files(
+    root: &Path,
+    keep: impl Fn(&Path) -> bool,
+) -> Result<Vec<PathBuf>, CommandError> {
     let mut files = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0usize)];
     while let Some((directory, depth)) = pending.pop() {
@@ -1081,7 +1103,7 @@ fn collect_kotlin_files(root: &Path) -> Result<Vec<PathBuf>, CommandError> {
                 if depth < MAX_TRAVERSAL_DEPTH && !is_ignored_dir(&child) {
                     pending.push((child, depth + 1));
                 }
-            } else if has_kotlin_extension(&child) {
+            } else if keep(&child) {
                 files.push(child);
             }
         }

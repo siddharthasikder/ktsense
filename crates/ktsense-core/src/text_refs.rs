@@ -13,24 +13,36 @@
 //! the only evidence there is when nothing declares the name, but counted apart from code text so a
 //! reader is never misled about what the match is.
 
-use crate::references::{Location, SiteKind};
-use serde::Serialize;
+use crate::references::{fully_qualified_enclosing, Location, SiteKind};
+use crate::skeleton::FileSkeleton;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The precision every text-reference answer carries, so it cannot be read as a resolved usage list.
 pub const TEXT_MATCH_PRECISION: &str = "text match";
 
+/// The precision as the default when deserializing, since it is a fixed constant rather than data a
+/// consumer round-trips.
+fn text_match_precision() -> &'static str {
+    TEXT_MATCH_PRECISION
+}
+
 /// One place a name appears as text: a 1-based line and the syntax node the match falls in. Code and
-/// prose are both listed; the kind is what lets a reader tell a use from a mention.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// prose are both listed; the kind is what lets a reader tell a use from a mention. `enclosing` names
+/// the declaration the site sits inside when the scan attributed it (KT-112's Kotlin text references
+/// reuse the KT-102 attribution); it is absent for a scan that does not attribute, such as the Java
+/// scan and the KT-94 undeclared-name listing, so those serialize exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextReferenceSite {
     pub line: u32,
     #[serde(skip_serializing_if = "SiteKind::is_code")]
     pub kind: SiteKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enclosing: Option<String>,
 }
 
 /// Every text match in one file, ordered by line and capped, with the count the cap dropped.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextReferenceGroup {
     pub path: String,
     pub sites: Vec<TextReferenceSite>,
@@ -40,10 +52,11 @@ pub struct TextReferenceGroup {
 
 /// Where a name the workspace does not declare appears as text: the total, the comment or string
 /// share counted apart, and the sites grouped by file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextReferences {
     pub symbol: String,
     /// Always [`TEXT_MATCH_PRECISION`]: these are text matches, not resolved references.
+    #[serde(skip_deserializing, default = "text_match_precision")]
     pub precision: &'static str,
     /// Every site found, before the per-file cap.
     pub total_sites: usize,
@@ -57,10 +70,47 @@ pub struct TextReferences {
 /// Groups classified text-match sites by file, orders each file's sites by line, caps each file at
 /// `limit`, and counts the comment or string share apart from code. The counts are taken over every
 /// site found, before the cap, so the heading states what exists and each group says what it hid.
+/// Sites carry no enclosing declaration; the Java scan and the KT-94 undeclared-name listing use
+/// this.
 pub fn build_text_references(
     symbol: &str,
     sites: &[Location],
     limit: Option<usize>,
+) -> TextReferences {
+    build_grouped(symbol, sites, limit, |_, _| None)
+}
+
+/// Like [`build_text_references`], but attributes each site to the declaration enclosing it, so a
+/// Kotlin hit against a Java-declared symbol is listed with its enclosing FQN (KT-112), reusing the
+/// KT-102 attribution [`fully_qualified_enclosing`]. A file with no skeleton (one that did not
+/// parse) still lists its sites, unattributed, because a text match does not depend on the file
+/// parsing.
+pub fn build_text_references_attributed(
+    symbol: &str,
+    sites: &[Location],
+    skeletons: &[FileSkeleton],
+    limit: Option<usize>,
+) -> TextReferences {
+    let skeleton_by_path: BTreeMap<&str, &FileSkeleton> = skeletons
+        .iter()
+        .map(|skeleton| (skeleton.path.as_str(), skeleton))
+        .collect();
+    build_grouped(symbol, sites, limit, |path, line| {
+        skeleton_by_path
+            .get(path)
+            .and_then(|skeleton| fully_qualified_enclosing(skeleton, line))
+            .map(|enclosing| enclosing.fqn)
+    })
+}
+
+/// The shared body of the two builders: group by file, order and cap each file, count mentions apart
+/// from code, and attribute each surviving site through `attribute`, which names the enclosing
+/// declaration or returns `None` for an unattributed scan.
+fn build_grouped(
+    symbol: &str,
+    sites: &[Location],
+    limit: Option<usize>,
+    attribute: impl Fn(&str, u32) -> Option<String>,
 ) -> TextReferences {
     let total_sites = sites.len();
     let text_mention_sites = sites
@@ -92,6 +142,7 @@ pub fn build_text_references(
                     .map(|site| TextReferenceSite {
                         line: site.line,
                         kind: site.kind,
+                        enclosing: attribute(path, site.line),
                     })
                     .collect(),
                 omitted,
@@ -143,10 +194,12 @@ mod tests {
                             TextReferenceSite {
                                 line: 3,
                                 kind: SiteKind::Code,
+                                enclosing: None,
                             },
                             TextReferenceSite {
                                 line: 5,
                                 kind: SiteKind::Code,
+                                enclosing: None,
                             },
                         ],
                         omitted: 1,
@@ -156,6 +209,58 @@ mod tests {
                         sites: vec![TextReferenceSite {
                             line: 7,
                             kind: SiteKind::String,
+                            enclosing: None,
+                        }],
+                        omitted: 0,
+                    },
+                ],
+            }
+        );
+    }
+
+    /// The attributed builder names each site's enclosing declaration through the KT-102 attribution
+    /// (KT-112): a hit inside `OrderRepository.save` carries that FQN, a hit in a file with no
+    /// skeleton stays unattributed, and the mention counting is unchanged. Checked as one composed
+    /// value.
+    #[test]
+    fn the_attributed_builder_names_each_sites_enclosing_declaration() {
+        use crate::skeleton::Declaration;
+
+        let repository = FileSkeleton::new("core/Repo.kt")
+            .in_package("shop.order")
+            .with_declarations(vec![Declaration::class("OrderRepository", 3)
+                .containing(vec![Declaration::function("save", 5)])]);
+        let sites = vec![
+            Location::new("core/Repo.kt", 6),
+            Location::new("app/Main.kt", 2),
+        ];
+
+        let refs = build_text_references_attributed("save", &sites, &[repository], None);
+
+        assert_eq!(
+            refs,
+            TextReferences {
+                symbol: "save".to_string(),
+                precision: "text match",
+                total_sites: 2,
+                file_count: 2,
+                text_mention_sites: 0,
+                groups: vec![
+                    TextReferenceGroup {
+                        path: "app/Main.kt".to_string(),
+                        sites: vec![TextReferenceSite {
+                            line: 2,
+                            kind: SiteKind::Code,
+                            enclosing: None,
+                        }],
+                        omitted: 0,
+                    },
+                    TextReferenceGroup {
+                        path: "core/Repo.kt".to_string(),
+                        sites: vec![TextReferenceSite {
+                            line: 6,
+                            kind: SiteKind::Code,
+                            enclosing: Some("shop.order.OrderRepository.save".to_string()),
                         }],
                         omitted: 0,
                     },

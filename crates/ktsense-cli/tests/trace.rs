@@ -705,4 +705,51 @@ mod real {
             )
         );
     }
+
+    const MIXED: &str = "fixtures/mixed-java";
+
+    fn mixed_trace(symbol: &str) -> String {
+        let output = Command::cargo_bin("ktsense")
+            .expect("binary builds")
+            .current_dir(WORKSPACE_ROOT)
+            .env("KTSENSE_NO_AUTOSTART", "1")
+            .args(["--root", MIXED, "trace", symbol])
+            .output()
+            .expect("binary runs");
+        String::from_utf8(output.stdout).expect("utf-8 stdout")
+    }
+
+    /// KT-112 against the real engine on the mixed Java/Kotlin fixture, composed over both cases. A
+    /// Java-declared `executeUpdate` resolves to its `.java` definition, so its Callers heading
+    /// carries the `from Kotlin` qualifier; the Java text references list the two Java callers, the
+    /// Kotlin text references list the call in `UpdateByDomain.kt` attributed to its enclosing
+    /// declaration, and the Java-definition note is printed. A Kotlin-declared `UpdateGuard` that
+    /// Java sources reference gets the Java text references and the from-Kotlin heading, but no Kotlin
+    /// section and no note. Needs `rg`.
+    #[test]
+    fn java_sources_holding_references_are_reported_as_text_matches() {
+        let note =
+            "References from Java sources are text matches; the engine resolves Kotlin only.";
+        let java_def = mixed_trace("executeUpdate");
+        let kotlin_def = mixed_trace("UpdateGuard");
+
+        let observed = (
+            java_def.contains("src/main/java/app/UpdateBase.java:5"),
+            java_def.contains("from Kotlin)"),
+            java_def.contains("## Java text references"),
+            java_def.contains("UpdateById.java\n- 5"),
+            java_def.contains("UpdateByName.java\n- 5"),
+            java_def.contains("- 5  app.UpdateByDomain.run"),
+            java_def.contains(note),
+            kotlin_def.contains("## Java text references"),
+            kotlin_def.contains("from Kotlin"),
+            kotlin_def.contains("## Kotlin text references"),
+            kotlin_def.contains(note),
+        );
+        assert_eq!(
+            observed,
+            (true, true, true, true, true, true, true, true, true, false, false),
+            "executeUpdate:\n{java_def}\nUpdateGuard:\n{kotlin_def}"
+        );
+    }
 }

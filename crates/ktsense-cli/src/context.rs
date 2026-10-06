@@ -129,6 +129,13 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
     let file = trace::skeleton_at(request.root, &report.definition.path);
     let source = trace::source_lines_at(request.root, &report.definition.path);
     let annotated = trace::annotation_class_uses(request.root, &report.definition)?;
+    let name = ktsense_core::last_segment(request.symbol);
+    let java_text_references = crate::text_refs::java_foreign_references(request.root, name)?;
+    let kotlin_text_references = if report.definition.path.ends_with(".java") {
+        crate::text_refs::kotlin_foreign_references(request.root, name)?
+    } else {
+        Vec::new()
+    };
     let bundle = build_context(
         ContextInput {
             definition: report.definition.clone(),
@@ -139,6 +146,8 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
             source_match: request.source_match.as_ref().map(SourceMatch::as_core),
             callers: report.direct_callers(),
             annotated: &annotated,
+            java_text_references: &java_text_references,
+            kotlin_text_references: &kotlin_text_references,
             implementors: &report.implementors,
             budget: request.budget,
         },

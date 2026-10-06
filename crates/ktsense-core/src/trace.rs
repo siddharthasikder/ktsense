@@ -104,6 +104,17 @@ pub struct TraceReport {
     /// JSON otherwise, so a non-annotation trace serializes exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotated: Option<crate::annotated::AnnotatedDeclarations>,
+    /// Where the traced name appears as text in the workspace's `.java` sources, present only when
+    /// the root holds Java and at least one file mentions the name (KT-112). The engine resolves
+    /// Kotlin only, so these are text matches the caller must read as such, not resolved callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java_text_references: Option<crate::text_refs::TextReferences>,
+    /// Where the traced name appears as text in the workspace's Kotlin sources, present only when the
+    /// definition itself is in a `.java` file, so the engine resolved no Kotlin references to it and
+    /// a text scan is the only evidence of them (KT-112). Each site carries its enclosing declaration
+    /// through the KT-102 attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kotlin_text_references: Option<crate::text_refs::TextReferences>,
 }
 
 /// Everything `build_trace` needs, gathered by the caller from the engine and the parser.
@@ -141,6 +152,28 @@ impl TraceReport {
         self.annotated = Some(annotated);
         self
     }
+
+    /// Attaches the Java text references the traced name appears in, present only when the root
+    /// holds `.java` sources that mention it (KT-112). The caller attaches this only when there is
+    /// at least one hit, so an all-Kotlin workspace leaves the report byte-identical.
+    pub fn with_java_text_references(
+        mut self,
+        references: crate::text_refs::TextReferences,
+    ) -> Self {
+        self.java_text_references = Some(references);
+        self
+    }
+
+    /// Attaches the Kotlin text references for a name whose definition is in a `.java` file, where
+    /// the engine resolves no Kotlin references and a text scan is the only evidence of them
+    /// (KT-112). Attached only when there is at least one hit.
+    pub fn with_kotlin_text_references(
+        mut self,
+        references: crate::text_refs::TextReferences,
+    ) -> Self {
+        self.kotlin_text_references = Some(references);
+        self
+    }
 }
 
 /// Builds the answer: implementors and direct callers attributed to their enclosing declarations,
@@ -176,6 +209,8 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
         usages,
         excluded_sites,
         annotated: None,
+        java_text_references: None,
+        kotlin_text_references: None,
     }
 }
 

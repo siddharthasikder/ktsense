@@ -444,7 +444,7 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
     append_lines(&mut out, &report.implementors, related_line);
 
     for level in &report.callers {
-        append_caller_level(&mut out, level);
+        append_caller_level(&mut out, level, report.java_text_references.is_some());
     }
 
     out.push_str(&format!(
@@ -464,6 +464,23 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
             out.push('\n');
             out.push_str(&render_annotated_markdown(annotated));
         }
+    }
+
+    if let Some(java) = &report.java_text_references {
+        out.push('\n');
+        out.push_str(&render_text_references_titled(java, "Java text references"));
+    }
+    if let Some(kotlin) = &report.kotlin_text_references {
+        out.push('\n');
+        out.push_str(&render_text_references_titled(
+            kotlin,
+            "Kotlin text references",
+        ));
+    }
+    if report.definition.path.ends_with(".java") {
+        out.push_str(
+            "\nReferences from Java sources are text matches; the engine resolves Kotlin only.\n",
+        );
     }
 
     out.push_str(
@@ -513,8 +530,17 @@ fn annotated_kind_label(kind: crate::skeleton::DeclKind) -> &'static str {
 /// is evidence of a different weight than a call site. Paths are neutralized on the way out for the
 /// same reason every other renderer neutralizes source-derived text.
 pub fn render_text_references_markdown(refs: &TextReferences) -> String {
+    render_text_references_titled(refs, "Text references")
+}
+
+/// Renders a text-reference listing under a given heading, so KT-112 can label the same model
+/// `Java text references` and `Kotlin text references` while KT-94 keeps `Text references`. A site
+/// carrying an enclosing declaration (the Kotlin-against-a-Java-definition listing) prints it beside
+/// the line; a site without one prints the line alone, so the Java listing and the KT-94 listing are
+/// byte-identical to a bare line listing.
+pub fn render_text_references_titled(refs: &TextReferences, heading: &str) -> String {
     let mut out = format!(
-        "## Text references ({} in {})\n",
+        "## {heading} ({} in {})\n",
         pluralize(refs.total_sites, "site"),
         pluralize(refs.file_count, "file"),
     );
@@ -529,7 +555,10 @@ pub fn render_text_references_markdown(refs: &TextReferences) -> String {
     for group in &refs.groups {
         out.push_str(&format!("\n{}\n", neutralize(&group.path)));
         for site in &group.sites {
-            out.push_str(&format!("- {}\n", site.line));
+            match &site.enclosing {
+                Some(fqn) => out.push_str(&format!("- {}  {}\n", site.line, neutralize(fqn))),
+                None => out.push_str(&format!("- {}\n", site.line)),
+            }
         }
         if group.omitted > 0 {
             out.push_str(&format!("- ... {} more\n", group.omitted));
@@ -679,7 +708,13 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     }
 
     if context.sections.callers {
-        out.push_str(&format!("\n## Callers ({})\n", context.callers.available()));
+        let callers = context.callers.available();
+        let count = if context.java_text_references.available() > 0 {
+            format!("{callers} from Kotlin")
+        } else {
+            callers.to_string()
+        };
+        out.push_str(&format!("\n## Callers ({count})\n"));
         append_context_lines(&mut out, &context.callers, context_caller_line);
     }
 
@@ -689,6 +724,38 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
             context.annotated.available()
         ));
         append_context_lines(&mut out, &context.annotated, annotated_context_line);
+    }
+
+    if context.java_text_references.available() > 0 {
+        out.push_str(&format!(
+            "\n## Java text references ({})\n",
+            context.java_text_references.available()
+        ));
+        out.push_str("precision: text match\n");
+        append_context_lines(
+            &mut out,
+            &context.java_text_references,
+            foreign_reference_line,
+        );
+    }
+
+    if context.kotlin_text_references.available() > 0 {
+        out.push_str(&format!(
+            "\n## Kotlin text references ({})\n",
+            context.kotlin_text_references.available()
+        ));
+        out.push_str("precision: text match\n");
+        append_context_lines(
+            &mut out,
+            &context.kotlin_text_references,
+            foreign_reference_line,
+        );
+    }
+
+    if context.sections.callers && context.definition.path.ends_with(".java") {
+        out.push_str(
+            "\nReferences from Java sources are text matches; the engine resolves Kotlin only.\n",
+        );
     }
 
     if context.sections.implementors {
@@ -843,8 +910,10 @@ pub(crate) fn context_caller_line(declaration: &RelatedDeclaration) -> String {
 /// One caller level as up to two lists: production callers under `## Callers (N)` (always shown,
 /// `- none` when empty as before), then test callers under `## Test callers (M)` only when any
 /// exist. A deeper level uses `### Callers at depth D` and `### Test callers at depth D`. The split
-/// applies at every level (KT-91).
-fn append_caller_level(out: &mut String, level: &CallerLevel) {
+/// applies at every level (KT-91). When Java text references accompany the answer, the depth-1
+/// production heading reads `## Callers (N from Kotlin)`, so a reader never mistakes a count the
+/// engine can only give for Kotlin as the absence of callers (KT-112).
+fn append_caller_level(out: &mut String, level: &CallerLevel, from_kotlin: bool) {
     let (production, tests): (Vec<&RelatedDeclaration>, Vec<&RelatedDeclaration>) =
         level.callers.iter().partition(|caller| !caller.test);
     let (production_heading, test_heading) = match level.depth {
@@ -854,7 +923,12 @@ fn append_caller_level(out: &mut String, level: &CallerLevel) {
             format!("### Test callers at depth {depth}"),
         ),
     };
-    out.push_str(&format!("\n{production_heading} ({})\n", production.len()));
+    let production_count = if from_kotlin && level.depth == 1 {
+        format!("{} from Kotlin", production.len())
+    } else {
+        production.len().to_string()
+    };
+    out.push_str(&format!("\n{production_heading} ({production_count})\n"));
     append_lines(out, &production, |caller| related_line(caller));
     if !tests.is_empty() {
         out.push_str(&format!("\n{test_heading} ({})\n", tests.len()));
@@ -876,6 +950,22 @@ pub(crate) fn annotated_context_line(
         neutralize(&declaration.path),
         declaration.line
     )
+}
+
+/// One foreign text reference as a `context` list line (KT-112): a Kotlin hit against a Java-declared
+/// definition leads with its enclosing declaration's fully-qualified name, a Java hit (which is not
+/// attributed) with its location alone. Measured as the line the renderer emits so the budget never
+/// underestimates it, like a caller line.
+pub(crate) fn foreign_reference_line(reference: &crate::context::ForeignReference) -> String {
+    match &reference.enclosing {
+        Some(fqn) => format!(
+            "- {}  {}:{}",
+            neutralize(fqn),
+            neutralize(&reference.path),
+            reference.line
+        ),
+        None => format!("- {}:{}", neutralize(&reference.path), reference.line),
+    }
 }
 
 /// One related declaration as a list line. Shared with [`crate::context`] so a caller reads
@@ -1337,6 +1427,80 @@ mod tests {
     use crate::skeleton::DeclKind;
     use crate::text_refs::{TextReferenceGroup, TextReferenceSite, TextReferences};
 
+    /// KT-112 trace rendering, over both cases in one table. A Java-declared definition gets the
+    /// `## Callers (0 from Kotlin)` heading, the Java and Kotlin text-reference sections (the Kotlin
+    /// site carrying its enclosing declaration), and the Java-definition note. A Kotlin-declared
+    /// definition that Java sources merely reference gets the from-Kotlin heading and the Java
+    /// section, but no Kotlin section and no note. Composed as one observed tuple over both renders.
+    #[test]
+    fn java_and_kotlin_text_references_render_with_the_from_kotlin_heading_and_java_note() {
+        use crate::skeleton::{Declaration, FileSkeleton};
+        use crate::text_refs::{build_text_references, build_text_references_attributed};
+        use crate::trace::{build_trace, Definition, TraceInput};
+        use crate::{GroupingOptions, Location};
+
+        let report_for = |definition_path: &str| {
+            build_trace(TraceInput {
+                definition: Definition {
+                    qualified_name: "executeUpdate".to_string(),
+                    path: definition_path.to_string(),
+                    line: 5,
+                    signature: String::new(),
+                },
+                index: IndexCompleteness::Complete,
+                definition_site: Location::new(definition_path, 5),
+                implementation_sites: vec![],
+                reference_sites: vec![],
+                skeletons: &[],
+                options: GroupingOptions::default(),
+            })
+        };
+        let java = build_text_references(
+            "executeUpdate",
+            &[
+                Location::new("src/UpdateBase.java", 5),
+                Location::new("src/UpdateById.java", 5),
+            ],
+            None,
+        );
+        let skeletons = vec![FileSkeleton::new("app/UpdateByDomain.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::class("UpdateByDomain", 3)
+                .containing(vec![Declaration::function("run", 4)])])];
+        let kotlin = build_text_references_attributed(
+            "executeUpdate",
+            &[Location::new("app/UpdateByDomain.kt", 5)],
+            &skeletons,
+            None,
+        );
+
+        let java_def = render_trace_markdown(
+            &report_for("src/UpdateBase.java")
+                .with_java_text_references(java.clone())
+                .with_kotlin_text_references(kotlin),
+        );
+        let kotlin_def =
+            render_trace_markdown(&report_for("app/Thing.kt").with_java_text_references(java));
+
+        let note =
+            "References from Java sources are text matches; the engine resolves Kotlin only.";
+        let observed = (
+            java_def.contains("## Callers (0 from Kotlin)"),
+            java_def.contains("## Java text references (2 sites in 2 files)"),
+            java_def.contains("## Kotlin text references (1 site in 1 file)"),
+            java_def.contains("- 5  app.UpdateByDomain.run"),
+            java_def.contains(note),
+            kotlin_def.contains("## Callers (0 from Kotlin)"),
+            kotlin_def.contains("## Java text references (2 sites in 2 files)"),
+            kotlin_def.contains("## Kotlin text references"),
+            kotlin_def.contains(note),
+        );
+        assert_eq!(
+            observed,
+            (true, true, true, true, true, true, true, false, false)
+        );
+    }
+
     /// The whole rendered block for a name the workspace does not declare: the count heading, the
     /// text-match precision, the code-versus-mention split over every site before the cap, and the
     /// sites grouped by file with a per-file `... N more`. Asserted once against the exact text.
@@ -1355,10 +1519,12 @@ mod tests {
                         TextReferenceSite {
                             line: 12,
                             kind: SiteKind::Code,
+                            enclosing: None,
                         },
                         TextReferenceSite {
                             line: 19,
                             kind: SiteKind::Comment,
+                            enclosing: None,
                         },
                     ],
                     omitted: 1,
@@ -1368,6 +1534,7 @@ mod tests {
                     sites: vec![TextReferenceSite {
                         line: 7,
                         kind: SiteKind::Code,
+                        enclosing: None,
                     }],
                     omitted: 0,
                 },

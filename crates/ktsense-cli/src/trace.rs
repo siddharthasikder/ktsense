@@ -731,6 +731,17 @@ fn present_resolved(
     if let Some(annotated) = annotation_class_answer(request.root, &report.definition)? {
         report = report.with_annotated(annotated);
     }
+    let name = ktsense_core::last_segment(request.symbol);
+    if let Some(java) = crate::text_refs::java_text_references(request.root, name, request.limit)? {
+        report = report.with_java_text_references(java);
+    }
+    if report.definition.path.ends_with(".java") {
+        if let Some(kotlin) =
+            crate::text_refs::kotlin_text_references(request.root, name, request.limit)?
+        {
+            report = report.with_kotlin_text_references(kotlin);
+        }
+    }
     present(&report, request.format).map(CommandOutcome::success)
 }
 

@@ -552,3 +552,47 @@ fn a_routed_trace_resolves_its_symbol_without_spawning_a_command_mode_find() {
         "engine invocations:\n{invocations}"
     );
 }
+
+/// KT-112: `trace` and `context` grow Java and Kotlin text-reference sections by rendering them into
+/// the answer text the daemon already returns, so the routed wire shape is unchanged and no protocol
+/// bump is needed. This proves it: over the mixed Java/Kotlin fixture, the routed and in-process
+/// answers for a Java-declared symbol are byte-identical in markdown and JSON, for both `trace` and
+/// `context`. `--wait-index` pins both `trace` paths to a complete index.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn routed_java_text_references_match_the_in_process_answer_byte_for_byte() {
+    const MIXED_FIXTURE: &str = "fixtures/mixed-java";
+    let runtime = tempfile::tempdir().expect("runtime dir");
+    let started = daemon(
+        runtime.path(),
+        &["daemon", "start", "--root", MIXED_FIXTURE],
+    );
+    assert_eq!(started.code, Some(0), "start failed: {}", started.stderr);
+
+    let cases: [Vec<&str>; 4] = [
+        vec!["trace", "executeUpdate", "--wait-index"],
+        vec!["--format", "json", "trace", "executeUpdate", "--wait-index"],
+        vec!["context", "executeUpdate"],
+        vec!["--format", "json", "context", "executeUpdate"],
+    ];
+    let (observed, transcripts): (Vec<Parity>, Vec<String>) = cases
+        .iter()
+        .map(|args| parity(runtime.path(), MIXED_FIXTURE, args))
+        .unzip();
+
+    let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", MIXED_FIXTURE]);
+
+    let expected = Parity {
+        identical: true,
+        daemon_code: Some(0),
+        in_process_code: Some(0),
+        both_silent: true,
+        produced_output: true,
+    };
+    assert_eq!(
+        (observed, stopped.code),
+        (vec![expected; cases.len()], Some(0)),
+        "what each path said:\n{}",
+        transcripts.join("\n")
+    );
+}

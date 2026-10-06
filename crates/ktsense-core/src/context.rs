@@ -144,6 +144,19 @@ pub struct SourceMatch<'a> {
     pub around: usize,
 }
 
+/// One place the queried name appears as text in a foreign source, carried in a `context` bundle
+/// after the callers (KT-112). `enclosing` names the declaration the site sits inside when the scan
+/// attributed it (the Kotlin-against-a-Java-definition listing); it is absent for the Java listing,
+/// which is not attributed. A flat line rather than a file-grouped block, because `context` lists
+/// its callers flat and the budget spends on lines, not headings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignReference {
+    pub path: String,
+    pub line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enclosing: Option<String>,
+}
+
 /// A budgeted context bundle for one symbol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolContext {
@@ -176,6 +189,16 @@ pub struct SymbolContext {
     /// when absent, so a non-annotation bundle serializes exactly as before.
     #[serde(skip_serializing_if = "ContextSection::is_absent")]
     pub annotated: ContextSection<AnnotatedDeclaration>,
+    /// Where the queried name appears as text in the workspace's `.java` sources, present only when
+    /// the root holds Java mentioning it (KT-112). Rendered after the callers, gated by the callers
+    /// section, and left out of the JSON when absent so an all-Kotlin bundle serializes as before.
+    #[serde(skip_serializing_if = "ContextSection::is_absent")]
+    pub java_text_references: ContextSection<ForeignReference>,
+    /// Where the queried name appears as text in Kotlin sources when its definition is in a `.java`
+    /// file, each site attributed to its enclosing declaration (KT-112). Rendered after the Java
+    /// references, gated by the callers section, and left out of the JSON when absent.
+    #[serde(skip_serializing_if = "ContextSection::is_absent")]
+    pub kotlin_text_references: ContextSection<ForeignReference>,
     pub implementors: ContextSection<RelatedDeclaration>,
     pub budget: usize,
     /// Conservative upper bound on the tokens the emitted content occupies, as
@@ -198,6 +221,8 @@ impl SymbolContext {
             + self.file_outline.omitted
             + self.callers.omitted
             + self.annotated.omitted
+            + self.java_text_references.omitted
+            + self.kotlin_text_references.omitted
             + self.implementors.omitted
     }
 }
@@ -221,6 +246,11 @@ pub struct ContextInput<'a> {
     /// The declarations the symbol is written on as an annotation, when it resolved to an annotation
     /// class; empty otherwise. Offered to the budget after callers and before implementors (KT-109).
     pub annotated: &'a [AnnotatedDeclaration],
+    /// The Java text references offered after the callers, gated by the callers section (KT-112).
+    pub java_text_references: &'a [ForeignReference],
+    /// The Kotlin text references offered after the Java references when the definition is in a
+    /// `.java` file, gated by the callers section (KT-112).
+    pub kotlin_text_references: &'a [ForeignReference],
     pub implementors: &'a [RelatedDeclaration],
     pub budget: usize,
 }
@@ -246,6 +276,11 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
         file_outline: section(kept.file_outline, available.file_outline),
         callers: section(kept.callers, available.callers),
         annotated: section(kept.annotated, available.annotated),
+        java_text_references: section(kept.java_text_references, available.java_text_references),
+        kotlin_text_references: section(
+            kept.kotlin_text_references,
+            available.kotlin_text_references,
+        ),
         implementors: section(kept.implementors, available.implementors),
         definition: input.definition,
         budget: input.budget,
@@ -421,6 +456,8 @@ enum Payload {
     FileOutline(String),
     Caller(RelatedDeclaration),
     Annotated(AnnotatedDeclaration),
+    JavaReference(ForeignReference),
+    KotlinReference(ForeignReference),
     Implementor(RelatedDeclaration),
 }
 
@@ -468,6 +505,14 @@ fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>
             text: crate::render::annotated_context_line(declaration),
             payload: Payload::Annotated(declaration.clone()),
         }));
+        units.extend(input.java_text_references.iter().map(|reference| Unit {
+            text: crate::render::foreign_reference_line(reference),
+            payload: Payload::JavaReference(reference.clone()),
+        }));
+        units.extend(input.kotlin_text_references.iter().map(|reference| Unit {
+            text: crate::render::foreign_reference_line(reference),
+            payload: Payload::KotlinReference(reference.clone()),
+        }));
     }
     if input.sections.implementors {
         units.extend(input.implementors.iter().map(|implementor| Unit {
@@ -508,6 +553,8 @@ struct Available {
     file_outline: usize,
     callers: usize,
     annotated: usize,
+    java_text_references: usize,
+    kotlin_text_references: usize,
     implementors: usize,
 }
 
@@ -519,6 +566,8 @@ impl Available {
             file_outline: 0,
             callers: 0,
             annotated: 0,
+            java_text_references: 0,
+            kotlin_text_references: 0,
             implementors: 0,
         };
         for unit in units {
@@ -528,6 +577,8 @@ impl Available {
                 Payload::FileOutline(_) => counts.file_outline += 1,
                 Payload::Caller(_) => counts.callers += 1,
                 Payload::Annotated(_) => counts.annotated += 1,
+                Payload::JavaReference(_) => counts.java_text_references += 1,
+                Payload::KotlinReference(_) => counts.kotlin_text_references += 1,
                 Payload::Implementor(_) => counts.implementors += 1,
             }
         }
@@ -542,6 +593,8 @@ struct Kept {
     file_outline: Vec<String>,
     callers: Vec<RelatedDeclaration>,
     annotated: Vec<AnnotatedDeclaration>,
+    java_text_references: Vec<ForeignReference>,
+    kotlin_text_references: Vec<ForeignReference>,
     implementors: Vec<RelatedDeclaration>,
 }
 
@@ -553,6 +606,8 @@ impl Kept {
             file_outline: Vec::new(),
             callers: Vec::new(),
             annotated: Vec::new(),
+            java_text_references: Vec::new(),
+            kotlin_text_references: Vec::new(),
             implementors: Vec::new(),
         };
         for unit in units {
@@ -562,6 +617,8 @@ impl Kept {
                 Payload::FileOutline(block) => kept.file_outline.push(block),
                 Payload::Caller(caller) => kept.callers.push(caller),
                 Payload::Annotated(declaration) => kept.annotated.push(declaration),
+                Payload::JavaReference(reference) => kept.java_text_references.push(reference),
+                Payload::KotlinReference(reference) => kept.kotlin_text_references.push(reference),
                 Payload::Implementor(implementor) => kept.implementors.push(implementor),
             }
         }
@@ -657,6 +714,8 @@ mod tests {
                 source_match: None,
                 callers: &callers(),
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget,
             },
@@ -775,6 +834,8 @@ mod tests {
                 source_match: None,
                 callers: &callers(),
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
             },
@@ -851,6 +912,8 @@ mod tests {
                 source_match: None,
                 callers: &[],
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -905,6 +968,8 @@ mod tests {
                 source_match: None,
                 callers: &[],
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &[],
                 budget,
             },
@@ -946,6 +1011,8 @@ mod tests {
                 source_match: None,
                 callers: &[],
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -981,6 +1048,8 @@ mod tests {
                 source_match: None,
                 callers: &callers(),
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
             },
@@ -1082,6 +1151,8 @@ mod tests {
                 }),
                 callers: &[],
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -1151,6 +1222,8 @@ mod tests {
                     }),
                     callers: &[],
                     annotated: &[],
+                    java_text_references: &[],
+                    kotlin_text_references: &[],
                     implementors: &[],
                     budget: 10_000,
                 },
@@ -1208,6 +1281,8 @@ mod tests {
                 }),
                 callers: &callers(),
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &implementors(),
                 budget: 10_000,
             },
@@ -1253,6 +1328,8 @@ mod tests {
                 source_match,
                 callers: &[],
                 annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
                 implementors: &[],
                 budget: 10_000,
             },
@@ -1338,6 +1415,8 @@ mod tests {
                     source_match: None,
                     callers: &callers(),
                     annotated: sites,
+                    java_text_references: &[],
+                    kotlin_text_references: &[],
                     implementors: &implementors(),
                     budget: 10_000,
                 },
@@ -1377,6 +1456,8 @@ mod tests {
                     source_match: None,
                     callers: &callers(),
                     annotated: &annotated_sites(),
+                    java_text_references: &[],
+                    kotlin_text_references: &[],
                     implementors: &implementors(),
                     budget: 10_000,
                 },
@@ -1396,5 +1477,75 @@ mod tests {
         );
 
         assert_eq!(observed, (true, false));
+    }
+
+    /// KT-112 context rendering, composed over two filters. With every section on and a Java-declared
+    /// definition, the bundle gets the `## Callers (N from Kotlin)` heading, the Java and Kotlin
+    /// text-reference sections after the callers and before the implementors (the Kotlin site leading
+    /// with its enclosing declaration), and the Java-definition note. With `--only outline` the
+    /// callers section is off, so neither foreign section nor the note appears, exactly as the other
+    /// callers-gated sections behave.
+    #[test]
+    fn foreign_text_references_sit_after_callers_gated_by_callers_with_the_java_note() {
+        let file = repository_file();
+        let java_refs = vec![ForeignReference {
+            path: "src/A.java".to_string(),
+            line: 5,
+            enclosing: None,
+        }];
+        let kotlin_refs = vec![ForeignReference {
+            path: "app/B.kt".to_string(),
+            line: 7,
+            enclosing: Some("app.B.use".to_string()),
+        }];
+        let build_with = |sections: ContextSections| {
+            build_context(
+                ContextInput {
+                    definition: Definition {
+                        qualified_name: "executeUpdate".to_string(),
+                        path: "src/A.java".to_string(),
+                        line: 4,
+                        signature: "fun save(order: Order): OrderId".to_string(),
+                    },
+                    index: IndexCompleteness::Complete,
+                    sections,
+                    file: Some(&file),
+                    source: None,
+                    source_match: None,
+                    callers: &callers(),
+                    annotated: &[],
+                    java_text_references: &java_refs,
+                    kotlin_text_references: &kotlin_refs,
+                    implementors: &implementors(),
+                    budget: 10_000,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let note =
+            "References from Java sources are text matches; the engine resolves Kotlin only.";
+        let full = render_context_markdown(&build_with(ContextSections::all()));
+        let only_outline = render_context_markdown(&build_with(ContextSections {
+            source: false,
+            outline: true,
+            callers: false,
+            implementors: false,
+        }));
+
+        let observed = (
+            full.contains("## Callers (2 from Kotlin)"),
+            full.find("## Callers") < full.find("## Java text references"),
+            full.contains("## Java text references (1)"),
+            full.contains("## Kotlin text references (1)"),
+            full.contains("- app.B.use  app/B.kt:7"),
+            full.find("## Kotlin text references") < full.find("## Implementors"),
+            full.contains(note),
+            only_outline.contains("## Java text references"),
+            only_outline.contains(note),
+        );
+        assert_eq!(
+            observed,
+            (true, true, true, true, true, true, true, false, false)
+        );
     }
 }
