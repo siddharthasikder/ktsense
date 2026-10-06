@@ -310,6 +310,38 @@ impl Declaration {
             DeclKind::Class | DeclKind::Interface | DeclKind::Object
         )
     }
+
+    /// The entries of an enum class in declaration order, else empty (KT-103). An enum class is a
+    /// `class` carrying [`Modifier::Enum`]; its entries are its [`DeclKind::EnumEntry`] children,
+    /// already extracted by the syntax adapter.
+    pub fn enum_entries(&self) -> Vec<String> {
+        if self.kind != DeclKind::Class || !self.modifiers.contains(&Modifier::Enum) {
+            return Vec::new();
+        }
+        self.children
+            .iter()
+            .filter(|child| child.kind == DeclKind::EnumEntry)
+            .map(|child| child.name.clone())
+            .collect()
+    }
+
+    /// The properties a data class declares in its primary constructor, name and type in source
+    /// order, else empty (KT-103). A data class is a `class` carrying [`Modifier::Data`]; its
+    /// properties are the primary-constructor parameters that also declare a `val`/`var`, already
+    /// extracted by the syntax adapter.
+    pub fn data_class_properties(&self) -> Vec<NamedProperty> {
+        if self.kind != DeclKind::Class || !self.modifiers.contains(&Modifier::Data) {
+            return Vec::new();
+        }
+        self.parameters
+            .iter()
+            .filter(|parameter| parameter.property.is_some())
+            .map(|parameter| NamedProperty {
+                name: parameter.name.clone(),
+                type_name: parameter.type_name.clone(),
+            })
+            .collect()
+    }
 }
 
 /// The base keyword of a declaration. Variations such as `data`, `sealed` and `companion` are
@@ -508,6 +540,15 @@ pub struct ParameterProperty {
     pub mutable: bool,
 }
 
+/// A data class's primary-constructor property, its name and declared type, for the one-match member
+/// summary (KT-103). A value type whose JSON is `{ "name": ..., "type": ... }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedProperty {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +598,55 @@ mod tests {
                 stripped_json == bare_json,
             ),
             (false, true, true)
+        );
+    }
+
+    #[test]
+    fn enum_entries_and_data_class_properties_come_only_from_the_matching_kind() {
+        let enum_class = Declaration::class("Role", 1)
+            .with_modifiers(vec![Modifier::Enum])
+            .containing(vec![
+                Declaration::new(DeclKind::EnumEntry, "ADMIN", 2),
+                Declaration::new(DeclKind::EnumEntry, "GUEST", 3),
+            ]);
+        let data_class = Declaration::class("Order", 10)
+            .with_modifiers(vec![Modifier::Data])
+            .with_parameters(vec![
+                Parameter::new("id", "OrderId").declaring_property(Visibility::Public, false),
+                Parameter::new("total", "Money").declaring_property(Visibility::Public, true),
+            ]);
+        let plain_class = Declaration::class("Plain", 20)
+            .with_parameters(vec![
+                Parameter::new("id", "OrderId").declaring_property(Visibility::Public, false)
+            ]);
+
+        let observed = (
+            enum_class.enum_entries(),
+            enum_class.data_class_properties(),
+            data_class.data_class_properties(),
+            data_class.enum_entries(),
+            plain_class.enum_entries(),
+            plain_class.data_class_properties(),
+        );
+        assert_eq!(
+            observed,
+            (
+                vec!["ADMIN".to_string(), "GUEST".to_string()],
+                Vec::new(),
+                vec![
+                    NamedProperty {
+                        name: "id".to_string(),
+                        type_name: "OrderId".to_string(),
+                    },
+                    NamedProperty {
+                        name: "total".to_string(),
+                        type_name: "Money".to_string(),
+                    },
+                ],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
         );
     }
 

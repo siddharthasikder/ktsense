@@ -29,13 +29,32 @@ use crate::imports::ImportGraph;
 use crate::references::{ReferenceGroup, SiteKind};
 use crate::repo_map::RepoMap;
 use crate::skeleton::{
-    DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
+    DeclKind, Declaration, FileSkeleton, Modifier, NamedProperty, Parameter, Visibility,
+    MAX_NESTING_DEPTH,
 };
 use crate::text::{fence_for, neutralize};
 use crate::text_refs::TextReferences;
 use crate::trace::{CallerLevel, RelatedDeclaration, TraceReport};
 
 const INDENT: &str = "    ";
+
+/// The one-line member summary a single `symbols` match carries (KT-103): an enum class's entries
+/// in declaration order, or a data class's primary-constructor properties with their types, or
+/// `None` for a declaration with neither. A declaration is one or the other, never both, so the
+/// entries win when present and the properties otherwise.
+pub fn render_member_summary(entries: &[String], properties: &[NamedProperty]) -> Option<String> {
+    if !entries.is_empty() {
+        return Some(format!("entries: {}", entries.join(", ")));
+    }
+    if !properties.is_empty() {
+        let rendered: Vec<String> = properties
+            .iter()
+            .map(|property| format!("{}: {}", property.name, property.type_name))
+            .collect();
+        return Some(format!("properties: {}", rendered.join(", ")));
+    }
+    None
+}
 
 /// Printed where a type would go when the type is inferred and not written in source. Deliberately
 /// not a valid type: the fenced block stays honest that the type is unknown rather than inventing

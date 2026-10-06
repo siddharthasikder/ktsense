@@ -17,8 +17,9 @@
 use std::path::Path;
 
 use ktsense_core::{
-    contained_declarations, match_pick, render_skeleton, shortest_unique_suffix, DeclKind,
-    Declaration, FileSkeleton, PickMatch, RenderOptions, SymbolMatch,
+    contained_declarations, match_pick, render_member_summary, render_skeleton,
+    shortest_unique_suffix, DeclKind, Declaration, FileSkeleton, NamedProperty, PickMatch,
+    RenderOptions, SymbolMatch,
 };
 use ktsense_lsp::SymbolCandidate;
 use serde::Serialize;
@@ -40,6 +41,16 @@ pub(crate) struct ResolvedSymbol {
     /// false, absent from the JSON of every top-level or member declaration.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) local: bool,
+    /// The entries of a single enum-class match, in declaration order (KT-103). Populated only for
+    /// a one-match answer and skipped when empty, so a multi-candidate listing and every non-enum
+    /// declaration keep byte-identical JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) entries: Vec<String>,
+    /// The primary-constructor properties of a single data-class match, with their types (KT-103).
+    /// Populated only for a one-match answer and skipped when empty, so a multi-candidate listing
+    /// and every non-data declaration keep byte-identical JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) properties: Vec<NamedProperty>,
 }
 
 impl ResolvedSymbol {
@@ -95,15 +106,18 @@ pub(crate) fn present_symbols(
     }
 
     match filter {
-        PickFilter::Explicit(pick) => pick_present(query, resolved, pick, format, || {
+        PickFilter::Explicit(pick) => pick_present(root, query, resolved, pick, format, || {
             Err(CommandError::pick_missed(pick))
         }),
-        PickFilter::Dotted(pick) => pick_present(query, resolved, pick, format, || {
+        PickFilter::Dotted(pick) => pick_present(root, query, resolved, pick, format, || {
             Err(CommandError::no_symbol(query))
         }),
         PickFilter::None => match resolved.len() {
             0 => Err(CommandError::no_symbol(query)),
-            1 => render(query, &resolved, None, Exit::Success, format),
+            1 => {
+                attach_members(root, &mut resolved[0]);
+                render(query, &resolved, None, Exit::Success, format)
+            }
             _ => {
                 let total = resolved.len();
                 let hint = ambiguity_hint(query, &resolved);
@@ -217,6 +231,7 @@ fn select_by_pick(
 }
 
 fn pick_present(
+    root: &Path,
     query: &str,
     resolved: Vec<ResolvedSymbol>,
     pick: &str,
@@ -226,10 +241,11 @@ fn pick_present(
     let fqns: Vec<&str> = resolved.iter().map(|symbol| symbol.fqn.as_str()).collect();
     match match_pick(pick, &fqns) {
         PickMatch::Selected(index) => {
-            let chosen = resolved
+            let mut chosen = resolved
                 .into_iter()
                 .nth(index)
                 .expect("index within candidates");
+            attach_members(root, &mut chosen);
             render(query, &[chosen], None, Exit::Success, format)
         }
         PickMatch::Ambiguous(indices) => {
@@ -237,6 +253,25 @@ fn pick_present(
             render_ambiguous_selection(query, &subset, format)
         }
         PickMatch::Missed => on_miss(),
+    }
+}
+
+/// Fills in a single match's enum entries or data-class properties by re-reading its file and
+/// locating the declaration, so a one-match answer lists the members its signature line omits
+/// (KT-103). A declaration that is neither, or a file that cannot be read, located or parsed, leaves
+/// the members empty and the row unchanged. Only ever called for a single result, so a
+/// multi-candidate listing never gains members and its output stays byte-identical.
+fn attach_members(root: &Path, resolved: &mut ResolvedSymbol) {
+    let Ok(source) = std::fs::read_to_string(root.join(&resolved.file)) else {
+        return;
+    };
+    let Ok(skeleton) = ktsense_syntax::extract(resolved.file.clone(), &source) else {
+        return;
+    };
+    let name = resolved.fqn.rsplit('.').next().unwrap_or(&resolved.fqn);
+    if let Some(found) = locate(&skeleton, name, resolved.line) {
+        resolved.entries = found.declaration.enum_entries();
+        resolved.properties = found.declaration.data_class_properties();
     }
 }
 
@@ -308,6 +343,8 @@ fn resolved_from_match(found: SymbolMatch) -> ResolvedSymbol {
         line: found.line,
         signature: found.signature,
         local: false,
+        entries: Vec::new(),
+        properties: Vec::new(),
     }
 }
 
@@ -484,6 +521,8 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
         line: candidate.line,
         signature: String::new(),
         local: false,
+        entries: Vec::new(),
+        properties: Vec::new(),
     };
     let Ok(source) = std::fs::read_to_string(&candidate.file) else {
         return bare();
@@ -503,6 +542,8 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
             file: display,
             line: candidate.line,
             local: false,
+            entries: Vec::new(),
+            properties: Vec::new(),
         },
         None => local_declaration(&display, &source, candidate).unwrap_or_else(bare),
     }
@@ -529,6 +570,8 @@ fn local_declaration(
         file: display.to_string(),
         line: candidate.line,
         local: true,
+        entries: Vec::new(),
+        properties: Vec::new(),
     })
 }
 
@@ -628,7 +671,13 @@ fn kind_label(kind: DeclKind) -> &'static str {
 fn symbols_markdown(query: &str, resolved: &[ResolvedSymbol], hidden: Option<usize>) -> String {
     let mut out = format!("## Symbols: {}\n", neutralize(query));
     out.push('\n');
-    out.push_str(&crate::fenced_block(&rows(resolved)));
+    let mut lines = rows(resolved);
+    if let [single] = resolved {
+        if let Some(members) = render_member_summary(&single.entries, &single.properties) {
+            lines.push(members);
+        }
+    }
+    out.push_str(&crate::fenced_block(&lines));
     if let Some(hidden) = hidden {
         out.push_str(&format!("\n... {hidden} more (use --limit)\n"));
     }
@@ -939,6 +988,126 @@ mod tests {
                 Some("## Ambiguous: Repo.save (2 candidates)".to_string()),
                 2
             )
+        );
+    }
+
+    fn present_one(source: &str, name: &str, line: u32) -> (SymbolsOutcome, SymbolsOutcome) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join(format!("{name}.kt"));
+        std::fs::write(&file, source).expect("write fixture");
+        let candidate = SymbolCandidate {
+            name: name.to_string(),
+            file: file.to_string_lossy().into_owned(),
+            line,
+            col: 12,
+        };
+        let present = |format| {
+            present_symbols(
+                dir.path(),
+                name,
+                vec![candidate.clone()],
+                None,
+                None,
+                PickFilter::for_query(name, None),
+                format,
+            )
+            .expect("single match")
+        };
+        (present(Format::Md), present(Format::Json))
+    }
+
+    #[test]
+    fn a_single_enum_match_lists_its_entries_in_declaration_order() {
+        let (md, json) = present_one(
+            "package demo\n\nenum class Role {\n    ADMIN,\n    EDITOR,\n    GUEST,\n}\n",
+            "Role",
+            3,
+        );
+
+        let observed = (
+            md.exit.code(),
+            md.text.contains("entries: ADMIN, EDITOR, GUEST"),
+            json.text.contains("\"entries\": [")
+                && json.text.contains("\"ADMIN\"")
+                && json.text.contains("\"GUEST\""),
+            json.text.contains("properties"),
+        );
+        assert_eq!(
+            observed,
+            (0, true, true, false),
+            "md:\n{}\njson:\n{}",
+            md.text,
+            json.text
+        );
+    }
+
+    #[test]
+    fn a_single_data_class_match_lists_its_primary_constructor_properties_with_types() {
+        let (md, json) = present_one(
+            "package demo\n\ndata class Order(val id: OrderId, val total: Money)\n",
+            "Order",
+            3,
+        );
+
+        let observed = (
+            md.exit.code(),
+            md.text.contains("properties: id: OrderId, total: Money"),
+            json.text.contains("\"properties\": [")
+                && json.text.contains("\"name\": \"id\"")
+                && json.text.contains("\"type\": \"OrderId\""),
+            json.text.contains("entries"),
+        );
+        assert_eq!(
+            observed,
+            (0, true, true, false),
+            "md:\n{}\njson:\n{}",
+            md.text,
+            json.text
+        );
+    }
+
+    #[test]
+    fn several_matches_never_list_members_even_when_they_are_data_classes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (package, file) in [("alpha", "Alpha.kt"), ("beta", "Beta.kt")] {
+            std::fs::write(
+                dir.path().join(file),
+                format!("package {package}\n\ndata class Record(val id: Long)\n"),
+            )
+            .expect("write fixture");
+        }
+        let candidate_in = |file: &str| SymbolCandidate {
+            name: "Record".to_string(),
+            file: dir.path().join(file).to_string_lossy().into_owned(),
+            line: 3,
+            col: 12,
+        };
+        let present = |format| {
+            present_symbols(
+                dir.path(),
+                "Record",
+                vec![candidate_in("Alpha.kt"), candidate_in("Beta.kt")],
+                None,
+                None,
+                PickFilter::for_query("Record", None),
+                format,
+            )
+            .expect("ambiguous listing")
+        };
+        let md = present(Format::Md);
+        let json = present(Format::Json);
+
+        let observed = (
+            md.exit.code(),
+            md.text.contains("properties:"),
+            json.text.contains("properties"),
+        );
+        assert_eq!(
+            observed,
+            (3, false, false),
+            "md:\n{}\njson:\n{}",
+            md.text,
+            json.text
         );
     }
 

@@ -36,16 +36,16 @@ pub use references::{
 };
 pub use render::{
     render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,
-    render_markdown, render_skeleton, render_text_references_markdown, render_trace_markdown,
-    RenderOptions,
+    render_markdown, render_member_summary, render_skeleton, render_text_references_markdown,
+    render_trace_markdown, RenderOptions,
 };
 pub use repo_map::{
     build_repo_map, MappedFile, OmittedDirectory, ReferenceCounts, RepoMap, RepoMapInput,
 };
 pub use scc::{cycles, strongly_connected_components};
 pub use skeleton::{
-    DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
-    MAX_NESTING_DEPTH,
+    DeclKind, Declaration, FileSkeleton, Modifier, NamedProperty, Parameter, ParameterProperty,
+    Visibility, MAX_NESTING_DEPTH,
 };
 pub use symbol_search::{contained_declarations, SymbolMatch};
 pub use text::{fence_for, neutralize, normalize_signature_layout, MIN_FENCE_BACKTICKS};
