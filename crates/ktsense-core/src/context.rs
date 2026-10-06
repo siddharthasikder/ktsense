@@ -1122,6 +1122,67 @@ mod tests {
         );
     }
 
+    /// KT-111: a `--match` view renders the declaration as one `<fqn>  <path>:<line>` line directly
+    /// under the title, dropping the `## Declaration` heading and the signature fence, so a matched
+    /// answer costs that one location line plus the matched source. A partial index still shows its
+    /// marker, and the location line stays directly under the title. The matched Source and the line
+    /// numbers are unchanged. Without `--match` the declaration fence stays, which the KT-107 chrome
+    /// test pins.
+    #[test]
+    fn a_matched_context_shows_the_declaration_as_a_location_line_without_the_signature_fence() {
+        let (file, source) = greeter();
+        let matcher = Contains("return");
+        let build_matched = |index: IndexCompleteness| {
+            build_context(
+                ContextInput {
+                    definition: greet_definition(),
+                    index,
+                    sections: ContextSections {
+                        source: true,
+                        outline: false,
+                        callers: false,
+                        implementors: false,
+                    },
+                    file: Some(&file),
+                    source: Some(&source),
+                    source_match: Some(SourceMatch {
+                        matcher: &matcher,
+                        around: 0,
+                    }),
+                    callers: &[],
+                    annotated: &[],
+                    implementors: &[],
+                    budget: 10_000,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let complete = render_context_markdown(&build_matched(IndexCompleteness::Complete));
+        let partial = render_context_markdown(&build_matched(IndexCompleteness::Partial));
+        let location = "app.greet  app/Greeter.kt:1";
+
+        assert_eq!(
+            (
+                complete.lines().nth(1),
+                complete.contains("## Declaration"),
+                complete.contains("```kotlin"),
+                complete.contains("## Source"),
+                complete.contains("2:     return \"hi\""),
+                partial.lines().nth(1),
+                partial.contains("index: partial"),
+            ),
+            (
+                Some(location),
+                false,
+                false,
+                true,
+                true,
+                Some(location),
+                true,
+            ),
+        );
+    }
+
     /// `--match` composes with `--only source`: the file outline, callers and implementors are off,
     /// so the budget pays only for the declaration and the matched lines. `--around 1` widens each
     /// hit by one line, merging the two adjacent `return` branches into one run.

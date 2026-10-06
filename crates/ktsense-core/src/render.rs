@@ -621,9 +621,25 @@ fn trimmed_hit_line(source: &str) -> String {
 /// bundle carries, keeping the answer close to the fact it states (KT-107). A partial index still
 /// prints its warning, and the declaration itself is never dropped. A full, unfiltered bundle is
 /// byte-identical to before.
+///
+/// A `--match` view goes one step further: the `## Declaration` heading and its signature fence
+/// become a single `<fqn>  <path>:<line>` line directly under the title, so a matched answer costs
+/// that one location line plus the matched source. The signature is already visible in the matched
+/// source when a hit falls on it, so repeating it in a fence is the chrome a one-fact answer sheds
+/// (KT-111).
 pub fn render_context_markdown(context: &SymbolContext) -> String {
     let one_fact = !context.sections.is_all() || context.matched_source.is_some();
+    let matched = context.matched_source.is_some();
     let mut out = format!("# Context: {}\n", neutralize(&context.symbol));
+
+    if matched {
+        out.push_str(&format!(
+            "{}  {}:{}\n",
+            neutralize(&context.definition.qualified_name),
+            neutralize(&context.definition.path),
+            context.definition.line
+        ));
+    }
 
     let mut preamble = String::new();
     if !one_fact || context.index == IndexCompleteness::Partial {
@@ -642,13 +658,15 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
         out.push_str(&preamble);
     }
 
-    out.push_str("\n## Declaration\n\n");
-    out.push_str(&format!(
-        "{}:{}\n",
-        neutralize(&context.definition.path),
-        context.definition.line
-    ));
-    append_context_blocks(&mut out, &context.declaration, "signature");
+    if !matched {
+        out.push_str("\n## Declaration\n\n");
+        out.push_str(&format!(
+            "{}:{}\n",
+            neutralize(&context.definition.path),
+            context.definition.line
+        ));
+        append_context_blocks(&mut out, &context.declaration, "signature");
+    }
 
     append_source(&mut out, context);
 

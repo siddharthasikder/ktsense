@@ -293,6 +293,63 @@ fn routed_context_matches_the_in_process_answer_and_names_a_source_section() {
     );
 }
 
+/// KT-111: a `context --match` answer renders the declaration as one `<fqn>  <path>:<line>` location
+/// line with no `## Declaration` heading, and the routed answer is byte-identical to the in-process
+/// one in markdown and JSON. `--match` already crosses the wire (protocol 5), and KT-111 only changes
+/// how the client renders the bundle, so this proves the routed shape is unchanged with no protocol
+/// bump: the daemon and the in-process path render the same bundle the same way. `rebuild` is the
+/// card's acceptance declaration; matching `break` keeps the one guard line.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn routed_matched_context_renders_a_location_line_identically_to_in_process() {
+    let runtime = tempfile::tempdir().expect("runtime dir");
+    let started = daemon(runtime.path(), &["daemon", "start", "--root", FIXTURE]);
+    assert_eq!(started.code, Some(0), "start failed: {}", started.stderr);
+
+    let args = &[
+        "context", "rebuild", "--only", "source", "--match", "break", "--around", "0",
+    ];
+    let json_args = &[
+        "--format", "json", "context", "rebuild", "--only", "source", "--match", "break",
+        "--around", "0",
+    ];
+    let md_via_daemon = routed(runtime.path(), FIXTURE, "KTSENSE_REQUIRE_DAEMON", args);
+    let md_in_process = routed(runtime.path(), FIXTURE, "KTSENSE_NO_DAEMON", args);
+    let json_via_daemon = routed(runtime.path(), FIXTURE, "KTSENSE_REQUIRE_DAEMON", json_args);
+    let json_in_process = routed(runtime.path(), FIXTURE, "KTSENSE_NO_DAEMON", json_args);
+
+    let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", FIXTURE]);
+
+    assert_eq!(
+        (
+            md_via_daemon.stdout == md_in_process.stdout,
+            json_via_daemon.stdout == json_in_process.stdout,
+            md_via_daemon.code,
+            md_via_daemon.stdout.lines().nth(1),
+            md_via_daemon.stdout.contains("## Declaration"),
+            md_via_daemon.stdout.contains("## Source"),
+            md_via_daemon.stderr.is_empty() && md_in_process.stderr.is_empty(),
+            stopped.code,
+        ),
+        (
+            true,
+            true,
+            Some(0),
+            Some(
+                "shop.app.reporting.ReportBackfill.rebuild  \
+                 app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt:9"
+            ),
+            false,
+            true,
+            true,
+            Some(0),
+        ),
+        "md via daemon:\n{}\nmd in-process:\n{}",
+        md_via_daemon.stdout,
+        md_in_process.stdout,
+    );
+}
+
 /// An ambiguous name routed through the daemon must still list every candidate and exit 3, the same
 /// contract the in-process path holds, which proves the exit code travels the wire rather than being
 /// flattened to success. The candidate order is not asserted: the engine reports its index in an
