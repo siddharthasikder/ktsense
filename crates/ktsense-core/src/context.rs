@@ -65,6 +65,13 @@ impl ContextSections {
     pub fn is_all(&self) -> bool {
         *self == Self::all()
     }
+
+    /// Whether the bundle was asked for callers and nothing else, the `--only callers` request. That
+    /// request is the explicit ask to see every test caller, so it is the one case the default
+    /// test-caller cap is lifted for (KT-118).
+    pub fn is_callers_only(&self) -> bool {
+        self.callers && !self.source && !self.outline && !self.implementors
+    }
 }
 
 impl Default for ContextSections {
@@ -188,6 +195,11 @@ pub struct SymbolContext {
     /// The outline of the declaration's file, one balanced block per top-level declaration.
     pub file_outline: ContextSection<String>,
     pub callers: ContextSection<RelatedDeclaration>,
+    /// How many test callers the default cap left out of the listing (KT-118), distinct from the
+    /// callers the budget dropped. Zero when `--only callers` lifted the cap or there were three or
+    /// fewer test callers; left out of the JSON then, so an uncapped bundle serializes as before.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub test_callers_omitted: usize,
     /// The declarations this symbol is written on as an annotation, present only when it resolved to
     /// an annotation class and at least one declaration carries it (KT-109). Left out of the JSON
     /// when absent, so a non-annotation bundle serializes exactly as before.
@@ -262,7 +274,9 @@ pub struct ContextInput<'a> {
 /// Builds the bundle, emitting as much of the priority order as the budget affords.
 pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) -> SymbolContext {
     let body = input.sections.source.then(|| source_body(&input)).flatten();
-    let offered = units_in_priority_order(&input, body.as_ref());
+    let cap = (!input.sections.is_callers_only()).then_some(DEFAULT_TEST_CALLER_CAP);
+    let (callers, test_callers_omitted) = cap_test_callers(input.callers, cap);
+    let offered = units_in_priority_order(&input, body.as_ref(), &callers);
     let available = Available::of(&offered);
 
     let emission = emit_within_budget(offered, input.budget, estimator);
@@ -279,6 +293,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
         matched_source,
         file_outline: section(kept.file_outline, available.file_outline),
         callers: section(kept.callers, available.callers),
+        test_callers_omitted,
         annotated: section(kept.annotated, available.annotated),
         java_text_references: section(kept.java_text_references, available.java_text_references),
         kotlin_text_references: section(
@@ -290,6 +305,47 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
         budget: input.budget,
         token_upper_bound: emission.token_upper_bound,
     }
+}
+
+/// How many test callers a default `context` bundle lists before summarizing the rest. Production
+/// callers answer who depends on the symbol in shipping code and are never capped; a long tail of
+/// test callers otherwise spends the budget the source, outline and production callers need, so the
+/// default keeps a sample and points at `trace` for the full list (KT-118).
+const DEFAULT_TEST_CALLER_CAP: usize = 3;
+
+/// Keeps every production caller and at most `cap` test callers, returning the trimmed list and how
+/// many test callers it left out. `None` keeps them all, which is the `--only callers` request.
+/// Production callers already lead the slice (KT-91), but the partition is explicit so a reordering
+/// upstream cannot silently drop a production caller past the cap.
+fn cap_test_callers(
+    callers: &[RelatedDeclaration],
+    cap: Option<usize>,
+) -> (Vec<RelatedDeclaration>, usize) {
+    let Some(cap) = cap else {
+        return (callers.to_vec(), 0);
+    };
+    let mut kept = Vec::with_capacity(callers.len());
+    let mut tests_kept = 0;
+    let mut omitted = 0;
+    for caller in callers {
+        if caller.test {
+            if tests_kept < cap {
+                kept.push(caller.clone());
+                tests_kept += 1;
+            } else {
+                omitted += 1;
+            }
+        } else {
+            kept.push(caller.clone());
+        }
+    }
+    (kept, omitted)
+}
+
+/// Whether a count is zero, for the `serde` skip that keeps a value out of the JSON when it has
+/// nothing to report.
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 /// Splits the surviving source candidates into the one of the two body views the request asked for:
@@ -478,7 +534,11 @@ impl AsRef<str> for Unit {
     }
 }
 
-fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>) -> Vec<Unit> {
+fn units_in_priority_order(
+    input: &ContextInput<'_>,
+    source: Option<&SourceBody>,
+    callers: &[RelatedDeclaration],
+) -> Vec<Unit> {
     let mut units = Vec::new();
     if !input.definition.signature.is_empty() {
         units.push(Unit {
@@ -501,7 +561,7 @@ fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>
         }
     }
     if input.sections.callers {
-        units.extend(input.callers.iter().map(|caller| Unit {
+        units.extend(callers.iter().map(|caller| Unit {
             text: context_caller_line(caller),
             payload: Payload::Caller(caller.clone()),
         }));
@@ -1553,5 +1613,100 @@ mod tests {
             observed,
             (true, true, true, true, true, true, true, false, false)
         );
+    }
+
+    /// A production caller followed by five test callers, so KT-118's cap has a tail to trim.
+    fn one_production_and_five_test_callers() -> Vec<RelatedDeclaration> {
+        let mut callers = vec![related(
+            "app/CheckoutService.kt",
+            12,
+            "shop.app.CheckoutService.placeOrder",
+            2,
+        )];
+        for n in 0..5 {
+            callers.push(related(
+                &format!("app/src/test/kotlin/shop/app/Case{n}Test.kt"),
+                10 + n,
+                &format!("shop.app.Case{n}Test.verify"),
+                1,
+            ));
+        }
+        callers
+    }
+
+    fn build_capped(sections: ContextSections, callers: &[RelatedDeclaration]) -> SymbolContext {
+        let file = repository_file();
+        build_context(
+            ContextInput {
+                definition: definition(),
+                index: IndexCompleteness::Complete,
+                sections,
+                file: Some(&file),
+                source: None,
+                source_match: None,
+                callers,
+                annotated: &[],
+                java_text_references: &[],
+                kotlin_text_references: &[],
+                implementors: &implementors(),
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        )
+    }
+
+    /// KT-118: a default bundle lists the production caller and at most three test callers, states
+    /// how many more test callers there are and how to see them, counts the omitted test callers in
+    /// `test_callers_omitted`, and still shows the implementor the freed budget reaches. `--only
+    /// callers` lifts the cap and lists every test caller with no summary line. The heading counts
+    /// every caller either way, so the capped bundle is not read as having fewer callers than it has.
+    #[test]
+    fn the_default_caps_test_callers_at_three_and_only_callers_lists_them_all() {
+        let callers = one_production_and_five_test_callers();
+        let default = build_capped(ContextSections::all(), &callers);
+        let only_callers = build_capped(
+            ContextSections {
+                source: false,
+                outline: false,
+                callers: true,
+                implementors: false,
+            },
+            &callers,
+        );
+        let default_md = render_context_markdown(&default);
+        let only_md = render_context_markdown(&only_callers);
+        let summary = "2 more test callers; trace shop.order.OrderRepository.save lists them all";
+
+        let observed = (
+            default.callers.items.len(),
+            default.callers.items.iter().filter(|c| c.test).count(),
+            default.test_callers_omitted,
+            default_md.contains("## Callers (6)"),
+            default_md.contains(summary),
+            default.implementors.items.len(),
+            only_callers.callers.items.len(),
+            only_callers.test_callers_omitted,
+            only_md.contains("## Callers (6)"),
+            only_md.contains("more test callers"),
+        );
+        assert_eq!(observed, (4, 3, 2, true, true, 1, 6, 0, true, false));
+    }
+
+    /// KT-118 JSON: the bundle mirrors the Markdown, carrying only the listed callers plus a
+    /// `test_callers_omitted` count, and the field is left out when the cap dropped nothing, so an
+    /// uncapped answer serializes exactly as before.
+    #[test]
+    fn json_carries_the_listed_callers_and_the_omitted_test_caller_count() {
+        let callers = one_production_and_five_test_callers();
+        let capped = serde_json::to_value(build_capped(ContextSections::all(), &callers)).unwrap();
+        let uncapped =
+            serde_json::to_value(build_capped(ContextSections::all(), &callers[..3])).unwrap();
+
+        let observed = (
+            capped["callers"]["items"].as_array().map(Vec::len),
+            capped["test_callers_omitted"].as_u64(),
+            uncapped["test_callers_omitted"].clone(),
+        );
+        assert_eq!(observed, (Some(4), Some(2), serde_json::Value::Null));
     }
 }
