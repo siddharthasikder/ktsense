@@ -303,13 +303,23 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum DaemonAction {
-    Start,
+    /// Start the warm-session daemon for this root, or report one already running
+    Start {
+        /// Minutes to stay up while idle before exiting; defaults to 60. A daemon started on first
+        /// use in the background idles out sooner.
+        #[arg(long, value_name = "MINUTES")]
+        idle: Option<u64>,
+    },
     Stop,
     Status,
     /// Serve until stopped, idle, or faulted. Hidden because it is how `start` detaches, not a
     /// command to run by hand.
     #[command(hide = true)]
-    Serve,
+    Serve {
+        /// Minutes to stay up while idle; `start` passes the window it chose. Hidden, as serve is.
+        #[arg(long, value_name = "MINUTES", hide = true)]
+        idle: Option<u64>,
+    },
 }
 
 /// Process exit codes are a contract the calling agent branches on, so the whole set is named once
@@ -692,10 +702,10 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             format,
         ),
         Command::Daemon { action } => match action {
-            DaemonAction::Start => daemon::start(&base),
+            DaemonAction::Start { idle } => daemon::start(&base, idle),
             DaemonAction::Stop => daemon::shutdown(&base),
             DaemonAction::Status => daemon::report_status(&base),
-            DaemonAction::Serve => daemon::serve(&base),
+            DaemonAction::Serve { idle } => daemon::serve(&base, idle),
         },
         Command::Mcp => mcp_server(&base),
         Command::Check { path } => check(&base, &resolve_root(Some(&base), &path), format),

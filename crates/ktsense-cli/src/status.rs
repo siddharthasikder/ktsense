@@ -26,6 +26,10 @@ pub(crate) struct DaemonSnapshot {
     pub(crate) uptime_secs: u64,
     pub(crate) index: IndexLabel,
     pub(crate) requests_served: u64,
+    /// The idle window this daemon will exit after, in seconds, so `status` reports the limit the
+    /// daemon actually holds rather than a fixed default: an autostarted daemon idles out sooner
+    /// than one started by hand (KT-125).
+    pub(crate) idle_limit_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,10 +320,11 @@ pub(crate) fn daemon_lines(daemon: &DaemonStatus) -> String {
                 )),
                 None => match &daemon.snapshot {
                     Some(snapshot) => lines.push_str(&format!(
-                        "uptime: {}\nindex: {}\nrequests served: {}\n",
+                        "uptime: {}\nindex: {}\nrequests served: {}\nidle limit: {} min\n",
                         humanize(Duration::from_secs(snapshot.uptime_secs)),
                         snapshot.index.text(),
-                        snapshot.requests_served
+                        snapshot.requests_served,
+                        snapshot.idle_limit_secs / 60
                     )),
                     None => lines.push_str("uptime, index and request count: not answered\n"),
                 },
@@ -372,6 +377,7 @@ mod tests {
                 uptime_secs: 3725,
                 index: IndexLabel::Complete,
                 requests_served: 7,
+                idle_limit_secs: 3600,
             }),
         });
 
@@ -386,14 +392,16 @@ mod tests {
             (
                 "# Status: /work/app\n\nkotlin files: 3\nengine: kmp-lsp 0.26.0 at /opt/kmp-lsp \
                  (pinned 0.26.0, supported)\nripgrep: rg at /usr/bin/rg\ndaemon: running\nsocket: \
-                 /run/ktsense/abc.sock\nuptime: 1h 2m\nindex: complete\nrequests served: 7\n"
+                 /run/ktsense/abc.sock\nuptime: 1h 2m\nindex: complete\nrequests served: 7\nidle \
+                 limit: 60 min\n"
                     .to_string(),
                 serde_json::json!({
                     "socket": "/run/ktsense/abc.sock",
                     "state": "running",
                     "uptime_secs": 3725,
                     "index": "complete",
-                    "requests_served": 7
+                    "requests_served": 7,
+                    "idle_limit_secs": 3600
                 }),
                 serde_json::json!("/usr/bin/rg")
             )

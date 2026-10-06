@@ -182,8 +182,10 @@ relative command path, a typo in the JSON or TOML, or on Kiro the agent question
 
 `ktsense daemon start --root <dir>` keeps an engine session warm for a root, and `get_kotlin_outline`,
 `analyze_kotlin_dependencies`, `get_kotlin_repo_map`, `trace_kotlin_symbol` and `explain_kotlin_symbol`
-route through it automatically when it is live, falling back to running in process when it is not. It
-expires after an hour idle, and `ktsense daemon status` and `ktsense daemon stop` inspect and end it.
+route through it automatically when it is live, falling back to running in process when it is not. A
+hand-started daemon expires after an hour idle, `--idle <minutes>` sets a different window, and one
+started on first use in the background idles out after fifteen minutes; `ktsense daemon status` shows
+the window a running daemon holds, and `ktsense daemon stop` ends it.
 
 Nothing requires it. Three of those five are the tree-sitter tools that were already fast, so the
 daemon is a convenience rather than a prerequisite. `trace_kotlin_symbol` and `explain_kotlin_symbol`

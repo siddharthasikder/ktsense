@@ -33,9 +33,16 @@ use crate::{block_on, CommandError, CommandOutcome, Exit};
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const START_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Overrides the idle window, in seconds. A test needs a daemon that expires in moments rather than
-/// an hour, so that a daemon left behind by a failed assertion cannot outlive the run.
+/// Overrides the idle window, in seconds, taking precedence over the `--idle` flag and the default.
+/// A test needs a daemon that expires in moments rather than minutes, so that a daemon left behind
+/// by a failed assertion cannot outlive the run, and that must hold even for an autostarted daemon
+/// whose `--idle` carries a quarter hour.
 const IDLE_SECS_ENV: &str = "KTSENSE_DAEMON_IDLE_SECS";
+
+/// Minutes an autostarted daemon stays up while idle, shorter than a hand-started daemon's hour. An
+/// autostart is a side effect of one question (KT-105), so it should not hold an engine warm for an
+/// hour on a root the session may already be done with (KT-125).
+const AUTOSTART_IDLE_MINUTES: u64 = 15;
 
 /// Owner-only, the modes the daemon crate sets on this same directory and its own socket. A start
 /// claim sits beside that socket and must not widen what reaches it.
@@ -82,7 +89,10 @@ pub(crate) fn report_status(root: &Path) -> Result<CommandOutcome, CommandError>
 /// the socket, since a socket that came up while another start held the claim is that start's work.
 /// One atomic operation grants that claim, so what a start reports and what a start spawns come from
 /// the same decision and cannot disagree (KT-71).
-pub(crate) fn start(root: &Path) -> Result<CommandOutcome, CommandError> {
+pub(crate) fn start(
+    root: &Path,
+    idle_minutes: Option<u64>,
+) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
     let socket = socket_for(&root)?;
     if live(&socket) && !matches!(block_on(stop_if_mismatched(&socket)), Ok(Some(_))) {
@@ -92,7 +102,7 @@ pub(crate) fn start(root: &Path) -> Result<CommandOutcome, CommandError> {
     match claim_the_start(&socket)? {
         Arbitration::Conceded => Ok(already_running(&root, &socket)),
         Arbitration::Granted(_claim) => {
-            spawn_detached(&root)?;
+            spawn_detached(&root, idle_minutes)?;
             await_liveness(&socket)?;
             Ok(CommandOutcome::success(format!(
                 "ktsense: daemon started for {}\nsocket: {}\n",
@@ -325,10 +335,14 @@ pub(crate) fn shutdown(root: &Path) -> Result<CommandOutcome, CommandError> {
 
 /// Serves until stopped, idle, or faulted. This is the body the detached child runs; it is hidden
 /// from help because it is an implementation detail of `start`, not a command to invoke by hand.
-pub(crate) fn serve(root: &Path) -> Result<CommandOutcome, CommandError> {
+pub(crate) fn serve(
+    root: &Path,
+    idle_minutes: Option<u64>,
+) -> Result<CommandOutcome, CommandError> {
     let root = canonical_root(root);
     let socket = socket_for(&root)?;
-    let config = DaemonConfig::new(socket, idle_timeout());
+    let idle = idle_timeout(idle_minutes);
+    let config = DaemonConfig::new(socket, idle);
     let initialize = InitializeConfig {
         root_uri: file_uri(&root),
         ignore_patterns: vec![crate::trace::IGNORED_BUILD_OUTPUT.to_string()],
@@ -338,7 +352,7 @@ pub(crate) fn serve(root: &Path) -> Result<CommandOutcome, CommandError> {
         let engine = WarmEngine::warm_up(initialize)
             .await
             .map_err(|error| failure(format!("ktsense: cannot start the engine: {error}")))?;
-        let engine = crate::routing::CommandEngine::new(root, engine);
+        let engine = crate::routing::CommandEngine::new(root, engine, idle);
         run(config, engine)
             .await
             .map_err(|error| failure(format!("ktsense: daemon failed: {error}")))
@@ -385,12 +399,46 @@ fn file_uri(root: &Path) -> String {
     format!("file://{}", root.display())
 }
 
-fn idle_timeout() -> Duration {
-    std::env::var(IDLE_SECS_ENV)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .map(Duration::from_secs)
+fn idle_timeout(flag_minutes: Option<u64>) -> Duration {
+    resolve_idle(std::env::var(IDLE_SECS_ENV).ok(), flag_minutes)
+}
+
+/// The idle window a `daemon serve` holds, chosen from the test override, the `--idle` flag, or the
+/// default, in that order. `KTSENSE_DAEMON_IDLE_SECS` wins so a test can squeeze any daemon down to
+/// seconds no matter what minutes the flag carries, and an unparseable value is ignored rather than
+/// trusted. With no override, `--idle <minutes>` sets the window, and a serve given neither keeps
+/// the hour-long default.
+fn resolve_idle(env_secs: Option<String>, flag_minutes: Option<u64>) -> Duration {
+    if let Some(secs) = env_secs.and_then(|value| value.parse::<u64>().ok()) {
+        return Duration::from_secs(secs);
+    }
+    flag_minutes
+        .map(|minutes| Duration::from_secs(minutes.saturating_mul(60)))
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
+}
+
+/// The trailing arguments a detached `daemon serve` is spawned with, carrying the idle window on as
+/// a hidden `--idle <minutes>` flag so the serve child idles out after the window its starter chose
+/// rather than the default. A flag rather than an environment variable keeps the chosen window
+/// visible in the process table, where an operator asking why a daemon idled out early can read it.
+fn serve_tail(idle_minutes: Option<u64>) -> Vec<String> {
+    let mut tail = vec!["daemon".to_string(), "serve".to_string()];
+    if let Some(minutes) = idle_minutes {
+        tail.push("--idle".to_string());
+        tail.push(minutes.to_string());
+    }
+    tail
+}
+
+/// The trailing arguments a background autostart re-executes, a `daemon start` carrying the shorter
+/// autostart idle window so the daemon it produces idles out sooner than a hand-started one.
+fn background_start_tail() -> Vec<String> {
+    vec![
+        "daemon".to_string(),
+        "start".to_string(),
+        "--idle".to_string(),
+        AUTOSTART_IDLE_MINUTES.to_string(),
+    ]
 }
 
 /// Starts a daemon for `root` in the background by re-executing `daemon start`, so an engine-backed
@@ -407,7 +455,7 @@ pub(crate) fn spawn_background_start(root: &Path) {
     let _ = Command::new(executable)
         .arg("--root")
         .arg(root)
-        .args(["daemon", "start"])
+        .args(background_start_tail())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -415,8 +463,9 @@ pub(crate) fn spawn_background_start(root: &Path) {
 }
 
 /// Re-executes this binary as a detached `daemon serve` child with its streams closed, so the daemon
-/// neither holds the terminal nor writes into the caller's output.
-fn spawn_detached(root: &Path) -> Result<(), CommandError> {
+/// neither holds the terminal nor writes into the caller's output. The chosen idle window rides along
+/// as the hidden `--idle` flag [`serve_tail`] builds, so the serve child idles out after it.
+fn spawn_detached(root: &Path, idle_minutes: Option<u64>) -> Result<(), CommandError> {
     let executable = std::env::current_exe().map_err(|error| {
         failure(format!(
             "ktsense: cannot locate the ktsense binary: {error}"
@@ -425,7 +474,7 @@ fn spawn_detached(root: &Path) -> Result<(), CommandError> {
     Command::new(executable)
         .arg("--root")
         .arg(root)
-        .args(["daemon", "serve"])
+        .args(serve_tail(idle_minutes))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -463,6 +512,40 @@ mod tests {
     use super::*;
 
     use ktsense_daemon::{COMPANION_RESERVE, MAX_SOCKET_PATH, SOCKET_BUDGET};
+
+    /// KT-125: the idle window a serve holds, and the arguments that carry it. The env override wins
+    /// over the flag so a test can squeeze any daemon down to seconds; an unparseable env is ignored
+    /// rather than trusted; otherwise `--idle <minutes>` sets whole minutes, and neither keeps the
+    /// default hour. A hand `daemon start` forwards only the window `--idle` chose (none here, so
+    /// serve defaults), while a background autostart forwards the shorter 15-minute window.
+    #[test]
+    fn the_idle_window_resolves_by_precedence_and_rides_the_right_spawn_arguments() {
+        let minute = Duration::from_secs(60);
+        let serve = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            (
+                resolve_idle(Some("20".to_string()), Some(15)),
+                resolve_idle(Some("not-a-number".to_string()), Some(15)),
+                resolve_idle(None, Some(15)),
+                resolve_idle(None, None),
+                AUTOSTART_IDLE_MINUTES,
+                serve_tail(Some(15)),
+                serve_tail(None),
+                background_start_tail(),
+            ),
+            (
+                Duration::from_secs(20),
+                minute * 15,
+                minute * 15,
+                DEFAULT_IDLE_TIMEOUT,
+                15,
+                serve(&["daemon", "serve", "--idle", "15"]),
+                serve(&["daemon", "serve"]),
+                serve(&["daemon", "start", "--idle", "15"]),
+            )
+        );
+    }
 
     /// The socket budget reserves room for the companion file a start puts beside a socket, and this
     /// is the file it means. A socket placed exactly at the budget must still leave room for its own

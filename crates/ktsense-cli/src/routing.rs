@@ -31,7 +31,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ktsense_core::{DepLevel, RenderOptions};
 use ktsense_daemon::{Client, ClientError, Engine, EngineRequest, HandlerOutcome, WarmEngine};
@@ -433,16 +433,18 @@ pub(crate) struct CommandEngine {
     cache: crate::cache::SkeletonCache,
     started: Instant,
     served: AtomicU64,
+    idle_limit: Duration,
 }
 
 impl CommandEngine {
-    pub(crate) fn new(root: PathBuf, engine: WarmEngine) -> Self {
+    pub(crate) fn new(root: PathBuf, engine: WarmEngine, idle_limit: Duration) -> Self {
         Self {
             root,
             engine,
             cache: crate::cache::SkeletonCache::default(),
             started: Instant::now(),
             served: AtomicU64::new(0),
+            idle_limit,
         }
     }
 
@@ -453,6 +455,7 @@ impl CommandEngine {
             uptime_secs: self.started.elapsed().as_secs(),
             index: self.engine.index_phase().into(),
             requests_served: self.served.load(Ordering::Relaxed),
+            idle_limit_secs: self.idle_limit.as_secs(),
         }
     }
 
@@ -685,7 +688,7 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                9,
+                10,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },

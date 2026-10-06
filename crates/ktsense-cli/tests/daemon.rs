@@ -616,6 +616,37 @@ fn a_second_start_reuses_the_running_daemon_rather_than_adding_one() {
     );
 }
 
+/// KT-125: a daemon reports the idle window it was started with, so `daemon status` shows how long
+/// it will stay warm. The window is a single minute here, both to render a whole-minute limit and so
+/// a daemon a failed assertion leaves behind still expires promptly; the harness stops it on drop
+/// regardless. The window is read back from a status probe against the live daemon, not from the
+/// starting invocation, so it proves the snapshot carried it across the socket.
+const IDLE_PROBE_SECS: &str = "60";
+
+#[test]
+fn daemon_status_reports_the_idle_window_the_daemon_holds() {
+    let lifecycle = Lifecycle::new();
+    let started = lifecycle.run(
+        &["daemon", "start"],
+        &[("KTSENSE_DAEMON_IDLE_SECS", IDLE_PROBE_SECS)],
+    );
+    let status = lifecycle.act("status");
+
+    assert_eq!(
+        (
+            started.code,
+            status.code,
+            status.stdout.contains("ktsense: daemon running for"),
+            status.stdout.contains("idle limit: 1 min"),
+        ),
+        (Some(0), Some(0), true, true),
+        "start said: {}{}\nstatus said: {}",
+        started.stdout,
+        started.stderr,
+        status.stdout
+    );
+}
+
 /// KT-30: stopping twice is quiet, and the first stop leaves no socket behind.
 ///
 /// Runs on every platform. The name says socket rather than process deliberately: proving no process

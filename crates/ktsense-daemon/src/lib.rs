@@ -43,7 +43,10 @@ use std::path::{Path, PathBuf};
 /// Version 7 added the routed `map` focus pattern, so `--focus` crosses the wire (KT-108).
 /// Version 8 added the routed `map` fill flag, so `--fill` crosses the wire (KT-110).
 /// Version 9 added the routed `map` path filter, so `--path` crosses the wire (KT-120).
-pub const PROTOCOL_VERSION: u32 = 9;
+/// Version 10 added the daemon's idle limit to its status snapshot, so `daemon status` reads the
+/// window the daemon will idle out after; a version-9 daemon returns a snapshot without it and is
+/// treated as a mismatch rather than read short (KT-125).
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

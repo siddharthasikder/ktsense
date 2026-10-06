@@ -256,15 +256,17 @@ ktsense daemon start --root /path/to/repo
 
 This keeps an engine session warm for one root. `outline`, `deps`, `map`, `trace` and `context` route
 through it automatically when it is live and fall back to running in process when it is not, so a
-routing problem degrades to a slower answer rather than no answer. It expires after an hour idle.
-Nothing requires it; see the latency table for what it is worth per command.
+routing problem degrades to a slower answer rather than no answer. A daemon you start by hand expires
+after an hour idle; `--idle <minutes>` sets a different window, and `daemon status` shows the window a
+running daemon holds. Nothing requires it; see the latency table for what it is worth per command.
 
 You rarely need to start it by hand. The first `trace` or `context` in a root, finding no daemon,
 answers in process and then starts one in the background, so the next question is answered warm
 (about 50 ms against 0.7 to 2 s). The first answer is unchanged and the background start never blocks
-or fails it; concurrent first uses settle on a single daemon. Set `KTSENSE_NO_AUTOSTART=1` to answer
-in process without starting one, or `KTSENSE_NO_DAEMON=1` to also skip routing through an existing
-one.
+or fails it; concurrent first uses settle on a single daemon. A daemon started this way idles out
+after fifteen minutes, sooner than a hand-started one, since a session is often done with a root
+within the hour. Set `KTSENSE_NO_AUTOSTART=1` to answer in process without starting one, or
+`KTSENSE_NO_DAEMON=1` to also skip routing through an existing one.
 
 After an upgrade, a daemon an older build left warm speaks an older protocol. `daemon stop` stops a
 daemon of any protocol version, `daemon status` names both versions when they differ, and the next
