@@ -10,6 +10,8 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Fixed
 
+- Signatures, supertypes and annotations lifted across several source lines now render on one line. The syntax adapter folds each such span through a pure `ktsense-core::text` normalizer that collapses whitespace runs, drops spaces just inside brackets and before commas, and drops a trailing comma before a closer, while leaving string literals and comments byte for byte so a default like `= "a  b"` and a multi-line raw string keep their contents (KT-92).
+
 - `trace` and `context` no longer count comment, KDoc or string text, or a same-named declaration such as a `companion object`, as a caller. Each reference site is classified by the syntax node it falls in, only code uses become callers and usage rows, and the Usages line says how many text mentions and same-named declarations it left out (KT-83).
 - A "no declaration named X" answer now says it searched this workspace only, not library dependencies (KT-87).
 - `trace` and `context` no longer list a class as its own implementor (KT-77).

@@ -357,7 +357,46 @@ fn extracts_class_function_and_multiline_annotations_each_on_one_line() {
         (
             vec!["@Component(modules = [AwsModule::class, ConfigModule::class])".to_string()],
             vec!["@JvmStatic".to_string()],
-            vec!["@Retention( AnnotationRetention.RUNTIME, )".to_string()],
+            vec!["@Retention(AnnotationRetention.RUNTIME)".to_string()],
+        )
+    );
+}
+
+#[test]
+fn folds_a_multi_line_class_header_and_annotation_onto_one_line() {
+    let file = extract(
+        "probe.kt",
+        r#"
+@Component(
+    modules = [
+        JacksonModule::class,
+        ApiClientModule::class,
+    ],
+)
+open class ApplicationCallPipeline(
+    developmentMode: Boolean,
+) : Pipeline<Unit, PipelineCall>(
+    Setup,
+    Monitoring,
+    Fallback
+) {
+    val environment: String = "x"
+}
+"#,
+    )
+    .expect("extract");
+    let skeleton = render_skeleton(
+        &file,
+        &RenderOptions::default().with_private().with_annotations(),
+    );
+
+    assert_eq!(
+        skeleton,
+        concat!(
+            "@Component(modules = [JacksonModule::class, ApiClientModule::class])\n",
+            "open class ApplicationCallPipeline(developmentMode: Boolean) : Pipeline<Unit, PipelineCall>(Setup, Monitoring, Fallback) {\n",
+            "    val environment: String\n",
+            "}"
         )
     );
 }

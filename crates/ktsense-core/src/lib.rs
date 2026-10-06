@@ -37,7 +37,7 @@ pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
     MAX_NESTING_DEPTH,
 };
-pub use text::{fence_for, neutralize, MIN_FENCE_BACKTICKS};
+pub use text::{fence_for, neutralize, normalize_signature_layout, MIN_FENCE_BACKTICKS};
 pub use trace::{
     build_trace, callers_of, CallerLevel, Definition, ExcludedSite, IndexCompleteness,
     RelatedDeclaration, TraceInput, TraceReport,

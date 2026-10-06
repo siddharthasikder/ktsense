@@ -19,7 +19,8 @@ use std::cell::Cell;
 
 use anyhow::{Context, Result};
 use ktsense_core::{
-    DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
+    normalize_signature_layout, DeclKind, Declaration, FileSkeleton, Modifier, Parameter,
+    Visibility, MAX_NESTING_DEPTH,
 };
 use tree_sitter::Node;
 
@@ -102,6 +103,13 @@ struct Extractor<'a> {
 impl<'a> Extractor<'a> {
     fn text(&self, node: Node<'_>) -> &'a str {
         &self.source[node.byte_range()]
+    }
+
+    /// The source text of `node` folded onto one line by [`normalize_signature_layout`], so a
+    /// signature, supertype or annotation written across several lines reads as one. Identifiers,
+    /// names and paths keep [`Self::text`] instead, so the bytes a lookup keys on stay exact.
+    fn signature_text(&self, node: Node<'_>) -> String {
+        normalize_signature_layout(self.text(node))
     }
 
     fn first_child_of_kind<'t>(&self, node: Node<'t>, kind: &str) -> Option<Node<'t>> {
@@ -270,7 +278,7 @@ impl<'a> Extractor<'a> {
             .children(variable)
             .into_iter()
             .find(|child| TYPE_KINDS.contains(&child.kind()))
-            .map(|type_node| self.text(type_node).to_string());
+            .map(|type_node| self.signature_text(type_node));
         declaration.type_inferred = declaration.return_type.is_none();
         declaration.doc = self.doc_of(node);
         declaration.annotations = self.annotations_of(node);
@@ -288,7 +296,7 @@ impl<'a> Extractor<'a> {
             .skip_while(|child| child.kind() != "type_identifier")
             .skip(1)
             .find(|child| TYPE_KINDS.contains(&child.kind()))
-            .map(|type_node| self.text(type_node).to_string());
+            .map(|type_node| self.signature_text(type_node));
         declaration.doc = self.doc_of(node);
         declaration
     }
@@ -364,19 +372,19 @@ impl<'a> Extractor<'a> {
         self.children(modifiers)
             .into_iter()
             .filter(|group| group.kind() == "annotation")
-            .map(|group| normalize_annotation(self.text(group)))
+            .map(|group| self.signature_text(group))
             .collect()
     }
 
     fn attach_type_parameters(&self, declaration: &mut Declaration, node: Node<'_>) {
         if let Some(parameters) = self.first_child_of_kind(node, "type_parameters") {
-            declaration.type_parameters = Some(self.text(parameters).to_string());
+            declaration.type_parameters = Some(self.signature_text(parameters));
         }
     }
 
     fn attach_constraints(&self, declaration: &mut Declaration, node: Node<'_>) {
         if let Some(constraints) = self.first_child_of_kind(node, "type_constraints") {
-            let text = self.text(constraints);
+            let text = self.signature_text(constraints);
             declaration.type_constraints =
                 Some(text.trim_start_matches("where").trim().to_string());
         }
@@ -386,7 +394,7 @@ impl<'a> Extractor<'a> {
         self.children(node)
             .into_iter()
             .filter(|child| child.kind() == "delegation_specifier")
-            .map(|specifier| self.text(specifier).to_string())
+            .map(|specifier| self.signature_text(specifier))
             .collect()
     }
 
@@ -412,7 +420,7 @@ impl<'a> Extractor<'a> {
             .iter()
             .position(|child| TYPE_KINDS.contains(&child.kind()));
         let type_name = type_index
-            .map(|index| self.text(children[index]))
+            .map(|index| self.signature_text(children[index]))
             .unwrap_or_default();
 
         let mut parameter = Parameter::new(name, type_name);
@@ -423,7 +431,7 @@ impl<'a> Extractor<'a> {
             .and_then(|index| children.get(index + 1..))
             .and_then(|rest| rest.iter().find(|child| child.is_named()))
         {
-            parameter = parameter.defaulting_to(self.text(*default));
+            parameter = parameter.defaulting_to(self.signature_text(*default));
         }
         parameter
     }
@@ -458,7 +466,7 @@ impl<'a> Extractor<'a> {
                 _ => {
                     if let Some(last) = parameters.last_mut() {
                         if last.default.is_none() {
-                            last.default = Some(self.text(child).to_string());
+                            last.default = Some(self.signature_text(child));
                         }
                     }
                 }
@@ -485,7 +493,7 @@ impl<'a> Extractor<'a> {
             .filter(|previous| previous.kind() == "type_modifiers")
             .map(|previous| format!("{} ", self.text(*previous)))
             .unwrap_or_default();
-        format!("{modifier}{}", self.text(children[index]))
+        normalize_signature_layout(&format!("{modifier}{}", self.text(children[index])))
     }
 
     /// The return type is the first type-shaped child after the parameter list. Anything before it
@@ -497,7 +505,7 @@ impl<'a> Extractor<'a> {
             .skip(1)
             .take_while(|child| child.kind() != "function_body")
             .find(|child| TYPE_KINDS.contains(&child.kind()))
-            .map(|type_node| self.text(type_node).to_string())
+            .map(|type_node| self.signature_text(type_node))
     }
 
     /// Members of a class, interface, object or enum body.
@@ -556,13 +564,6 @@ fn summarize_kdoc(raw: &str) -> Option<String> {
         None => summary,
     };
     (!sentence.is_empty()).then_some(sentence)
-}
-
-/// Collapses an annotation's source text to a single line, folding any run of whitespace (including
-/// the newlines of a multi-line annotation) into one space. Keeps the arguments verbatim otherwise,
-/// so `@Component(modules = [A::class, B::class])` survives with its shape intact.
-fn normalize_annotation(raw: &str) -> String {
-    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn modifier_from_keyword(keyword: &str) -> Option<Modifier> {
