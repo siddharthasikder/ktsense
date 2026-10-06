@@ -33,7 +33,7 @@ fn status(runtime_dir: &Path, engine: &Path, args: &[&str]) -> Run {
     // lookup, and clearing `PATH` for one makes the engine unspawnable rather than unfound.
     if engine.is_absolute() && !engine.exists() {
         command.env("PATH", runtime_dir);
-    } else {
+    } else if engine == fake_lsp() {
         command.env("PATH", path_with_stub_ripgrep(runtime_dir));
     }
     let output = command.args(args).output().expect("binary runs");
@@ -77,7 +77,7 @@ fn neutralize(text: &str, runtime_dir: &Path, engine: &Path) -> String {
     neutralize_root_hashes(&text)
 }
 
-/// The `rg` every case with an engine finds first on its `PATH`. `status` only checks that a file
+/// The `rg` every fake-engine case finds first on its `PATH`. `status` only checks that a file
 /// named `rg` is there, and GitHub's `ubuntu-24.04` runner has no ripgrep, so the line the goldens
 /// pin must come from a file the test provides rather than from the host.
 fn stub_ripgrep(runtime_dir: &Path) -> PathBuf {
