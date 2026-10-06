@@ -1,19 +1,66 @@
 # ktsense
 
-Agent-first Kotlin code understanding. `ktsense` is a Rust CLI and an MCP server that answer
-structural questions about a Kotlin workspace in compressed form, so a terminal AI agent spends its
-context on the answer instead of on the file. It wraps the upstream
-[`kmp-lsp`](https://github.com/Hessesian/kmp-lsp) engine by process; it does not link it.
+Agent-first Kotlin code understanding. `ktsense` is a Rust CLI and a Model Context Protocol (MCP)
+server that answer structural questions about a Kotlin or Kotlin Multiplatform workspace in compressed
+form, so a terminal AI coding agent spends its context on the answer instead of on the file. It wraps
+the upstream Kotlin language server [`kmp-lsp`](https://github.com/Hessesian/kmp-lsp) engine by
+process; it does not link it.
 
 A file's API surface is one `outline` call rather than a whole file in the prompt. "Who implements
 this interface" is one `trace` call rather than a grep and a page of false positives. An unfamiliar
-repository is one token-budgeted `map`.
+repository is one token-budgeted `map`. The eight MCP tools cover outlines, symbol lookup, call and
+implementor tracing, an import and dependency graph, a repository map, and a syntax check.
 
 **What it is not.** Resolution is syntactic. ktsense parses with tree-sitter and asks an engine that
 indexes references; it does not type-check. It cannot tell you which overload a call site resolves
 to, whether a type argument is valid, or whether the code compiles. Type errors are Gradle's job.
 When ktsense is unsure which declaration you meant it lists every candidate rather than guessing, and
 answers that depend on the reference index carry a marker saying how complete that index was.
+
+## When to use it, and when `grep` is the better tool
+
+This section exists because the project's own agent evaluation found that **ktsense did not beat a
+`grep`-equipped baseline**, and the reason was the question set rather than the tools. Both arms
+answered 9 of 9 graded questions correctly; the ktsense arm used more tool calls, 21 against 17, and
+was nominally about a third slower at the median, inside this host's noise. Nine of the ten questions
+asked where a distinctively named declaration lives, and a single `grep` answers that exactly. So
+there is no speed claim here in either direction, and an agent that reaches for ktsense on every
+question will do more work than one that picks. The numbers and their caveats are in
+[Measured numbers](#measured-numbers) and [bench/agent-eval/results.md](bench/agent-eval/results.md).
+
+**Reach for `grep` or `rg` when you already know a distinctive literal token.** `public interface
+CoroutineScope`, an error string, an annotation name. A text search lands on it in one call with no
+false positives, and nothing structural improves on an exact match.
+
+**Reach for ktsense when the question is structural, or when the answer would cost more context than
+it is worth.** The measured case for it is size rather than speed: an `outline` skeleton of a real
+corpus retains 10.63% of raw bytes on kotlinx.coroutines and 14.65% on ktor, so the API surface of a
+file or a module arrives without the bodies. Specifically:
+
+| Question shape | Better tool | Why |
+|---|---|---|
+| Where is this exactly-named declaration | `grep` | measured: one call, no false positives |
+| What does this file or module declare, without bodies | `outline` | measured 85% to 89% fewer bytes than the source |
+| Orient me in an unfamiliar repository | `map` | one answer inside a token budget you set |
+| What imports what, and are there cycles | `deps` | an import graph, not a pile of matches |
+| Who implements or calls this, across files | `trace` | reference index, rather than a text match per call site |
+| This name is ambiguous | `symbols`, `trace` | every candidate is listed rather than one guessed |
+| Did my edit parse | `check` | the engine's own checker, before the next build |
+
+Two honest limits on that table. The evaluation did **not** test the budgeted map, the ranked outline
+of an unfamiliar module, or a symbol ambiguous enough that a text search returns a hundred candidates,
+which are exactly the rows a structural answer should win; those rows rest on the compression and
+latency measurements plus the tool contracts, not on a head-to-head result. And nothing in the
+evaluation measured context window consumption, which is the reason this tool exists.
+
+**If you are configuring an agent, install the skill file.** On 3 of the 10 evaluation questions the
+ktsense-equipped arm ignored ktsense and reached for `grep`, having been told nothing about when to
+prefer which tool and with no skill file installed. That is a discoverability finding, not a tool
+quality one. `contrib/agent-skill/SKILL.md` carries this routing in the form an agent reads, and a
+release tarball ships it at the archive root as `SKILL.md`.
+
+On a host where the bundled engine cannot run, `outline`, `deps`, `map` and `status` still answer and
+the engine-backed rows above do not. See [Requirements](#requirements).
 
 ## Install
 
