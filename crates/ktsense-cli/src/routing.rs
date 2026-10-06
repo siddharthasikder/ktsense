@@ -74,6 +74,8 @@ pub(crate) enum RoutedCommand {
         pick: Option<String>,
         budget: usize,
         sections: ktsense_core::ContextSections,
+        match_pattern: Option<String>,
+        around: usize,
     },
 }
 
@@ -186,31 +188,49 @@ pub(crate) fn run_in_process(
             pick,
             budget,
             sections,
+            match_pattern,
+            around,
         } => crate::context::context(context_request(
-            root, symbol, pick, *budget, *sections, format,
-        )),
+            root,
+            symbol,
+            pick,
+            *budget,
+            *sections,
+            match_pattern,
+            *around,
+            format,
+        )?),
     }
 }
 
 /// Rebuilds a [`crate::context::ContextRequest`] from the wire fields, borrowing `root` and the
 /// owned strings the routed command carries, so the fresh and warm paths construct an identical
-/// request.
+/// request. The `--match` pattern is compiled here, where both paths pass through, so an invalid
+/// regex fails identically on each.
+#[allow(clippy::too_many_arguments)]
 fn context_request<'a>(
     root: &'a Path,
     symbol: &'a str,
     pick: &'a Option<String>,
     budget: usize,
     sections: ktsense_core::ContextSections,
+    match_pattern: &Option<String>,
+    around: usize,
     format: Format,
-) -> crate::context::ContextRequest<'a> {
-    crate::context::ContextRequest {
+) -> Result<crate::context::ContextRequest<'a>, CommandError> {
+    let source_match = match match_pattern {
+        Some(pattern) => Some(crate::context::SourceMatch::compile(pattern, around)?),
+        None => None,
+    };
+    Ok(crate::context::ContextRequest {
         root,
         symbol,
         pick: pick.as_deref(),
         budget,
         sections,
+        source_match,
         format,
-    }
+    })
 }
 
 /// Rebuilds a [`TraceRequest`] from the wire fields, borrowing `root` and the owned strings the
@@ -466,10 +486,21 @@ impl CommandEngine {
                 pick,
                 budget,
                 sections,
+                match_pattern,
+                around,
             } => {
                 crate::context::context_warm(
                     &self.engine,
-                    context_request(&self.root, symbol, pick, *budget, *sections, format),
+                    context_request(
+                        &self.root,
+                        symbol,
+                        pick,
+                        *budget,
+                        *sections,
+                        match_pattern,
+                        *around,
+                        format,
+                    )?,
                 )
                 .await
             }
@@ -526,6 +557,8 @@ mod tests {
                 pick: None,
                 budget: 2000,
                 sections: ktsense_core::ContextSections::all(),
+                match_pattern: None,
+                around: 1,
             },
         ];
         let shapes: Vec<Value> = every_command
@@ -542,7 +575,7 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                4,
+                5,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },
@@ -552,7 +585,7 @@ mod tests {
                     { "command": "map", "budget": 4000, "format": "md" },
                     { "command": "context", "symbol": "save", "pick": null, "budget": 2000,
                       "sections": { "source": true, "outline": true, "callers": true,
-                      "implementors": true }, "format": "md" }
+                      "implementors": true }, "match_pattern": null, "around": 1, "format": "md" }
                 ])
             ),
             "a routed wire shape changed: bump ktsense_daemon::PROTOCOL_VERSION and repin this test"
@@ -630,6 +663,8 @@ mod tests {
                 pick: Some("shop.app.checkout.CheckoutService".to_string()),
                 budget: 2000,
                 sections: ktsense_core::ContextSections::all(),
+                match_pattern: Some("return".to_string()),
+                around: 2,
             },
             format: WireFormat::Md,
         };
@@ -647,6 +682,8 @@ mod tests {
                     "budget": 2000,
                     "sections": { "source": true, "outline": true, "callers": true,
                       "implementors": true },
+                    "match_pattern": "return",
+                    "around": 2,
                     "format": "md"
                 }),
                 params.command,

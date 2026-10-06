@@ -5,6 +5,7 @@
 ### Added
 
 - `context --only <section>[,<section>...]` (and the `only` argument of the `explain_kotlin_symbol` MCP tool) renders the declaration line plus only the named sections, out of `source`, `callers`, `implementors` and `outline`, and spends the token budget on them alone. The full bundle is the default and is byte-identical to before, in Markdown and JSON; a filtered bundle carries a `sections` object in its JSON. The routed daemon request shape gained the filter, so the daemon protocol version is now 4 (KT-96).
+- `context --match <regex> [--around N]` (and the `match` and `around` arguments of the `explain_kotlin_symbol` MCP tool) keeps the declaration line and, in the Source section, only the lines matching the pattern plus `--around N` context lines (default 1), each with its line number and `...` where lines were skipped. It composes with `--only`. Without `--match` the output is unchanged. The routed daemon request gained the pattern, so the daemon protocol version is now 5 (KT-101).
 
 ### Changed
 

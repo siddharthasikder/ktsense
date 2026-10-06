@@ -24,7 +24,8 @@ pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
 pub use context::{
-    build_context, ContextInput, ContextSection, ContextSections, SourceSection, SymbolContext,
+    build_context, ContextInput, ContextSection, ContextSections, LineMatcher, MatchedLine,
+    MatchedSource, SourceMatch, SourceSection, SymbolContext,
 };
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use pick::{match_pick, shortest_unique_suffix, PickMatch};

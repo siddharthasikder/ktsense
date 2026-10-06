@@ -98,6 +98,44 @@ pub struct SourceSection {
     pub omitted_lines: usize,
 }
 
+/// One source line kept by `--match`: its absolute 1-based number, its neutralized text, and
+/// whether a run of lines was skipped just before it, which the renderer shows as a `...` gap. The
+/// gap flag is intrinsic to the kept lines' numbers and is decided before the budget trims the
+/// tail, so a budget-truncated match keeps the same gaps the full one would.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MatchedLine {
+    pub number: u32,
+    pub text: String,
+    pub gap_before: bool,
+}
+
+/// The `--match` view of a declaration's body: only the lines matching the pattern plus their
+/// `--around` context, each numbered, with `gap_before` marking where lines were dropped between
+/// runs. `start_line` and `end_line` are the declaration's full span, so a reader can see how much
+/// of it the matched lines cover; `omitted_lines` are matched or context lines the budget could not
+/// afford, dropped from the tail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MatchedSource {
+    pub lines: Vec<MatchedLine>,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub omitted_lines: usize,
+}
+
+/// Decides whether a source line is kept by `--match`. A trait rather than a concrete regex because
+/// `ktsense-core` holds no parser or regex engine: the CLI compiles the pattern and passes a matcher
+/// in, exactly as it passes a [`crate::TokenEstimator`], so the budgeting and the filtering both stay
+/// testable from hand-built values.
+pub trait LineMatcher {
+    fn matches(&self, line: &str) -> bool;
+}
+
+/// A `--match` request: the matcher and how many context lines to keep around each hit.
+pub struct SourceMatch<'a> {
+    pub matcher: &'a dyn LineMatcher,
+    pub around: usize,
+}
+
 /// A budgeted context bundle for one symbol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolContext {
@@ -117,6 +155,11 @@ pub struct SymbolContext {
     /// The traced declaration's own body, from its declaration line through the end of its span,
     /// absent when the caller passed no source or the span could not be located.
     pub source: Option<SourceSection>,
+    /// The `--match` view of the body: only matching lines plus their context, numbered. Present
+    /// instead of [`Self::source`] when the caller passed a `--match` pattern, and left out of the
+    /// JSON otherwise so an unfiltered bundle serializes exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_source: Option<MatchedSource>,
     /// The outline of the declaration's file, one balanced block per top-level declaration.
     pub file_outline: ContextSection<String>,
     pub callers: ContextSection<RelatedDeclaration>,
@@ -135,6 +178,10 @@ impl SymbolContext {
                 .source
                 .as_ref()
                 .map_or(0, |source| source.omitted_lines)
+            + self
+                .matched_source
+                .as_ref()
+                .map_or(0, |matched| matched.omitted_lines)
             + self.file_outline.omitted
             + self.callers.omitted
             + self.implementors.omitted
@@ -153,6 +200,9 @@ pub struct ContextInput<'a> {
     /// the declaration's own body is sliced. The caller reads the file; core never does. Absent
     /// when it could not be read.
     pub source: Option<&'a [String]>,
+    /// When present, the body is filtered to lines the matcher keeps plus their context, and the
+    /// bundle carries a [`MatchedSource`] instead of a [`SourceSection`].
+    pub source_match: Option<SourceMatch<'a>>,
     pub callers: &'a [RelatedDeclaration],
     pub implementors: &'a [RelatedDeclaration],
     pub budget: usize,
@@ -167,12 +217,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
     let emission = emit_within_budget(offered, input.budget, estimator);
     let kept = Kept::of(emission.items);
 
-    let source = body.map(|body| SourceSection {
-        omitted_lines: body.lines.len() - kept.source.len(),
-        lines: kept.source,
-        start_line: body.start_line,
-        end_line: body.end_line,
-    });
+    let (source, matched_source) = split_source(body, kept.source);
 
     SymbolContext {
         symbol: input.definition.qualified_name.clone(),
@@ -180,6 +225,7 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
         index: input.index,
         declaration: section(kept.declaration, available.declaration),
         source,
+        matched_source,
         file_outline: section(kept.file_outline, available.file_outline),
         callers: section(kept.callers, available.callers),
         implementors: section(kept.implementors, available.implementors),
@@ -189,15 +235,70 @@ pub fn build_context<E: TokenEstimator>(input: ContextInput<'_>, estimator: &E) 
     }
 }
 
-/// The queried declaration's body: its neutralized source lines and the absolute range they cover,
-/// or `None` when the caller passed no source, the file did not parse, or no declaration starts on
-/// the definition line. The end of an unbounded span (a declaration running to the end of the file)
-/// is resolved against the source length here, the one place both the span and the file's lines are
-/// in hand. Neutralizing here keeps the budget's measure and the renderer's output the same text.
+/// Splits the surviving source candidates into the one of the two body views the request asked for:
+/// a `--match` request yields a numbered [`MatchedSource`], an ordinary one the whole-body
+/// [`SourceSection`]. The lines the budget dropped from the tail are reported either way, counted
+/// against the full set of candidates the body offered.
+fn split_source(
+    body: Option<SourceBody>,
+    kept: Vec<SourceCandidate>,
+) -> (Option<SourceSection>, Option<MatchedSource>) {
+    let Some(body) = body else {
+        return (None, None);
+    };
+    let omitted_lines = body.candidates.len() - kept.len();
+    if body.matched {
+        let lines = kept
+            .into_iter()
+            .filter_map(|candidate| candidate.matched)
+            .collect();
+        (
+            None,
+            Some(MatchedSource {
+                lines,
+                start_line: body.start_line,
+                end_line: body.end_line,
+                omitted_lines,
+            }),
+        )
+    } else {
+        let lines = kept.into_iter().map(|candidate| candidate.raw).collect();
+        (
+            Some(SourceSection {
+                lines,
+                start_line: body.start_line,
+                end_line: body.end_line,
+                omitted_lines,
+            }),
+            None,
+        )
+    }
+}
+
+/// The queried declaration's body as emission candidates and the absolute range they cover, or
+/// `None` when the caller passed no source, the file did not parse, or no declaration starts on the
+/// definition line. The end of an unbounded span (a declaration running to the end of the file) is
+/// resolved against the source length here, the one place both the span and the file's lines are in
+/// hand. Neutralizing happens here so the budget's measure and the renderer's output are one text.
+///
+/// `matched` records whether `--match` filtered the candidates: a filtered body carries numbered
+/// lines with gap markers, an unfiltered one the whole body unchanged.
 struct SourceBody {
-    lines: Vec<String>,
+    candidates: Vec<SourceCandidate>,
     start_line: u32,
     end_line: u32,
+    matched: bool,
+}
+
+/// One offered body line: the exact text the budget measures and the renderer emits, the raw
+/// neutralized line the whole-body view keeps, and, in `--match` mode, the numbered line the matched
+/// view keeps. `rendered` already carries a leading `...` for a line that opens a new run, so a
+/// budget-trimmed match emits the same gaps the full one would.
+#[derive(Clone)]
+struct SourceCandidate {
+    rendered: String,
+    raw: String,
+    matched: Option<MatchedLine>,
 }
 
 fn source_body(input: &ContextInput<'_>) -> Option<SourceBody> {
@@ -209,21 +310,96 @@ fn source_body(input: &ContextInput<'_>) -> Option<SourceBody> {
     if span.start == 0 || span.start > end_line {
         return None;
     }
-    let lines = source[(span.start - 1) as usize..end_line as usize]
+    let raw_lines: Vec<String> = source[(span.start - 1) as usize..end_line as usize]
         .iter()
         .map(|line| neutralize(line).into_owned())
         .collect();
-    Some(SourceBody {
-        lines,
-        start_line: span.start,
-        end_line,
+    Some(match &input.source_match {
+        Some(spec) => matched_body(raw_lines, span.start, end_line, spec),
+        None => whole_body(raw_lines, span.start, end_line),
     })
+}
+
+/// The whole body, one candidate per line, rendered exactly as the line reads so an unfiltered
+/// `context` is byte-identical to the one that shipped before `--match`.
+fn whole_body(raw_lines: Vec<String>, start_line: u32, end_line: u32) -> SourceBody {
+    let candidates = raw_lines
+        .into_iter()
+        .map(|raw| SourceCandidate {
+            rendered: raw.clone(),
+            raw,
+            matched: None,
+        })
+        .collect();
+    SourceBody {
+        candidates,
+        start_line,
+        end_line,
+        matched: false,
+    }
+}
+
+/// The `--match` body: only the lines the matcher keeps plus their context, numbered, with a `...`
+/// opening each run that follows dropped lines.
+fn matched_body(
+    raw_lines: Vec<String>,
+    start_line: u32,
+    end_line: u32,
+    spec: &SourceMatch<'_>,
+) -> SourceBody {
+    let mut candidates = Vec::new();
+    let mut previous: Option<usize> = None;
+    for index in kept_indices(&raw_lines, spec) {
+        let gap_before = match previous {
+            None => index > 0,
+            Some(prev) => index > prev + 1,
+        };
+        previous = Some(index);
+        let number = start_line + index as u32;
+        let text = raw_lines[index].clone();
+        let rendered = if gap_before {
+            format!("...\n{number}: {text}")
+        } else {
+            format!("{number}: {text}")
+        };
+        candidates.push(SourceCandidate {
+            rendered,
+            raw: text.clone(),
+            matched: Some(MatchedLine {
+                number,
+                text,
+                gap_before,
+            }),
+        });
+    }
+    SourceBody {
+        candidates,
+        start_line,
+        end_line,
+        matched: true,
+    }
+}
+
+/// The body indices `--match` keeps: every line the matcher accepts, plus `around` lines on each
+/// side, merged into a sorted set so overlapping windows never duplicate a line.
+fn kept_indices(lines: &[String], spec: &SourceMatch<'_>) -> Vec<usize> {
+    let mut keep = std::collections::BTreeSet::new();
+    for (index, line) in lines.iter().enumerate() {
+        if spec.matcher.matches(line) {
+            let low = index.saturating_sub(spec.around);
+            let high = (index + spec.around).min(lines.len() - 1);
+            for neighbour in low..=high {
+                keep.insert(neighbour);
+            }
+        }
+    }
+    keep.into_iter().collect()
 }
 
 /// What a unit contributes once it has survived the budget. Variant order is the priority order.
 enum Payload {
     Declaration(String),
-    SourceLine(String),
+    SourceLine(SourceCandidate),
     FileOutline(String),
     Caller(RelatedDeclaration),
     Implementor(RelatedDeclaration),
@@ -251,9 +427,9 @@ fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>
         });
     }
     if let Some(body) = source {
-        units.extend(body.lines.iter().map(|line| Unit {
-            text: line.clone(),
-            payload: Payload::SourceLine(line.clone()),
+        units.extend(body.candidates.iter().map(|candidate| Unit {
+            text: candidate.rendered.clone(),
+            payload: Payload::SourceLine(candidate.clone()),
         }));
     }
     if input.sections.outline {
@@ -336,7 +512,7 @@ impl Available {
 /// The surviving units regrouped into their sections, in emission order.
 struct Kept {
     declaration: Vec<String>,
-    source: Vec<String>,
+    source: Vec<SourceCandidate>,
     file_outline: Vec<String>,
     callers: Vec<RelatedDeclaration>,
     implementors: Vec<RelatedDeclaration>,
@@ -354,7 +530,7 @@ impl Kept {
         for unit in units {
             match unit.payload {
                 Payload::Declaration(signature) => kept.declaration.push(signature),
-                Payload::SourceLine(line) => kept.source.push(line),
+                Payload::SourceLine(candidate) => kept.source.push(candidate),
                 Payload::FileOutline(block) => kept.file_outline.push(block),
                 Payload::Caller(caller) => kept.callers.push(caller),
                 Payload::Implementor(implementor) => kept.implementors.push(implementor),
@@ -449,6 +625,7 @@ mod tests {
                 sections: ContextSections::all(),
                 file: Some(&file),
                 source: None,
+                source_match: None,
                 callers: &callers(),
                 implementors: &implementors(),
                 budget,
@@ -565,6 +742,7 @@ mod tests {
                 sections: ContextSections::all(),
                 file: None,
                 source: None,
+                source_match: None,
                 callers: &callers(),
                 implementors: &implementors(),
                 budget: 10_000,
@@ -639,6 +817,7 @@ mod tests {
                 sections: ContextSections::all(),
                 file: Some(&file),
                 source: Some(&source),
+                source_match: None,
                 callers: &[],
                 implementors: &[],
                 budget: 10_000,
@@ -691,6 +870,7 @@ mod tests {
                 sections: ContextSections::all(),
                 file: Some(&file),
                 source: Some(&source),
+                source_match: None,
                 callers: &[],
                 implementors: &[],
                 budget,
@@ -730,6 +910,7 @@ mod tests {
                 sections: ContextSections::all(),
                 file: Some(&file),
                 source: None,
+                source_match: None,
                 callers: &[],
                 implementors: &[],
                 budget: 10_000,
@@ -763,6 +944,7 @@ mod tests {
                 },
                 file: Some(&file),
                 source: Some(&source),
+                source_match: None,
                 callers: &callers(),
                 implementors: &implementors(),
                 budget: 10_000,
@@ -804,6 +986,152 @@ mod tests {
                 false,
                 true,
             )
+        );
+    }
+
+    /// A line matcher that keeps any line containing a fixed substring, so the match filtering is
+    /// tested from a hand-built matcher with no regex engine in core.
+    struct Contains(&'static str);
+
+    impl LineMatcher for Contains {
+        fn matches(&self, line: &str) -> bool {
+            line.contains(self.0)
+        }
+    }
+
+    fn multibranch() -> (FileSkeleton, Vec<String>) {
+        let file = FileSkeleton::new("app/Guard.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::function("check", 1).returning("String")]);
+        let source = vec![
+            "fun check(x: Int): String {".to_string(),
+            "    log(x)".to_string(),
+            "    if (x < 0) {".to_string(),
+            "        return \"neg\"".to_string(),
+            "    } else if (x == 0) {".to_string(),
+            "        return \"zero\"".to_string(),
+            "    }".to_string(),
+            "    return \"pos\"".to_string(),
+            "}".to_string(),
+        ];
+        (file, source)
+    }
+
+    fn check_definition() -> Definition {
+        Definition {
+            qualified_name: "app.check".to_string(),
+            path: "app/Guard.kt".to_string(),
+            line: 1,
+            signature: "fun check(x: Int): String".to_string(),
+        }
+    }
+
+    /// `--match return --around 0` on a multi-branch body keeps only the three `return` lines, each
+    /// numbered, with a `...` opening every run because none are adjacent; the whole-body `source`
+    /// is absent, the matched view is present, and the budget is not exceeded. The rendered Source
+    /// carries the line numbers and the `...` gaps.
+    #[test]
+    fn match_keeps_only_the_matching_lines_numbered_with_gaps() {
+        let (file, source) = multibranch();
+        let matcher = Contains("return");
+        let bundle = build_context(
+            ContextInput {
+                definition: check_definition(),
+                index: IndexCompleteness::Complete,
+                sections: ContextSections::all(),
+                file: Some(&file),
+                source: Some(&source),
+                source_match: Some(SourceMatch {
+                    matcher: &matcher,
+                    around: 0,
+                }),
+                callers: &[],
+                implementors: &[],
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+        let matched: Vec<(u32, bool)> = bundle
+            .matched_source
+            .as_ref()
+            .map(|matched| {
+                matched
+                    .lines
+                    .iter()
+                    .map(|line| (line.number, line.gap_before))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(
+            (
+                bundle.source.is_some(),
+                matched,
+                bundle.matched_source.as_ref().map(|m| m.omitted_lines),
+                rendered.contains("## Source"),
+                rendered.contains("4:         return \"neg\""),
+                rendered.contains("\n...\n"),
+                bundle.token_upper_bound <= 10_000,
+            ),
+            (
+                false,
+                vec![(4, true), (6, true), (8, true)],
+                Some(0),
+                true,
+                true,
+                true,
+                true,
+            )
+        );
+    }
+
+    /// `--match` composes with `--only source`: the file outline, callers and implementors are off,
+    /// so the budget pays only for the declaration and the matched lines. `--around 1` widens each
+    /// hit by one line, merging the two adjacent `return` branches into one run.
+    #[test]
+    fn match_composes_with_only_source_and_around_widens_the_window() {
+        let (file, source) = multibranch();
+        let matcher = Contains("return");
+        let bundle = build_context(
+            ContextInput {
+                definition: check_definition(),
+                index: IndexCompleteness::Complete,
+                sections: ContextSections {
+                    source: true,
+                    outline: false,
+                    callers: false,
+                    implementors: false,
+                },
+                file: Some(&file),
+                source: Some(&source),
+                source_match: Some(SourceMatch {
+                    matcher: &matcher,
+                    around: 1,
+                }),
+                callers: &callers(),
+                implementors: &implementors(),
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+        let rendered = render_context_markdown(&bundle);
+        let numbers: Vec<u32> = bundle
+            .matched_source
+            .as_ref()
+            .map(|matched| matched.lines.iter().map(|line| line.number).collect())
+            .unwrap_or_default();
+
+        assert_eq!(
+            (
+                numbers,
+                bundle.callers.available(),
+                bundle.implementors.available(),
+                bundle.file_outline.available(),
+                rendered.contains("## Callers"),
+                rendered.contains("## File outline"),
+            ),
+            (vec![3, 4, 5, 6, 7, 8, 9], 0, 0, 0, false, false)
         );
     }
 }

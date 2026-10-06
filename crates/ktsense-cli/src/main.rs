@@ -207,6 +207,13 @@ enum Command {
         /// full bundle.
         #[arg(long, value_enum, value_delimiter = ',')]
         only: Vec<ContextOnly>,
+        /// Show only the Source lines matching this regular expression, plus --around context
+        /// lines, each with its line number and `...` where lines were skipped.
+        #[arg(long = "match", value_name = "REGEX")]
+        match_pattern: Option<String>,
+        /// Context lines to keep on each side of a --match hit.
+        #[arg(long, default_value_t = 1)]
+        around: usize,
     },
     /// Index phase, counts and engine version
     Status,
@@ -325,6 +332,14 @@ impl CommandError {
         Self {
             exit: Exit::Failure,
             message: format!("ktsense: {command} does not support --format dot (only deps does)"),
+        }
+    }
+
+    /// The `--match` value did not compile as a regex, so the invocation itself was malformed.
+    fn bad_match_pattern(error: regex::Error) -> Self {
+        Self {
+            exit: Exit::Usage,
+            message: format!("ktsense: --match is not a valid regular expression: {error}"),
         }
     }
 
@@ -534,6 +549,8 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             pick,
             budget,
             only,
+            match_pattern,
+            around,
         } => route(
             &base,
             routing::RoutedCommand::Context {
@@ -541,6 +558,8 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
                 pick,
                 budget,
                 sections: context_sections(&only),
+                match_pattern,
+                around,
             },
             format,
         ),

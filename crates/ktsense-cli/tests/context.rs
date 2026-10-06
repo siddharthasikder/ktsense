@@ -258,6 +258,51 @@ fn only_callers_renders_the_callers_section_alone() {
     );
 }
 
+/// `--match` filters the Source section to the lines matching the pattern, each with its line
+/// number, driven through the fake so it runs in the default suite. The interface method `save`
+/// spans its one signature line, which matches `save`, so the Source section carries that numbered
+/// line and nothing else.
+#[test]
+fn match_filters_the_source_section_to_matching_numbered_lines() {
+    let run = context(
+        &[
+            "save", "--budget", "2000", "--match", "save", "--around", "0",
+        ],
+        &only_the_interface_method(),
+        &session(completed_index()),
+    );
+
+    let observed = (
+        run.code,
+        run.stderr.trim().to_string(),
+        run.stdout.contains("## Source"),
+        run.stdout
+            .contains("4:     fun save(order: Order): OrderId"),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), String::new(), true, true),
+        "stdout: {}",
+        run.stdout
+    );
+}
+
+/// A `--match` that compiles to no valid regex is rejected as a malformed invocation, not a panic.
+#[test]
+fn an_invalid_match_regex_fails_cleanly() {
+    let run = context(
+        &["save", "--match", "("],
+        &only_the_interface_method(),
+        &session(completed_index()),
+    );
+
+    let observed = (
+        run.code,
+        run.stderr.contains("not a valid regular expression"),
+    );
+    assert_eq!(observed, (Some(2), true), "stderr: {}", run.stderr);
+}
+
 /// The acceptance criterion the card states outright: the reported content bound never exceeds the
 /// budget, at any budget from nothing to generous. Swept rather than sampled so an off-by-one in
 /// the packing cannot hide between two chosen budgets.
@@ -409,6 +454,51 @@ mod real {
         assert_eq!(
             observed,
             (Some(0), true, true, true),
+            "stdout was: {stdout}"
+        );
+    }
+
+    /// The KT-101 acceptance replay: `--match` on a multi-branch function shows both branch lines in
+    /// source order, each numbered, with `...` where lines were skipped, and the whole answer stays
+    /// small. `rebuild` guards with `if ... break` on line 12 and returns on line 16, so a match on
+    /// `break|return` surfaces exactly those two lines; `--only source` keeps the answer under the
+    /// 600-byte target the card names.
+    #[test]
+    fn match_on_a_multi_branch_function_shows_both_branch_lines_in_order() {
+        let output = Command::cargo_bin("ktsense")
+            .expect("binary builds")
+            .current_dir(WORKSPACE_ROOT)
+            .args([
+                "--root",
+                FIXTURE,
+                "context",
+                "rebuild",
+                "--only",
+                "source",
+                "--match",
+                "break|return",
+                "--around",
+                "0",
+            ])
+            .output()
+            .expect("binary runs");
+        let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+        let guard = stdout.find("12:             if (restored >= CheckoutConfig.maxItems) break");
+        let ret = stdout.find("16:         return restored");
+
+        let observed = (
+            output.status.code(),
+            stdout.contains("## Source"),
+            guard.is_some(),
+            ret.is_some(),
+            guard < ret,
+            stdout.contains("\n...\n"),
+            stdout.len() < 600,
+            output.stderr.is_empty(),
+        );
+        assert_eq!(
+            observed,
+            (Some(0), true, true, true, true, true, true, true),
             "stdout was: {stdout}"
         );
     }

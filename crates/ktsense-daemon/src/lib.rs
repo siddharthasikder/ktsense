@@ -37,7 +37,9 @@ use std::path::{Path, PathBuf};
 /// `annotations` (KT-90). Version 3 lets a routed reply carry a failing exit, so a `trace` or
 /// `context` of an undeclared name keeps exit 1 while returning its text-reference listing (KT-94).
 /// Version 4 added the routed `context` section filter, so `--only` crosses the wire (KT-96).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// Version 5 added the routed `context` source match, so `--match` and `--around` cross the wire
+/// (KT-101).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

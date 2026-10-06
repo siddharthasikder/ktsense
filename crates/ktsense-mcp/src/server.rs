@@ -271,6 +271,12 @@ pub struct ContextParams {
     /// budget on them alone; the declaration line is always shown. Omit for the full bundle.
     #[serde(default)]
     pub only: Vec<String>,
+    /// Show only the Source lines matching this regular expression, plus `around` context lines,
+    /// each with its line number and `...` where lines were skipped.
+    #[serde(rename = "match")]
+    pub match_pattern: Option<String>,
+    /// Context lines to keep on each side of a `match` hit; defaults to 1.
+    pub around: Option<usize>,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -700,7 +706,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "explain_kotlin_symbol",
-        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
+        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. Pass only to restrict the bundle to specific sections (any of source, callers, implementors, outline) and spend the budget on them alone. Pass match with a regular expression to keep only the Source lines matching it, plus around context lines, so a question about one branch in a long body is answered from that declaration alone. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -713,7 +719,9 @@ impl KtsenseServer {
             .positional(params.symbol)
             .option("pick", params.pick)
             .option("budget", params.budget)
-            .option_list("only", &params.only);
+            .option_list("only", &params.only)
+            .option("match", params.match_pattern)
+            .option("around", params.around);
         self.invoke(&crate::CONTEXT, args.0).await
     }
 

@@ -24,7 +24,7 @@
 
 use std::borrow::Cow;
 
-use crate::context::{ContextSection, SymbolContext};
+use crate::context::{ContextSection, MatchedSource, SymbolContext};
 use crate::imports::ImportGraph;
 use crate::references::{ReferenceGroup, SiteKind};
 use crate::repo_map::RepoMap;
@@ -481,6 +481,10 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
 /// dropped and the absolute range to read them from, and nothing is printed at all when the caller
 /// supplied no source.
 fn append_source(out: &mut String, context: &SymbolContext) {
+    if let Some(matched) = &context.matched_source {
+        append_matched_source(out, context, matched);
+        return;
+    }
     let Some(source) = &context.source else {
         return;
     };
@@ -500,6 +504,43 @@ fn append_source(out: &mut String, context: &SymbolContext) {
             source.end_line,
         ));
     }
+}
+
+/// The `--match` view of the body: only the matched lines and their context, each prefixed with its
+/// absolute line number, with a `...` opening every run that follows dropped lines. The numbered
+/// lines carry no valid Kotlin layout, so the fence is languageless. A budget that cut the matched
+/// set short says how many lines it dropped, as the whole-body view does.
+fn append_matched_source(out: &mut String, context: &SymbolContext, matched: &MatchedSource) {
+    out.push_str("\n## Source\n");
+    if matched.lines.is_empty() {
+        out.push_str("\nNo source lines matched.\n");
+    } else {
+        let body = matched_body_text(matched);
+        let fence = fence_for(&body);
+        out.push_str(&format!("\n{fence}\n{body}\n{fence}\n"));
+    }
+    if matched.omitted_lines > 0 {
+        out.push_str(&format!(
+            "\n{} more matched lines omitted; read {}:{}-{}\n",
+            matched.omitted_lines,
+            neutralize(&context.definition.path),
+            matched.start_line,
+            matched.end_line,
+        ));
+    }
+}
+
+/// The matched lines joined as the budget measured them: a `...` on its own line opens each run, and
+/// every kept line reads `number: text`.
+fn matched_body_text(matched: &MatchedSource) -> String {
+    let mut lines = Vec::new();
+    for line in &matched.lines {
+        if line.gap_before {
+            lines.push("...".to_string());
+        }
+        lines.push(format!("{}: {}", line.number, line.text));
+    }
+    lines.join("\n")
 }
 
 /// A fenced Kotlin section, or a line saying why it is empty. `unit` names what was dropped, so

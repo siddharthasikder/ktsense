@@ -226,7 +226,7 @@ Sixty-six lines of source, twelve lines of signatures. That is the whole idea.
 | `map` | Token-budgeted map of the most central files (`--budget`, default 4000) |
 | `check <paths>` | Syntax check; exits non-zero when a file has errors |
 | `diagnose <file>` | Semantic diagnostics on one file |
-| `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it) |
+| `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it; `--match <regex>` to filter the shown source lines) |
 | `status` | Index phase, file and symbol counts, engine version |
 | `mcp` | Run the MCP stdio server |
 | `daemon start\|status\|stop` | Manage the warm-session daemon |

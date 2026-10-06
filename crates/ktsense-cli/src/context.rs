@@ -23,12 +23,46 @@
 use std::path::Path;
 
 use ktsense_core::{
-    build_context, render_context_markdown, ByteRatioEstimator, ContextInput, SymbolContext,
+    build_context, render_context_markdown, ByteRatioEstimator, ContextInput, LineMatcher,
+    SourceMatch as CoreSourceMatch, SymbolContext,
 };
 use ktsense_daemon::WarmEngine;
+use regex::Regex;
 
 use crate::trace::{self, IndexWaitPolicy, TraceRequest, Traced};
 use crate::{CommandError, CommandOutcome, Format};
+
+/// A compiled `--match` request owned by the context request. The regex lives here, in the CLI,
+/// because `ktsense-core` holds no regex engine; core is lent a [`LineMatcher`] over it, the same
+/// way it is lent a token estimator.
+pub(crate) struct SourceMatch {
+    matcher: RegexMatcher,
+    around: usize,
+}
+
+struct RegexMatcher(Regex);
+
+impl LineMatcher for RegexMatcher {
+    fn matches(&self, line: &str) -> bool {
+        self.0.is_match(line)
+    }
+}
+
+impl SourceMatch {
+    /// Compiles the `--match` pattern, reporting an invalid regex as a failed input rather than a
+    /// panic. `around` is the number of context lines to keep on each side of a hit.
+    pub(crate) fn compile(pattern: &str, around: usize) -> Result<Self, CommandError> {
+        let matcher = RegexMatcher(Regex::new(pattern).map_err(CommandError::bad_match_pattern)?);
+        Ok(Self { matcher, around })
+    }
+
+    fn as_core(&self) -> CoreSourceMatch<'_> {
+        CoreSourceMatch {
+            matcher: &self.matcher,
+            around: self.around,
+        }
+    }
+}
 
 /// How many levels of callers a bundle carries. Direct callers are what a reader needs to know who
 /// depends on the symbol; deeper levels are `trace --depth`'s job and would spend the budget on
@@ -41,6 +75,7 @@ pub(crate) struct ContextRequest<'a> {
     pub pick: Option<&'a str>,
     pub budget: usize,
     pub sections: ktsense_core::ContextSections,
+    pub source_match: Option<SourceMatch>,
     pub format: Format,
 }
 
@@ -100,6 +135,7 @@ fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome
             sections: request.sections,
             file: file.as_ref(),
             source: source.as_deref(),
+            source_match: request.source_match.as_ref().map(SourceMatch::as_core),
             callers: report.direct_callers(),
             implementors: &report.implementors,
             budget: request.budget,
