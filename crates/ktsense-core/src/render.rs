@@ -26,7 +26,7 @@ use std::borrow::Cow;
 
 use crate::context::{ContextSection, SymbolContext};
 use crate::imports::ImportGraph;
-use crate::references::ReferenceGroup;
+use crate::references::{ReferenceGroup, SiteKind};
 use crate::repo_map::RepoMap;
 use crate::skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
@@ -507,9 +507,9 @@ pub(crate) fn related_line(declaration: &RelatedDeclaration) -> String {
 }
 
 /// Reconciles the Usages heading, which counts every reference site the engine reported, with the
-/// listing, which drops import references sitting in a file header and caps each file. When those
-/// two disagree the difference is stated with its reasons, so the heading count is never larger than
-/// the listed rows without saying why. `None` when every counted site is listed.
+/// listing, which lists only `Code` sites and drops import references in a file header and caps each
+/// file. When those disagree the difference is stated with its reasons, so the heading count is never
+/// larger than the listed rows without saying why. `None` when every counted site is listed.
 fn omitted_sites_line(report: &TraceReport) -> Option<String> {
     let shown: usize = report
         .usages
@@ -521,7 +521,20 @@ fn omitted_sites_line(report: &TraceReport) -> Option<String> {
     if not_listed == 0 {
         return None;
     }
-    let in_headers = not_listed.saturating_sub(by_limit);
+    let text_mentions = report
+        .excluded_sites
+        .iter()
+        .filter(|site| site.kind.is_text_mention())
+        .count();
+    let other_declarations = report
+        .excluded_sites
+        .iter()
+        .filter(|site| site.kind == SiteKind::DeclarationName)
+        .count();
+    let in_headers = not_listed
+        .saturating_sub(by_limit)
+        .saturating_sub(text_mentions)
+        .saturating_sub(other_declarations);
     let mut reasons = Vec::new();
     if in_headers > 0 {
         reasons.push(format!("{in_headers} in file headers"));
@@ -529,11 +542,33 @@ fn omitted_sites_line(report: &TraceReport) -> Option<String> {
     if by_limit > 0 {
         reasons.push(format!("{by_limit} by the per-file limit"));
     }
+    if text_mentions > 0 {
+        reasons.push(format!(
+            "{text_mentions} text mentions (comments, KDoc, strings)"
+        ));
+    }
+    if other_declarations > 0 {
+        let noun = if other_declarations == 1 {
+            "other declaration named"
+        } else {
+            "other declarations named"
+        };
+        reasons.push(format!(
+            "{other_declarations} {noun} {}",
+            neutralize(simple_name(&report.symbol))
+        ));
+    }
     Some(format!(
         "{} omitted: {}.\n",
         pluralize(not_listed, "site"),
         reasons.join(", ")
     ))
+}
+
+/// The last dotted segment of a qualified name, the simple name a whole-word engine search matched
+/// on, used to say which name the omitted same-named declarations carry.
+fn simple_name(qualified_name: &str) -> &str {
+    qualified_name.rsplit('.').next().unwrap_or(qualified_name)
 }
 
 fn append_usage_group(out: &mut String, group: &ReferenceGroup) {
@@ -1441,5 +1476,53 @@ mod tests {
                 "- ... 1 more\n",
             )
         );
+    }
+
+    /// KT-83: the Usages line accounts for the sites the classifier left out, naming text mentions
+    /// and same-named declarations separately, while only `Code` sites (and the definition's own)
+    /// stay listed. Built so one file carries the definition, one code use, three text mentions and
+    /// one same-named declaration.
+    #[test]
+    fn the_usages_line_names_text_mentions_and_other_declarations_left_out() {
+        use crate::references::{GroupingOptions, Location, SiteKind};
+        use crate::trace::{build_trace, Definition, IndexCompleteness, TraceInput};
+
+        let skeleton = FileSkeleton::new("app/Repo.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::class("Repo", 3).containing(vec![
+                Declaration::function("save", 4),
+                Declaration::function("run", 6),
+            ])]);
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "app.Repo.save".to_string(),
+                path: "app/Repo.kt".to_string(),
+                line: 4,
+                signature: "fun save()".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("app/Repo.kt", 4),
+            implementation_sites: vec![],
+            reference_sites: vec![
+                Location::new("app/Repo.kt", 4),
+                Location::new("app/Repo.kt", 7),
+                Location::new("app/Repo.kt", 5).with_kind(SiteKind::Comment),
+                Location::new("app/Repo.kt", 8).with_kind(SiteKind::Kdoc),
+                Location::new("app/Repo.kt", 9).with_kind(SiteKind::String),
+                Location::new("app/Repo.kt", 12).with_kind(SiteKind::DeclarationName),
+            ],
+            skeletons: &[skeleton],
+            options: GroupingOptions::default(),
+        });
+
+        let rendered = render_trace_markdown(&report);
+        let observed = (
+            rendered.contains("## Usages (6 sites in 1 file)\n"),
+            rendered.contains(
+                "4 sites omitted: 3 text mentions (comments, KDoc, strings), 1 other \
+                 declaration named save.\n",
+            ),
+        );
+        assert_eq!(observed, (true, true), "rendered was:\n{rendered}");
     }
 }

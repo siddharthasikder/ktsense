@@ -5,8 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod classify;
 pub mod extract;
 
+pub use classify::classify_reference_sites;
 pub use extract::extract;
 
 use anyhow::{Context, Result};

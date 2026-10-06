@@ -10,6 +10,7 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Fixed
 
+- `trace` and `context` no longer count comment, KDoc or string text, or a same-named declaration such as a `companion object`, as a caller. Each reference site is classified by the syntax node it falls in, only code uses become callers and usage rows, and the Usages line says how many text mentions and same-named declarations it left out (KT-83).
 - A "no declaration named X" answer now says it searched this workspace only, not library dependencies (KT-87).
 - `trace` and `context` no longer list a class as its own implementor (KT-77).
 - A class that Kotlin makes final (not `open`, `abstract`, `sealed`, `enum` or `expect`) now reports no implementors. Before, same-named classes such as `FooTest` could be listed, because kmp-lsp 0.26.0 answers implementation requests on a final class with name matches. A partially parsed file keeps the engine's answer (KT-78).
@@ -36,6 +37,5 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 ### Known limitations
 
 - Resolution is syntactic, not type-checked. For an interface or open class, `Implementors` can still include a name-matched declaration from another package; supertype resolution is planned as KT-84.
-- `trace` callers can include references in comments and strings (KT-83).
 - On Linux hosts below glibc 2.28 the bundled engine does not start. Set `KTSENSE_LSP_PATH` to a host-built `kmp-lsp` 0.26.0.
 - In a like-for-like benchmark on ktor (KT-76), grep was faster on every question. ktsense's advantage is structured, smaller answers for questions such as callers of a nested type, not speed.

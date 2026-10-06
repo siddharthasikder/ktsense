@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use ktsense_core::{
     build_trace, callers_of, render_trace_markdown, Definition, FileSkeleton, GroupingOptions,
-    IndexCompleteness, Location, RelatedDeclaration, TraceInput, TraceReport,
+    IndexCompleteness, Location, RelatedDeclaration, SiteKind, TraceInput, TraceReport,
 };
 use ktsense_daemon::{WarmEngine, WarmResolution};
 use ktsense_lsp::{
@@ -534,13 +534,48 @@ impl<'a> Session<'a> {
         candidate.to_file_position()
     }
 
+    /// Converts engine locations into the crate's own reference sites, classifying each by the
+    /// syntax node it falls in so `core` can keep comment, KDoc and string text and same-named
+    /// declarations out of the callers (KT-83). Sites are classified in one pass per file; a file
+    /// that cannot be read leaves its sites as `Code`, which lists them rather than hiding them.
     fn sites(&mut self, locations: &[SiteLocation]) -> Vec<Location> {
-        locations
+        let normalized: Vec<(String, u32, u32)> = locations
             .iter()
             .map(|site| {
                 let path = normalized_path(self.root, &site.path);
                 self.skeletons.load(self.root, &path);
-                Location::new(path, site.line).at_column(site.column)
+                (path, site.line, site.column)
+            })
+            .collect();
+
+        let mut positions_by_path: BTreeMap<&str, Vec<(usize, u32, u32)>> = BTreeMap::new();
+        for (index, (path, line, column)) in normalized.iter().enumerate() {
+            positions_by_path
+                .entry(path.as_str())
+                .or_default()
+                .push((index, *line, *column));
+        }
+
+        let mut kinds = vec![SiteKind::Code; normalized.len()];
+        for (path, entries) in positions_by_path {
+            let Some(source) = read_source(self.root, path) else {
+                continue;
+            };
+            let coordinates: Vec<(u32, u32)> = entries
+                .iter()
+                .map(|(_, line, column)| (*line, *column))
+                .collect();
+            let classified = ktsense_syntax::classify_reference_sites(&source, &coordinates);
+            for ((index, _, _), kind) in entries.iter().zip(classified) {
+                kinds[*index] = kind;
+            }
+        }
+
+        normalized
+            .into_iter()
+            .zip(kinds)
+            .map(|((path, line, column), kind)| {
+                Location::new(path, line).at_column(column).with_kind(kind)
             })
             .collect()
     }
@@ -652,6 +687,18 @@ pub(crate) fn source_lines_at(root: &Path, path: &str) -> Option<Vec<String>> {
     };
     let source = fs::read_to_string(&absolute).ok()?;
     Some(source.lines().map(str::to_string).collect())
+}
+
+/// The full source of one file named as the answer names it, or `None` when it cannot be read. Used
+/// to classify reference sites by their syntax node; kept separate from [`source_lines_at`] because
+/// the classifier parses the whole text while `context` slices it into lines.
+fn read_source(root: &Path, path: &str) -> Option<String> {
+    let absolute = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+    fs::read_to_string(&absolute).ok()
 }
 
 fn present(report: &TraceReport, format: Format) -> Result<String, CommandError> {

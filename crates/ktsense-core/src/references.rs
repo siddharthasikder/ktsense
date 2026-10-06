@@ -30,7 +30,35 @@ use crate::skeleton::{DeclKind, Declaration, FileSkeleton};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A single reference site: a file path and a 1-based line, optionally a column.
+/// The syntax node a reference site falls in, decided by the `ktsense-syntax` adapter and carried
+/// as a plain value so `core` filters callers without a parser. Only `Code` produces callers and
+/// usage rows; every other kind is a text mention or a same-named declaration that a whole-word
+/// engine search reported but a caller question must leave out. Unclassifiable sites are `Code`, so
+/// a classification failure can never hide a real reference (KT-83).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteKind {
+    #[default]
+    Code,
+    Comment,
+    Kdoc,
+    String,
+    DeclarationName,
+}
+
+impl SiteKind {
+    pub fn is_code(&self) -> bool {
+        matches!(self, SiteKind::Code)
+    }
+
+    /// A comment, KDoc link or string literal: prose that names the symbol without using it.
+    pub fn is_text_mention(&self) -> bool {
+        matches!(self, SiteKind::Comment | SiteKind::Kdoc | SiteKind::String)
+    }
+}
+
+/// A single reference site: a file path and a 1-based line, optionally a column, and the kind of
+/// syntax node it falls in.
 ///
 /// The column is carried for a future precise renderer; enclosure and grouping are line-based, so
 /// it never changes which declaration a reference is attributed to.
@@ -40,6 +68,8 @@ pub struct Location {
     pub line: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "SiteKind::is_code")]
+    pub kind: SiteKind,
 }
 
 impl Location {
@@ -48,11 +78,17 @@ impl Location {
             path: path.into(),
             line,
             column: None,
+            kind: SiteKind::Code,
         }
     }
 
     pub fn at_column(mut self, column: u32) -> Self {
         self.column = Some(column);
+        self
+    }
+
+    pub fn with_kind(mut self, kind: SiteKind) -> Self {
+        self.kind = kind;
         self
     }
 }

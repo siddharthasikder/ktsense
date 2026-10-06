@@ -64,16 +64,14 @@ interface OrderRepository
 ## Callers (1)
 - shop.app.checkout.CheckoutService  app/src/main/kotlin/shop/app/checkout/CheckoutService.kt:8
 
-## Usages (4 sites in 4 files)
+## Usages (4 sites in 3 files)
+1 site omitted: 1 other declaration named OrderRepository.
 
 app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
 - 8 in CheckoutService
 
 core/src/main/kotlin/shop/order/OrderRepository.kt
 - 3 in OrderRepository
-
-db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
-- 9 in InMemoryOrderRepository
 
 db/src/main/kotlin/shop/db/JdbcOrderRepository.kt
 - 9 in JdbcOrderRepository.save

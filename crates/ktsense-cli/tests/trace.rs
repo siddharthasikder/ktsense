@@ -488,12 +488,13 @@ mod real {
             stdout.contains("index: complete"),
             stdout.contains("## Implementors (2)"),
             stdout.contains("## Callers (3)"),
-            stdout.contains("## Usages (6 sites in 6 files)"),
+            stdout.contains("## Usages (6 sites in 4 files)"),
+            stdout.contains("2 sites omitted: 2 other declarations named save."),
             output.stderr.is_empty(),
         );
         assert_eq!(
             observed,
-            (Some(0), true, true, true, true, true),
+            (Some(0), true, true, true, true, true, true),
             "stdout was: {stdout}"
         );
     }

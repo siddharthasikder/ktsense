@@ -25,6 +25,7 @@ pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportG
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
     group_references, EnclosingDeclaration, GroupingOptions, Location, Reference, ReferenceGroup,
+    SiteKind,
 };
 pub use render::{
     render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,
@@ -38,8 +39,8 @@ pub use skeleton::{
 };
 pub use text::{fence_for, neutralize, MIN_FENCE_BACKTICKS};
 pub use trace::{
-    build_trace, callers_of, CallerLevel, Definition, IndexCompleteness, RelatedDeclaration,
-    TraceInput, TraceReport,
+    build_trace, callers_of, CallerLevel, Definition, ExcludedSite, IndexCompleteness,
+    RelatedDeclaration, TraceInput, TraceReport,
 };
 
 /// Estimates the token cost of rendered output so budgeted commands can stop in time.

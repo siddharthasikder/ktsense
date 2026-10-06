@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::references::{
     declaration_starting_at, enclosing_declaration, group_references, GroupingOptions, Location,
-    ReferenceGroup,
+    ReferenceGroup, SiteKind,
 };
 use crate::skeleton::{DeclKind, FileSkeleton};
 
@@ -68,6 +68,17 @@ pub struct CallerLevel {
     pub callers: Vec<RelatedDeclaration>,
 }
 
+/// A reference site left out of the callers and the per-file usage list because it names the symbol
+/// without using it: a comment, KDoc link, string literal, or the name of another declaration with
+/// the same simple name. Counted rather than dropped, so the Usages line can say what it omitted and
+/// why, and JSON can carry the sites with their kind (KT-83).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExcludedSite {
+    pub path: String,
+    pub line: u32,
+    pub kind: SiteKind,
+}
+
 /// The complete `trace` answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceReport {
@@ -80,6 +91,10 @@ pub struct TraceReport {
     pub usages: Vec<ReferenceGroup>,
     /// Reference sites in total, before any per-file cap.
     pub sites: usize,
+    /// Sites a whole-word engine search reported that name the symbol without using it, kept as
+    /// data so the answer accounts for every site (KT-83).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_sites: Vec<ExcludedSite>,
 }
 
 /// Everything `build_trace` needs, gathered by the caller from the engine and the parser.
@@ -127,7 +142,10 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
     set_aside.extend(implementation_sites.iter().cloned());
     let direct = callers_of(&input.reference_sites, &set_aside, input.skeletons);
 
-    let usages = group_references(&input.reference_sites, input.skeletons, input.options);
+    let (usage_sites, mut excluded_sites) =
+        partition_by_kind(&input.reference_sites, &input.definition_site);
+    excluded_sites.sort_by(|a, b| (&a.path, a.line, a.kind).cmp(&(&b.path, b.line, b.kind)));
+    let usages = group_references(&usage_sites, input.skeletons, input.options);
     TraceReport {
         symbol: input.definition.qualified_name.clone(),
         index: input.index,
@@ -139,12 +157,37 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
         }],
         sites: input.reference_sites.len(),
         usages,
+        excluded_sites,
     }
 }
 
+/// Splits reference sites into those the usage list keeps and those it leaves out. A `Code` site is
+/// kept, and so is the queried definition's own name site whatever its kind, because that site
+/// stays listed as it always was; every other non-`Code` site is a counted exclusion (KT-83).
+fn partition_by_kind(
+    references: &[Location],
+    definition: &Location,
+) -> (Vec<Location>, Vec<ExcludedSite>) {
+    let mut kept = Vec::new();
+    let mut excluded = Vec::new();
+    for site in references {
+        if site.kind.is_code() || same_site(site, definition) {
+            kept.push(site.clone());
+        } else {
+            excluded.push(ExcludedSite {
+                path: site.path.clone(),
+                line: site.line,
+                kind: site.kind,
+            });
+        }
+    }
+    (kept, excluded)
+}
+
 /// The declarations enclosing the reference sites in `references`, minus any site listed in
-/// `set_aside`, one entry per declaration with its site count. This is the whole of caller
-/// derivation, reused for each deeper level.
+/// `set_aside`, one entry per declaration with its site count. Only `Code` sites produce callers;
+/// a comment, KDoc, string or same-named declaration names the symbol without calling it (KT-83).
+/// This is the whole of caller derivation, reused for each deeper level.
 pub fn callers_of(
     references: &[Location],
     set_aside: &[Location],
@@ -153,6 +196,7 @@ pub fn callers_of(
     let index = SkeletonIndex::new(skeletons);
     let sites: Vec<Location> = references
         .iter()
+        .filter(|site| site.kind.is_code())
         .filter(|site| !set_aside.iter().any(|excluded| same_site(excluded, site)))
         .cloned()
         .collect();
@@ -456,6 +500,75 @@ mod tests {
             implementors_of(&partially_parsed(class_named(vec![]))),
         );
         assert_eq!(observed, (0, 0, 1, 1, 1, 1, 1, 1));
+    }
+
+    /// Only `Code` sites become callers and usage rows; a comment, KDoc, string and same-named
+    /// declaration name the symbol without using it, so they leave the callers and the listing but
+    /// are counted in `excluded_sites` with their kind. The definition's own name site stays listed.
+    #[test]
+    fn text_and_declaration_name_sites_are_excluded_from_callers_and_usages_but_counted() {
+        let skeletons = vec![FileSkeleton::new("app/Widget.kt")
+            .in_package("app")
+            .with_declarations(vec![
+                Declaration::class("Widget", 3),
+                Declaration::function("use", 7),
+            ])];
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "app.Widget".to_string(),
+                path: "app/Widget.kt".to_string(),
+                line: 3,
+                signature: "class Widget".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("app/Widget.kt", 3),
+            implementation_sites: vec![],
+            reference_sites: vec![
+                Location::new("app/Widget.kt", 3),
+                Location::new("app/Widget.kt", 8),
+                Location::new("app/Widget.kt", 5).with_kind(SiteKind::Comment),
+                Location::new("app/Widget.kt", 6).with_kind(SiteKind::Kdoc),
+                Location::new("app/Widget.kt", 9).with_kind(SiteKind::String),
+                Location::new("app/Widget.kt", 12).with_kind(SiteKind::DeclarationName),
+            ],
+            skeletons: &skeletons,
+            options: GroupingOptions::default(),
+        });
+
+        let listed_lines: Vec<u32> = report
+            .usages
+            .iter()
+            .flat_map(|group| group.references.iter().map(|reference| reference.line))
+            .collect();
+        let excluded: Vec<(u32, SiteKind)> = report
+            .excluded_sites
+            .iter()
+            .map(|site| (site.line, site.kind))
+            .collect();
+        let observed = (
+            report.callers[0]
+                .callers
+                .iter()
+                .map(|caller| caller.qualified_name.clone())
+                .collect::<Vec<_>>(),
+            report.sites,
+            listed_lines,
+            excluded,
+        );
+        assert_eq!(
+            observed,
+            (
+                vec![Some("app.use".to_string())],
+                6,
+                vec![3, 8],
+                vec![
+                    (5, SiteKind::Comment),
+                    (6, SiteKind::Kdoc),
+                    (9, SiteKind::String),
+                    (12, SiteKind::DeclarationName),
+                ],
+            )
+        );
     }
 
     #[test]

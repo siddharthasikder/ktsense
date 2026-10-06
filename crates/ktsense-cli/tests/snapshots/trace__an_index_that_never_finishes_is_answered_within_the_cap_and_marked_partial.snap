@@ -26,7 +26,8 @@ fun save(order: Order): OrderId
 - shop.app.checkout.OrderImporter.importAll  app/src/main/kotlin/shop/app/checkout/OrderImporter.kt:8
 - shop.app.reporting.ReportBackfill.rebuild  app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt:9
 
-## Usages (6 sites in 6 files)
+## Usages (6 sites in 4 files)
+2 sites omitted: 2 other declarations named save.
 
 app/src/main/kotlin/shop/app/checkout/CheckoutService.kt
 - 13 in CheckoutService.placeOrder
@@ -39,11 +40,5 @@ app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt
 
 core/src/main/kotlin/shop/order/OrderRepository.kt
 - 4 in OrderRepository.save
-
-db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt
-- 13 in InMemoryOrderRepository.save
-
-db/src/main/kotlin/shop/db/JdbcOrderRepository.kt
-- 8 in JdbcOrderRepository.save
 
 Callers are the declarations enclosing each reference site; the engine reports no call hierarchy. Resolution is syntactic, not type-checked.

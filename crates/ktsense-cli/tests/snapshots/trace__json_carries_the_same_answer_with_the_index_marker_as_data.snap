@@ -118,37 +118,19 @@ stderr empty
         }
       ],
       "omitted": 0
-    },
+    }
+  ],
+  "sites": 6,
+  "excluded_sites": [
     {
       "path": "db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt",
-      "references": [
-        {
-          "line": 13,
-          "column": 18,
-          "enclosing": {
-            "kind": "function",
-            "qualified_name": "InMemoryOrderRepository.save",
-            "line": 13
-          }
-        }
-      ],
-      "omitted": 0
+      "line": 13,
+      "kind": "declaration_name"
     },
     {
       "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
-      "references": [
-        {
-          "line": 8,
-          "column": 18,
-          "enclosing": {
-            "kind": "function",
-            "qualified_name": "JdbcOrderRepository.save",
-            "line": 8
-          }
-        }
-      ],
-      "omitted": 0
+      "line": 8,
+      "kind": "declaration_name"
     }
-  ],
-  "sites": 6
+  ]
 }
