@@ -33,6 +33,8 @@ fn status(runtime_dir: &Path, engine: &Path, args: &[&str]) -> Run {
     // lookup, and clearing `PATH` for one makes the engine unspawnable rather than unfound.
     if engine.is_absolute() && !engine.exists() {
         command.env("PATH", runtime_dir);
+    } else {
+        command.env("PATH", path_with_stub_ripgrep(runtime_dir));
     }
     let output = command.args(args).output().expect("binary runs");
     Run {
@@ -67,23 +69,30 @@ fn neutralize(text: &str, runtime_dir: &Path, engine: &Path) -> String {
     let root = Path::new(WORKSPACE_ROOT)
         .canonicalize()
         .expect("workspace exists");
-    let mut text = text
+    let text = text
+        .replace(&stub_ripgrep(runtime_dir).display().to_string(), "<rg>")
         .replace(&engine.display().to_string(), "<engine>")
         .replace(&runtime_dir.display().to_string(), "<runtime>")
         .replace(&root.display().to_string(), "<workspace>");
-    if let Some(rg) = host_ripgrep() {
-        text = text.replace(&rg.display().to_string(), "<rg>");
-    }
     neutralize_root_hashes(&text)
 }
 
-/// The `rg` the CLI would find on this host's `PATH`, resolved the same way `status` resolves it,
-/// so the placeholder covers whatever absolute path the report printed.
-fn host_ripgrep() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("rg"))
-        .find(|candidate| candidate.is_file())
+/// The `rg` every case with an engine finds first on its `PATH`. `status` only checks that a file
+/// named `rg` is there, and GitHub's `ubuntu-24.04` runner has no ripgrep, so the line the goldens
+/// pin must come from a file the test provides rather than from the host.
+fn stub_ripgrep(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("tools").join("rg")
+}
+
+/// The inherited `PATH` with the stub ripgrep's directory in front of it.
+fn path_with_stub_ripgrep(runtime_dir: &Path) -> std::ffi::OsString {
+    let stub = stub_ripgrep(runtime_dir);
+    let tools = stub.parent().expect("stub has a dir");
+    std::fs::create_dir_all(tools).expect("tools dir");
+    std::fs::write(&stub, b"").expect("stub rg");
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::iter::once(tools.to_path_buf()).chain(std::env::split_paths(&inherited));
+    std::env::join_paths(dirs).expect("joinable PATH")
 }
 
 fn neutralize_root_hashes(text: &str) -> String {

@@ -20,7 +20,7 @@ mod session;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use session::{fake_lsp, structured, text, Launch, Session};
+use session::{fake_lsp, structured, stub_ripgrep, text, Launch, Session};
 
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const FIXTURE: &str = "fixtures/multi-module";
@@ -74,7 +74,8 @@ fn stable(body: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let replaced = socket
+    socket
+        .replace(&stub_ripgrep().display().to_string(), "<RG>")
         .replace(&fixture_root().display().to_string(), "<FIXTURE>")
         .replace(
             &fake_lsp()
@@ -84,23 +85,7 @@ fn stable(body: &str) -> String {
                 .to_string(),
             "<TARGET>",
         )
-        .replace(&workspace().display().to_string(), "<WORKSPACE>");
-    match host_ripgrep() {
-        Some(rg) => replaced.replace(&rg, "<RG>"),
-        None => replaced,
-    }
-}
-
-/// The `rg` this host's `PATH` resolves, so the status line's ripgrep path is a placeholder rather
-/// than a property of the machine.
-fn host_ripgrep() -> Option<String> {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|dir| dir.join("rg"))
-        .find(|candidate| candidate.is_file())
-        .map(|rg| rg.display().to_string())
+        .replace(&workspace().display().to_string(), "<WORKSPACE>")
 }
 
 fn candidate(relative: &str, line: u32, col: u32, name: &str) -> Value {

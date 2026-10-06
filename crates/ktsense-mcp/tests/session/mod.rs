@@ -93,6 +93,7 @@ impl Launch {
             .current_dir(directory)
             .args(["--root", &self.root, "mcp"])
             .env("KTSENSE_NO_AUTOSTART", "1")
+            .env("PATH", path_with_stub_ripgrep())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -257,6 +258,28 @@ pub fn structured(result: &Value) -> &Value {
 /// The `fake_lsp` replay binary, built alongside `ktsense` into the same target directory. A
 /// workspace-wide `cargo test` has already built it; a package-scoped run has not, so it is built
 /// here on first use rather than letting the suite fail on a missing helper.
+/// The `rg` every server finds first on its `PATH`. `ktsense_status` only checks that a file named
+/// `rg` is there, and GitHub's `ubuntu-24.04` runner has no ripgrep, so the line the goldens pin must
+/// come from a file the test provides rather than from the host. It sits beside the fake engine in
+/// the target directory, and nothing in these tests execs it: only a real engine runs `rg`.
+pub fn stub_ripgrep() -> PathBuf {
+    fake_lsp()
+        .parent()
+        .expect("target dir")
+        .join("stub-tools")
+        .join("rg")
+}
+
+fn path_with_stub_ripgrep() -> std::ffi::OsString {
+    let stub = stub_ripgrep();
+    let tools = stub.parent().expect("stub has a dir");
+    std::fs::create_dir_all(tools).expect("tools dir");
+    std::fs::write(&stub, b"").expect("stub rg");
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::iter::once(tools.to_path_buf()).chain(std::env::split_paths(&inherited));
+    std::env::join_paths(dirs).expect("joinable PATH")
+}
+
 pub fn fake_lsp() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
