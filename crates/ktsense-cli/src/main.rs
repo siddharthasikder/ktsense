@@ -217,10 +217,15 @@ enum Command {
         /// budget covers more of the module.
         #[arg(long)]
         compact: bool,
-        /// List declarations whose name matches this regex first, grouped by file, before the
-        /// ranked map spends what budget remains. Requires --compact.
+        /// List declarations whose name matches this regex first, grouped by file, and stop there
+        /// unless --fill spends what budget remains on the ranked map. Requires --compact.
         #[arg(long, value_name = "REGEX", requires = "compact")]
         focus: Option<String>,
+        /// With --focus, spend what budget the focus section leaves on the ranked map, as a map
+        /// without a focus does. Without it a focused map renders the focus section and stops.
+        /// Requires --focus.
+        #[arg(long, requires = "focus")]
+        fill: bool,
     },
     /// Syntax-check files; exits non-zero when a file has errors
     Check { path: PathBuf },
@@ -609,12 +614,14 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             budget,
             compact,
             focus,
+            fill,
         } => route(
             &base,
             routing::RoutedCommand::Map {
                 budget,
                 compact,
                 focus,
+                fill,
             },
             format,
         ),
@@ -932,6 +939,7 @@ fn repository_map(
     budget: usize,
     compact: bool,
     focus: Option<&str>,
+    fill: bool,
     format: Format,
 ) -> Result<String, CommandError> {
     let files = collect_kotlin_files(root)?;
@@ -961,6 +969,7 @@ fn repository_map(
                 pattern: &matcher.pattern,
                 matcher,
             }),
+            fill,
         },
         &ByteRatioEstimator,
     );

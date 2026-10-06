@@ -303,6 +303,16 @@ pub fn render_deps_dot(graph: &ImportGraph) -> String {
 /// silently included scaffolding would not be the figure the packing decision used.
 pub fn render_map_markdown(map: &RepoMap) -> String {
     let mut out = String::from("# Repository map\n\n");
+    if let Some(other_files_not_mapped) = map.other_files_not_mapped {
+        out.push_str(&format!(
+            "Budget {} tokens, content bound {}. {}\n",
+            map.budget,
+            map.token_upper_bound,
+            focus_only_summary(map, other_files_not_mapped),
+        ));
+        append_focus_section(&mut out, map);
+        return out;
+    }
     out.push_str(&format!(
         "Budget {} tokens, content bound {}. {} shown, {} omitted.\n",
         map.budget,
@@ -352,6 +362,25 @@ fn append_map_summary(out: &mut String, map: &RepoMap) {
     ) {
         out.push_str(&format!("\n{line}\n"));
     }
+}
+
+/// The focus-only header sentence (KT-110): how much the focus section carries, and how many other
+/// files held public declarations that `--fill` would map but this map stopped short of. The counts
+/// come from the shown focus section, so they match what the reader is about to see below.
+fn focus_only_summary(map: &RepoMap, other_files_not_mapped: usize) -> String {
+    let (files, declarations) = match &map.focus {
+        Some(focus) => (
+            focus.files.len(),
+            focus.files.iter().map(|file| file.declarations.len()).sum(),
+        ),
+        None => (0, 0),
+    };
+    format!(
+        "Focus only: {} in {}; {} not mapped, pass --fill to map them",
+        pluralize(declarations, "declaration"),
+        pluralize(files, "file"),
+        pluralize(other_files_not_mapped, "other file"),
+    )
 }
 
 /// Appends the focus section (KT-108): the declarations whose name matched `--focus`, grouped by

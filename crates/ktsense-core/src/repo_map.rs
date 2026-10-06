@@ -105,6 +105,17 @@ pub struct RepoMap {
     /// otherwise, so an unfocused map serializes exactly as before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<FocusMatches>,
+    /// Whether `--fill` spent the rest of the budget on the ranked map, present only when the caller
+    /// focused. `None` for an unfocused map, so that map serializes exactly as before. `Some(true)`
+    /// is a filled focus map whose rendered map is byte-identical to the pre-KT-110 focus map;
+    /// `Some(false)` is a focus-only map that rendered the focus section and stopped (KT-110).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<bool>,
+    /// In focus-only mode, how many other candidate files `--fill` would map but this map did not,
+    /// so the header can say the focus stopped short of them. `None` whenever the ranked map was
+    /// built, so an unfocused or filled map serializes exactly as before (KT-110).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_files_not_mapped: Option<usize>,
     /// Files that contributed at least one signature, most central first.
     pub files: Vec<MappedFile>,
     /// The budget requested by the caller.
@@ -148,6 +159,11 @@ pub struct RepoMapInput<'a> {
     /// first in a focus section, grouped by file, before the ranked map spends what budget remains
     /// (KT-108). Only meaningful with [`Self::compact`], which the CLI requires.
     pub focus: Option<FocusSpec<'a>>,
+    /// With a focus, whether to spend what budget the focus section leaves on the ranked map, as a
+    /// map without a focus does. Without it the map renders the focus section and stops (KT-110), so
+    /// a question that names a kind of declaration is answered without the rest of the budget spent
+    /// on files the focus did not ask about. Ignored without a focus.
+    pub fill: bool,
 }
 
 /// A `--focus` request: the pattern, for the rendered heading, and a matcher over declaration names.
@@ -189,8 +205,8 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
             .then_with(|| left.path.cmp(&right.path))
     });
 
-    let (focus, focus_tokens) = build_focus_section(&ordered, &ranking, &input, estimator);
-    let map_budget = input.budget - focus_tokens;
+    let focus_build = build_focus_section(&ordered, &ranking, &input, estimator);
+    let map_budget = input.budget - focus_build.tokens;
 
     let mut units = Vec::new();
     let mut candidate_paths: Vec<String> = Vec::new();
@@ -207,6 +223,15 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
         for signature in signatures {
             units.push(Unit::declaration(index, signature));
         }
+    }
+
+    if input.focus.is_some() && !input.fill {
+        return focus_only_map(
+            focus_build,
+            candidate_paths.len(),
+            files_without_public_declarations,
+            input.budget,
+        );
     }
 
     // Emitting once at the full budget shows which files would be dropped when nothing is reserved.
@@ -236,11 +261,13 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
         .unwrap_or(0);
 
     RepoMap {
-        focus,
+        focus: focus_build.matches,
+        fill: input.focus.is_some().then_some(true),
+        other_files_not_mapped: None,
         files_omitted: omitted.len(),
         files: files_shown,
         budget: input.budget,
-        token_upper_bound: focus_tokens + emission.token_upper_bound + summary_cost,
+        token_upper_bound: focus_build.tokens + emission.token_upper_bound + summary_cost,
         omitted_directories,
         omitted_directories_shown,
         files_without_public_declarations,
@@ -463,19 +490,33 @@ fn signatures_in_reference_order(
         .collect()
 }
 
+/// What building the focus section produced: the section itself (absent without `--focus`), the
+/// tokens it claimed from the budget, and how many distinct files held a match before the budget
+/// truncated the section. The file count is the map's own, so the focus-only header can report how
+/// many other files carried public declarations the focus did not name.
+struct FocusBuild {
+    matches: Option<FocusMatches>,
+    tokens: usize,
+    match_files: usize,
+}
+
 /// The focus section: every public top-level declaration whose name the matcher accepts, grouped by
 /// file in the map's own file-rank order, each as kind and name alone, emitted with the budget's
-/// first claim. Returns the section and the tokens it took, or `None` and `0` when the caller passed
-/// no `--focus`. An empty match set still yields a section, so the render reports that the focus
-/// found nothing rather than reading as an unfocused map.
+/// first claim. Returns an empty [`FocusBuild`] when the caller passed no `--focus`. An empty match
+/// set still yields a section, so the render reports that the focus found nothing rather than
+/// reading as an unfocused map.
 fn build_focus_section<E: TokenEstimator>(
     ordered: &[&FileSkeleton],
     ranking: &Ranking<'_>,
     input: &RepoMapInput<'_>,
     estimator: &E,
-) -> (Option<FocusMatches>, usize) {
+) -> FocusBuild {
     let Some(spec) = &input.focus else {
-        return (None, 0);
+        return FocusBuild {
+            matches: None,
+            tokens: 0,
+            match_files: 0,
+        };
     };
     let mut units = Vec::new();
     let mut candidate_paths: Vec<String> = Vec::new();
@@ -493,17 +534,43 @@ fn build_focus_section<E: TokenEstimator>(
             units.push(Unit::declaration(index, signature));
         }
     }
+    let match_files = candidate_paths.len();
     let emission = emit_within_budget(units, input.budget, estimator);
     let files = regroup(&emission.items);
     let shown: usize = files.iter().map(|file| file.declarations.len()).sum();
-    (
-        Some(FocusMatches {
+    FocusBuild {
+        matches: Some(FocusMatches {
             pattern: spec.pattern.to_string(),
             files,
             omitted: total_matches - shown,
         }),
-        emission.token_upper_bound,
-    )
+        tokens: emission.token_upper_bound,
+        match_files,
+    }
+}
+
+/// A focus-only map (`--focus` without `--fill`): the focus section and nothing after it. The
+/// ranked map is not built, so no files are shown and nothing is omitted for budget beyond the focus
+/// section's own; the only extra the caller needs is how many other files carrying public
+/// declarations `--fill` would have mapped, which is every candidate file the focus did not match.
+fn focus_only_map(
+    focus_build: FocusBuild,
+    candidate_files: usize,
+    files_without_public_declarations: usize,
+    budget: usize,
+) -> RepoMap {
+    RepoMap {
+        other_files_not_mapped: Some(candidate_files - focus_build.match_files),
+        focus: focus_build.matches,
+        fill: Some(false),
+        files: Vec::new(),
+        budget,
+        token_upper_bound: focus_build.tokens,
+        files_omitted: 0,
+        omitted_directories: Vec::new(),
+        omitted_directories_shown: 0,
+        files_without_public_declarations,
+    }
 }
 
 /// A file's public top-level declarations whose name the matcher accepts, each as kind and name
@@ -668,6 +735,7 @@ mod tests {
                 budget,
                 compact: false,
                 focus: None,
+                fill: false,
             },
             &ByteRatioEstimator,
         )
@@ -706,6 +774,7 @@ mod tests {
                 budget: 10_000,
                 compact: false,
                 focus: None,
+                fill: false,
             },
             &ByteRatioEstimator,
         );
@@ -762,6 +831,7 @@ mod tests {
                 budget: 10_000,
                 compact: false,
                 focus: None,
+                fill: false,
             },
             &ByteRatioEstimator,
         );
@@ -807,6 +877,7 @@ mod tests {
                 budget: 10_000,
                 compact: false,
                 focus: None,
+                fill: false,
             },
             &ByteRatioEstimator,
         );
@@ -958,6 +1029,7 @@ mod tests {
                     budget,
                     compact: false,
                     focus: None,
+                    fill: false,
                 },
                 &ByteRatioEstimator,
             );
@@ -1046,6 +1118,7 @@ mod tests {
                 budget: 10_000,
                 compact: false,
                 focus: None,
+                fill: false,
             },
             &ByteRatioEstimator,
         );
@@ -1056,6 +1129,7 @@ mod tests {
                 budget: 10_000,
                 compact: true,
                 focus: None,
+                fill: false,
             },
             &ByteRatioEstimator,
         );
@@ -1088,12 +1162,14 @@ mod tests {
         }
     }
 
-    /// `--focus` lists every public top-level declaration whose name matches first, grouped by file
-    /// in the map's own rank order, each as kind and name, while the ranked map still carries every
-    /// file. A tight budget truncates the focus set and reports the drop, and the bound never passes
-    /// the budget at either size. Composed as one table over a generous and a tiny budget.
+    /// `--focus --fill` lists every matching declaration first, grouped by file in the map's own
+    /// rank order, each as kind and name, while the ranked map still carries every file (KT-110's
+    /// fill mode restores the pre-KT-110 focus behaviour). A tight budget truncates the focus set and
+    /// reports the drop, and the bound never passes the budget at either size. The fill map reports
+    /// `fill: Some(true)` and no focus-only count. Composed as one table over a generous and a tiny
+    /// budget.
     #[test]
-    fn focus_lists_every_matching_declaration_first_and_respects_the_budget() {
+    fn focus_fill_lists_every_matching_declaration_first_then_the_ranked_map() {
         let files = vec![
             file(
                 "core/Core.kt",
@@ -1126,6 +1202,7 @@ mod tests {
                         pattern: "Plugin",
                         matcher: &matcher,
                     }),
+                    fill: true,
                 },
                 &ByteRatioEstimator,
             )
@@ -1145,6 +1222,8 @@ mod tests {
                 focus_view,
                 focus.omitted,
                 generous.files.len(),
+                generous.fill,
+                generous.other_files_not_mapped,
                 generous.token_upper_bound <= 10_000,
                 tiny.token_upper_bound <= 1,
             ),
@@ -1162,8 +1241,82 @@ mod tests {
                 ],
                 0,
                 2,
+                Some(true),
+                None,
                 true,
                 true,
+            )
+        );
+    }
+
+    /// `--focus` without `--fill` renders the focus section and stops (KT-110): the ranked map is not
+    /// built, so no files are shown, `fill` is `Some(false)` and `other_files_not_mapped` counts the
+    /// candidate files the focus did not match. The same corpus with `--fill` carries both files, so
+    /// the two are asserted together and the difference is the behaviour under test. Here `core/Core.kt`
+    /// declares only `Engine`, so it is the one unmatched candidate the focus-only header reports.
+    #[test]
+    fn focus_only_renders_the_focus_section_and_stops() {
+        let files = vec![
+            file("core/Core.kt", "app.core", &[], &[("Engine", 1)]),
+            file(
+                "web/Web.kt",
+                "app.web",
+                &["app.core.Engine"],
+                &[("Server", 1), ("RoutingPlugin", 2)],
+            ),
+        ];
+        let references = counts(&[("Engine", 7), ("Server", 2), ("RoutingPlugin", 1)]);
+        let matcher = NameContains("Plugin");
+        let mapped = |fill: bool| {
+            build_repo_map(
+                RepoMapInput {
+                    files: &files,
+                    references: &references,
+                    budget: 10_000,
+                    compact: true,
+                    focus: Some(FocusSpec {
+                        pattern: "Plugin",
+                        matcher: &matcher,
+                    }),
+                    fill,
+                },
+                &ByteRatioEstimator,
+            )
+        };
+        let focus_only = mapped(false);
+        let filled = mapped(true);
+        let focus_files: Vec<(String, Vec<String>)> = focus_only
+            .focus
+            .as_ref()
+            .expect("focus section present")
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.declarations.clone()))
+            .collect();
+
+        assert_eq!(
+            (
+                focus_only.fill,
+                focus_only.other_files_not_mapped,
+                focus_only.files.len(),
+                focus_files,
+                focus_only.token_upper_bound <= 10_000,
+                filled.fill,
+                filled.other_files_not_mapped,
+                filled.files.is_empty(),
+            ),
+            (
+                Some(false),
+                Some(1),
+                0,
+                vec![(
+                    "web/Web.kt".to_string(),
+                    vec!["class RoutingPlugin".to_string()]
+                )],
+                true,
+                Some(true),
+                None,
+                false,
             )
         );
     }

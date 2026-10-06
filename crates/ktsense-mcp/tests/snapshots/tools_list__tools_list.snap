@@ -1,6 +1,5 @@
 ---
 source: crates/ktsense-mcp/tests/tools_list.rs
-assertion_line: 21
 expression: listed
 ---
 {
@@ -830,7 +829,7 @@ expression: listed
     },
     {
       "name": "get_kotlin_repo_map",
-      "description": "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Pass compact to list each file's declarations as kind and name only, no signatures, so the same budget covers far more of the module. Pass focus with a regex to list the declarations whose name matches it first, grouped by file, before the ranked map spends the rest of the budget; focus implies compact. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
+      "description": "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Pass compact to list each file's declarations as kind and name only, no signatures, so the same budget covers far more of the module. Pass focus with a regex to list the declarations whose name matches it first, grouped by file, and stop there; focus implies compact. Add fill to then spend the rest of the budget on the ranked map, as a map without a focus does. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -848,8 +847,13 @@ expression: listed
             "description": "List each file's public declarations as kind and name only, no signatures, so the same\nbudget covers more of the module.",
             "type": "boolean"
           },
+          "fill": {
+            "default": false,
+            "description": "With focus, spend what budget the focus section leaves on the ranked map, as a map without a\nfocus does. Without it a focused map renders the focus section and stops. Requires focus.",
+            "type": "boolean"
+          },
           "focus": {
-            "description": "List declarations whose name matches this regex first, grouped by file, before the ranked\nmap spends the rest of the budget. Implies compact.",
+            "description": "List declarations whose name matches this regex first, grouped by file, and stop there\nunless fill is set. Implies compact.",
             "type": [
               "string",
               "null"

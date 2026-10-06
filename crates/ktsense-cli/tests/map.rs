@@ -302,3 +302,126 @@ fn focus_lists_matching_declarations_first_in_markdown_and_json() {
         json.stdout
     );
 }
+
+/// `--focus` without `--fill` renders the focus section and stops (KT-110): the header reads
+/// `Focus only:` and names how many other files `--fill` would map, the ranked map's footer is
+/// absent, no files are shown, and the JSON carries `fill: false` with a positive unmapped count.
+#[test]
+fn focus_without_fill_renders_the_focus_section_and_stops() {
+    let md = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "Checkout",
+    ]);
+    let json = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "Checkout",
+        "--format",
+        "json",
+    ]);
+    let document: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid JSON");
+
+    let observed = (
+        md.code,
+        md.stdout.contains("Focus only:"),
+        md.stdout.contains("pass --fill to map them"),
+        md.stdout.contains("## Focus: Checkout"),
+        md.stdout.contains("Ranking is syntactic"),
+        document["fill"].as_bool(),
+        document["other_files_not_mapped"].as_u64().map(|n| n > 0),
+        document["files"].as_array().map(|files| files.is_empty()),
+    );
+    assert_eq!(
+        observed,
+        (
+            Some(0),
+            true,
+            true,
+            true,
+            false,
+            Some(false),
+            Some(true),
+            Some(true),
+        ),
+        "md: {}\njson: {}",
+        md.stdout,
+        json.stdout
+    );
+}
+
+/// `--focus --fill` restores the pre-KT-110 focus map: the focus section is followed by the ranked
+/// map and its footer, the focus-only header is absent, and the JSON reports `fill: true` and no
+/// unmapped count.
+#[test]
+fn focus_fill_restores_the_ranked_map() {
+    let md = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "Checkout",
+        "--fill",
+    ]);
+    let json = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--focus",
+        "Checkout",
+        "--fill",
+        "--format",
+        "json",
+    ]);
+    let document: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid JSON");
+
+    let observed = (
+        md.code,
+        md.stdout.contains("## Focus: Checkout"),
+        md.stdout.contains("Ranking is syntactic"),
+        md.stdout.contains("Focus only:"),
+        document["fill"].as_bool(),
+        document.get("other_files_not_mapped").is_some(),
+        document["files"].as_array().map(|files| !files.is_empty()),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, true, false, Some(true), false, Some(true)),
+        "md: {}\njson: {}",
+        md.stdout,
+        json.stdout
+    );
+}
+
+/// `--fill` requires `--focus`: without it the invocation is a usage error (exit 2) naming focus,
+/// caught by clap before the command runs, so `--fill` is never silently a no-op on an unfocused
+/// map.
+#[test]
+fn fill_requires_focus() {
+    let run = map(&[
+        "map",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+        "--fill",
+    ]);
+
+    let observed = (run.code, run.stderr.contains("focus"));
+    assert_eq!(observed, (Some(2), true), "stderr: {}", run.stderr);
+}
