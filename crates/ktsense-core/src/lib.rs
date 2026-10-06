@@ -10,6 +10,7 @@
 pub mod annotated;
 pub mod budget;
 pub mod context;
+pub mod implementors;
 pub mod imports;
 pub mod java_enclosing;
 pub mod java_text;
@@ -34,6 +35,10 @@ pub use budget::{emit_within_budget, BudgetedEmission};
 pub use context::{
     build_context, ContextInput, ContextSection, ContextSections, ForeignReference, LineMatcher,
     MatchedLine, MatchedSource, SourceMatch, SourceSection, SymbolContext,
+};
+pub use implementors::{
+    resolve_supertype_implementors, SupertypeImplementor, SupertypeImplementors, TypeNode,
+    SUPERTYPE_PRECISION,
 };
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use java_enclosing::{

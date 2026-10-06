@@ -90,6 +90,12 @@ pub struct TraceReport {
     pub index: IndexCompleteness,
     pub definition: Definition,
     pub implementors: Vec<RelatedDeclaration>,
+    /// The subtypes of a Java class or interface, matched by supertype name across `.java` and `.kt`
+    /// sources (KT-116). Present only when the traced definition is a Java class or interface, where
+    /// the engine resolves no implementors; absent for a Kotlin type, which keeps the engine's
+    /// `implementors` list. When present the renderer shows this in place of `implementors`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supertype_implementors: Option<crate::implementors::SupertypeImplementors>,
     pub callers: Vec<CallerLevel>,
     /// Every reference site grouped by file, the declaration site included.
     pub usages: Vec<ReferenceGroup>,
@@ -143,6 +149,18 @@ impl TraceReport {
             .first()
             .map(|level| level.callers.as_slice())
             .unwrap_or_default()
+    }
+
+    /// Attaches the subtypes of a Java class or interface, matched by supertype name (KT-116), and
+    /// clears the engine's `implementors`, which the engine cannot answer for a Java type. The
+    /// renderer then shows this list under `## Implementors` in place of the empty engine one.
+    pub fn with_supertype_implementors(
+        mut self,
+        implementors: crate::implementors::SupertypeImplementors,
+    ) -> Self {
+        self.implementors = Vec::new();
+        self.supertype_implementors = Some(implementors);
+        self
     }
 
     /// Attaches the annotation use sites to the report, for a symbol that resolved to an annotation
@@ -201,6 +219,7 @@ pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
         index: input.index,
         definition: input.definition,
         implementors,
+        supertype_implementors: None,
         callers: vec![CallerLevel {
             depth: 1,
             callers: direct,

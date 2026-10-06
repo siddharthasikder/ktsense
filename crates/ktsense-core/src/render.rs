@@ -437,11 +437,16 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
         ));
     }
 
-    out.push_str(&format!(
-        "\n## Implementors ({})\n",
-        report.implementors.len()
-    ));
-    append_lines(&mut out, &report.implementors, related_line);
+    match &report.supertype_implementors {
+        Some(found) => append_supertype_implementors(&mut out, found),
+        None => {
+            out.push_str(&format!(
+                "\n## Implementors ({})\n",
+                report.implementors.len()
+            ));
+            append_lines(&mut out, &report.implementors, related_line);
+        }
+    }
 
     for level in &report.callers {
         append_caller_level(&mut out, level, report.java_text_references.is_some());
@@ -1006,6 +1011,33 @@ pub(crate) fn foreign_reference_line(reference: &crate::context::ForeignReferenc
     }
 }
 
+/// Renders the Java-type subtypes matched by supertype name (KT-116) under `## Implementors`, with
+/// the text-match precision the match carries and, for a transitive subtype, the `via <parent>`
+/// through which it was reached. Shown in place of the engine's implementor list, which is empty for
+/// a Java type. Paths and names are neutralized like every other source-derived text.
+fn append_supertype_implementors(
+    out: &mut String,
+    implementors: &crate::implementors::SupertypeImplementors,
+) {
+    out.push_str(&format!(
+        "\n## Implementors ({})\n",
+        implementors.implementors.len()
+    ));
+    out.push_str(&format!("precision: {}\n", implementors.precision));
+    for implementor in &implementors.implementors {
+        let via = match &implementor.via {
+            Some(parent) => format!(" via {}", neutralize(parent)),
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            "- {}  {}:{}{via}\n",
+            neutralize(&implementor.fqn),
+            neutralize(&implementor.path),
+            implementor.line
+        ));
+    }
+}
+
 /// One related declaration as a list line. Shared with [`crate::context`] so a caller reads
 /// identically in a `trace` and in a `context` bundle.
 pub(crate) fn related_line(declaration: &RelatedDeclaration) -> String {
@@ -1536,6 +1568,60 @@ mod tests {
         assert_eq!(
             observed,
             (true, true, true, true, true, true, true, false, false)
+        );
+    }
+
+    /// A Java type's subtypes (KT-116) render under `## Implementors` with the text-match precision
+    /// and, for a transitive subtype, the `via <parent>` through which it was reached, in place of
+    /// the engine's implementor list. Asserted once against the exact section text.
+    #[test]
+    fn supertype_implementors_render_with_precision_and_via_in_place_of_the_engine_list() {
+        use crate::implementors::{SupertypeImplementor, SupertypeImplementors};
+        use crate::trace::{build_trace, Definition, TraceInput};
+        use crate::{GroupingOptions, Location};
+
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "pkg.Base".to_string(),
+                path: "src/Base.java".to_string(),
+                line: 3,
+                signature: "public abstract class Base".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("src/Base.java", 3),
+            implementation_sites: vec![],
+            reference_sites: vec![],
+            skeletons: &[],
+            options: GroupingOptions::default(),
+        })
+        .with_supertype_implementors(SupertypeImplementors {
+            precision: crate::implementors::SUPERTYPE_PRECISION,
+            implementors: vec![
+                SupertypeImplementor {
+                    fqn: "pkg.Mid".to_string(),
+                    path: "src/Mid.java".to_string(),
+                    line: 4,
+                    via: None,
+                },
+                SupertypeImplementor {
+                    fqn: "pkg.Leaf".to_string(),
+                    path: "src/Leaf.kt".to_string(),
+                    line: 2,
+                    via: Some("Mid".to_string()),
+                },
+            ],
+        });
+
+        let rendered = render_trace_markdown(&report);
+
+        let section = rendered
+            .split("## Implementors")
+            .nth(1)
+            .and_then(|rest| rest.split("\n##").next())
+            .unwrap_or_default();
+        assert_eq!(
+            section,
+            " (2)\nprecision: text match (supertypes matched by name)\n- pkg.Mid  src/Mid.java:4\n- pkg.Leaf  src/Leaf.kt:2 via Mid\n"
         );
     }
 

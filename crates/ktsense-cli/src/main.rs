@@ -11,6 +11,7 @@ mod context;
 mod daemon;
 mod grep;
 mod identifiers;
+mod implementors;
 mod routing;
 mod status;
 mod symbols;

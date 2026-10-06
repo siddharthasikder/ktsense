@@ -728,6 +728,11 @@ fn present_resolved(
     mut report: TraceReport,
     request: &TraceRequest<'_>,
 ) -> Result<CommandOutcome, CommandError> {
+    if let Some(implementors) =
+        crate::implementors::supertype_implementors(request.root, &report.definition)?
+    {
+        report = report.with_supertype_implementors(implementors);
+    }
     if let Some(annotated) = annotation_class_answer(request.root, &report.definition)? {
         report = report.with_annotated(annotated);
     }
