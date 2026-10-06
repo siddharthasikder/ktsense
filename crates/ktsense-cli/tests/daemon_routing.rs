@@ -1,6 +1,8 @@
 //! KT-54: `trace` and `map` answered through the warm daemon session equal the in-process answers.
 //! KT-60: and a routed `trace` resolves its symbol from the warm session instead of spawning a
 //! command-mode `find` child, without changing which candidates it reports.
+//! KT-89: `context` routes the same way, answered on the warm session as a depth-1 `trace` with its
+//! budgeted bundle packed around it.
 //!
 //! This is a new file rather than an addition to `tests/daemon.rs` (KT-30 owns that one). It mirrors
 //! that file's isolation discipline: every invocation gets its own `XDG_RUNTIME_DIR`, passed per
@@ -230,6 +232,64 @@ fn routed_trace_and_map_match_the_in_process_answers_byte_for_byte() {
         (vec![expected; cases.len()], Some(0)),
         "what each path said:\n{}",
         transcripts.join("\n")
+    );
+}
+
+/// The KT-89 acceptance property: with a live daemon, `context` answered through the socket is
+/// byte-identical to the in-process answer in both markdown and JSON, exits 0, stays silent on
+/// stderr, and the markdown carries a `## Source` section. `CheckoutService` spans its whole file,
+/// so it exercises the outline, source, callers and implementors sections together.
+#[cfg(feature = "real-lsp")]
+#[test]
+fn routed_context_matches_the_in_process_answer_and_names_a_source_section() {
+    let runtime = tempfile::tempdir().expect("runtime dir");
+    let started = daemon(runtime.path(), &["daemon", "start", "--root", FIXTURE]);
+    assert_eq!(started.code, Some(0), "start failed: {}", started.stderr);
+
+    let md_via_daemon = routed(
+        runtime.path(),
+        FIXTURE,
+        "KTSENSE_REQUIRE_DAEMON",
+        &["context", "CheckoutService"],
+    );
+    let md_in_process = routed(
+        runtime.path(),
+        FIXTURE,
+        "KTSENSE_NO_DAEMON",
+        &["context", "CheckoutService"],
+    );
+    let json_via_daemon = routed(
+        runtime.path(),
+        FIXTURE,
+        "KTSENSE_REQUIRE_DAEMON",
+        &["--format", "json", "context", "CheckoutService"],
+    );
+    let json_in_process = routed(
+        runtime.path(),
+        FIXTURE,
+        "KTSENSE_NO_DAEMON",
+        &["--format", "json", "context", "CheckoutService"],
+    );
+
+    let stopped = daemon(runtime.path(), &["daemon", "stop", "--root", FIXTURE]);
+
+    assert_eq!(
+        (
+            md_via_daemon.stdout == md_in_process.stdout,
+            json_via_daemon.stdout == json_in_process.stdout,
+            md_via_daemon.code,
+            json_via_daemon.code,
+            md_via_daemon.stderr.is_empty() && md_in_process.stderr.is_empty(),
+            json_via_daemon.stderr.is_empty() && json_in_process.stderr.is_empty(),
+            md_via_daemon.stdout.contains("## Source"),
+            stopped.code,
+        ),
+        (true, true, Some(0), Some(0), true, true, true, Some(0)),
+        "md via daemon:\n{}\nmd in-process:\n{}\ndaemon stderr: {} / in-process stderr: {}",
+        md_via_daemon.stdout,
+        md_in_process.stdout,
+        md_via_daemon.stderr,
+        md_in_process.stderr,
     );
 }
 

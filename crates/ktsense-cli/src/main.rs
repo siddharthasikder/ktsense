@@ -474,13 +474,15 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             symbol,
             pick,
             budget,
-        } => context::context(context::ContextRequest {
-            root: &base,
-            symbol: &symbol,
-            pick: pick.as_deref(),
-            budget,
+        } => route(
+            &base,
+            routing::RoutedCommand::Context {
+                symbol,
+                pick,
+                budget,
+            },
             format,
-        }),
+        ),
         Command::Status => status::run(&base, format).map(CommandOutcome::success),
     }
 }

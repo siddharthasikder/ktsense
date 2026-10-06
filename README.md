@@ -243,10 +243,10 @@ intended does not fail, it answers about the wrong code.
 ktsense daemon start --root /path/to/repo
 ```
 
-This keeps an engine session warm for one root. `outline`, `deps`, `map` and `trace` route through it
-automatically when it is live and fall back to running in process when it is not, so a routing problem
-degrades to a slower answer rather than no answer. It expires after an hour idle. Nothing requires it;
-see the latency table for what it is worth per command.
+This keeps an engine session warm for one root. `outline`, `deps`, `map`, `trace` and `context` route
+through it automatically when it is live and fall back to running in process when it is not, so a
+routing problem degrades to a slower answer rather than no answer. It expires after an hour idle.
+Nothing requires it; see the latency table for what it is worth per command.
 
 ### As an MCP server
 

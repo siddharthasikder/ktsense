@@ -1,27 +1,31 @@
 //! The `context` command: one symbol's declaration, the outline of its file, its callers and its
 //! implementors, trimmed to a token budget in that order.
 //!
-//! The engine work is exactly a depth-1 `trace`, so this command drives [`crate::trace::resolve`]
-//! rather than opening its own session: callers come from `references` plus the enclosing
-//! declaration of each site, which `ktsense-core` derives in one place because `kmp-lsp` 0.26.0
-//! advertises no `callHierarchyProvider`. Packing is [`ktsense_core::build_context`], which spends
-//! the budget through the crate's one budgeted emitter.
+//! The engine work is exactly a depth-1 `trace`, so this command drives the trace resolvers rather
+//! than opening its own: [`crate::trace::resolve`] in process and [`crate::trace::resolve_warm`] on a
+//! daemon's warm session. Callers come from `references` plus the enclosing declaration of each site,
+//! which `ktsense-core` derives in one place because `kmp-lsp` 0.26.0 advertises no
+//! `callHierarchyProvider`. Packing is [`ktsense_core::build_context`], which spends the budget
+//! through the crate's one budgeted emitter.
 //!
 //! The answer carries the same `index: partial|complete` marker a trace does. A bundle built while
 //! the index was still building lists fewer callers than exist, and a reader who acts on it as
 //! though it were complete is being misled.
 //!
-//! `context` is not a routed wire command, and the trace it drives is the in-process resolver above:
-//! a fresh engine session, and a command-mode `find` to resolve the name, even while a daemon holds a
-//! warm session for the same root. `outline`, `deps`, `map` and `trace` do route, so the gap is that
-//! `context` inherits the cold half of `trace` rather than that nothing routes at all. A known gap
-//! rather than an oversight.
+//! `context` is a routed wire command (KT-89). Like `trace`, a live daemon answers it on its own warm
+//! session and the client falls back to the in-process path when no daemon is live, when
+//! `KTSENSE_NO_DAEMON=1` is set, or when the transport fails. Both paths reach the same [`finish`],
+//! which packs the bundle with `ktsense-core`, so a routed answer equals the in-process one by
+//! construction. What differs between them is only how the trace it builds on is resolved: the
+//! in-process path opens a fresh engine session and resolves through a command-mode `find`, while the
+//! routed path resolves and traces on the daemon's warm session exactly as a routed `trace` does.
 
 use std::path::Path;
 
 use ktsense_core::{
     build_context, render_context_markdown, ByteRatioEstimator, ContextInput, SymbolContext,
 };
+use ktsense_daemon::WarmEngine;
 
 use crate::trace::{self, IndexWaitPolicy, TraceRequest, Traced};
 use crate::{CommandError, CommandOutcome, Format};
@@ -40,7 +44,24 @@ pub(crate) struct ContextRequest<'a> {
 }
 
 pub(crate) fn context(request: ContextRequest<'_>) -> Result<CommandOutcome, CommandError> {
-    let traced = trace::resolve(&TraceRequest {
+    finish(&request, trace::resolve(&trace_request(&request))?)
+}
+
+/// The daemon-side `context`: resolves and traces on the daemon's own warm session, exactly as a
+/// routed `trace` does, then packs the bundle through the same [`finish`] the in-process path runs,
+/// so a routed answer equals the in-process one by construction.
+pub(crate) async fn context_warm(
+    engine: &WarmEngine,
+    request: ContextRequest<'_>,
+) -> Result<CommandOutcome, CommandError> {
+    let traced = trace::resolve_warm(engine, &trace_request(&request)).await?;
+    finish(&request, traced)
+}
+
+/// The depth-1 trace a `context` bundle is built on. Stated once so the in-process and warm paths
+/// trace the same thing and cannot drift.
+fn trace_request<'a>(request: &ContextRequest<'a>) -> TraceRequest<'a> {
+    TraceRequest {
         root: request.root,
         symbol: request.symbol,
         pick: request.pick,
@@ -48,7 +69,13 @@ pub(crate) fn context(request: ContextRequest<'_>) -> Result<CommandOutcome, Com
         limit: None,
         wait: IndexWaitPolicy::Capped,
         format: request.format,
-    })?;
+    }
+}
+
+/// Packs a resolved trace into the budgeted bundle, or returns the ambiguous candidate listing
+/// unchanged. The file outline and the declaration's own source are read here from plain files, so
+/// both the fresh and warm paths compose the bundle from the same data.
+fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome, CommandError> {
     let report = match traced {
         Traced::Ambiguous(outcome) => return Ok(outcome),
         Traced::Resolved(report) => report,

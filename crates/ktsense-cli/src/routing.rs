@@ -1,13 +1,14 @@
 //! Transparent daemon routing for the commands a warm daemon can answer in place of the in-process
-//! path: `outline`, `deps`, `map` and `trace`.
+//! path: `outline`, `deps`, `map`, `trace` and `context`.
 //!
 //! `outline`, `deps` and `map` are pure tree-sitter work, so a running daemon answers them by
 //! calling the very same functions the in-process path calls; identical output is then a property of
-//! the construction, not a hope. `trace` is the one routed command that needs the engine, and the
-//! daemon answers it on the warm session it already holds rather than launching a second engine
-//! child. The daemon side is [`CommandEngine`], which wraps the warm LSP engine and intercepts one
-//! extra method, `ktsense/command`, whose params are the command and its arguments; every other
-//! method still reaches the engine. The client side is [`route`], which
+//! the construction, not a hope. `trace` and `context` are the routed commands that need the engine,
+//! and the daemon answers them on the warm session it already holds rather than launching a second
+//! engine child; `context` is a depth-1 `trace` with a budgeted bundle packed around it, so it
+//! reuses the warm trace the same way. The daemon side is [`CommandEngine`], which wraps the warm LSP
+//! engine and intercepts one extra method, `ktsense/command`, whose params are the command and its
+//! arguments; every other method still reaches the engine. The client side is [`route`], which
 //! tries the root's socket first and falls back to running in-process when there is no live
 //! daemon, when `KTSENSE_NO_DAEMON=1` is set, or when the transport fails, so a routing problem
 //! degrades to a slower answer rather than no answer. A daemon that answers with a command error
@@ -65,6 +66,11 @@ pub(crate) enum RoutedCommand {
         wait_index: bool,
     },
     Map {
+        budget: usize,
+    },
+    Context {
+        symbol: String,
+        pick: Option<String>,
         budget: usize,
     },
 }
@@ -172,6 +178,30 @@ pub(crate) fn run_in_process(
         RoutedCommand::Map { budget } => {
             crate::repository_map(root, *budget, format).map(CommandOutcome::success)
         }
+        RoutedCommand::Context {
+            symbol,
+            pick,
+            budget,
+        } => crate::context::context(context_request(root, symbol, pick, *budget, format)),
+    }
+}
+
+/// Rebuilds a [`crate::context::ContextRequest`] from the wire fields, borrowing `root` and the
+/// owned strings the routed command carries, so the fresh and warm paths construct an identical
+/// request.
+fn context_request<'a>(
+    root: &'a Path,
+    symbol: &'a str,
+    pick: &'a Option<String>,
+    budget: usize,
+    format: Format,
+) -> crate::context::ContextRequest<'a> {
+    crate::context::ContextRequest {
+        root,
+        symbol,
+        pick: pick.as_deref(),
+        budget,
+        format,
     }
 }
 
@@ -363,11 +393,12 @@ impl CommandEngine {
     }
 
     /// Answers a routed command on the daemon's warm session. `outline` and `deps` reuse the parsed
-    /// skeleton cache; `map` is pure tree-sitter run by the same function the fresh path calls; and
-    /// `trace` drives the daemon's own warm LSP session rather than launching a second engine child.
-    /// Every branch renders through the same code the in-process path uses, so a routed answer equals
-    /// the in-process one byte for byte. No sync guard is held across an await: the cache locks only
-    /// within its own synchronous calls, and the index phase is read by value.
+    /// skeleton cache; `map` is pure tree-sitter run by the same function the fresh path calls;
+    /// `trace` drives the daemon's own warm LSP session rather than launching a second engine child;
+    /// and `context` builds its budgeted bundle on that same warm trace. Every branch renders through
+    /// the same code the in-process path uses, so a routed answer equals the in-process one byte for
+    /// byte. No sync guard is held across an await: the cache locks only within its own synchronous
+    /// calls, and the index phase is read by value.
     async fn run_command(
         &self,
         command: &RoutedCommand,
@@ -414,6 +445,17 @@ impl CommandEngine {
             }
             RoutedCommand::Map { budget } => {
                 crate::repository_map(&self.root, *budget, format).map(CommandOutcome::success)
+            }
+            RoutedCommand::Context {
+                symbol,
+                pick,
+                budget,
+            } => {
+                crate::context::context_warm(
+                    &self.engine,
+                    context_request(&self.root, symbol, pick, *budget, format),
+                )
+                .await
             }
         }
     }
@@ -500,6 +542,35 @@ mod tests {
             (
                 trace.command,
                 serde_json::json!({ "command": "map", "budget": 4000, "format": "json" })
+            )
+        );
+    }
+
+    #[test]
+    fn context_is_routed_and_carries_its_arguments_across_the_wire() {
+        let params = RoutedParams {
+            command: RoutedCommand::Context {
+                symbol: "CheckoutService".to_string(),
+                pick: Some("shop.app.checkout.CheckoutService".to_string()),
+                budget: 2000,
+            },
+            format: WireFormat::Md,
+        };
+
+        let value = serde_json::to_value(&params).expect("serializes");
+        let back: RoutedParams = serde_json::from_value(value.clone()).expect("deserializes");
+
+        assert_eq!(
+            (value, back.command),
+            (
+                serde_json::json!({
+                    "command": "context",
+                    "symbol": "CheckoutService",
+                    "pick": "shop.app.checkout.CheckoutService",
+                    "budget": 2000,
+                    "format": "md"
+                }),
+                params.command,
             )
         );
     }

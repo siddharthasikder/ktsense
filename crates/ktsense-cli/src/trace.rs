@@ -118,10 +118,23 @@ pub(crate) async fn trace_warm(
     engine: &WarmEngine,
     request: TraceRequest<'_>,
 ) -> Result<CommandOutcome, CommandError> {
+    match resolve_warm(engine, &request).await? {
+        Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
+        Traced::Ambiguous(outcome) => Ok(outcome),
+    }
+}
+
+/// Resolves the name and, when it is unambiguous, answers from the daemon's warm session, returning
+/// the report rather than rendering it. Shared with `context`, which builds its bundle on the same
+/// report, so the routed `trace` and routed `context` resolve and trace the name the same way.
+pub(crate) async fn resolve_warm(
+    engine: &WarmEngine,
+    request: &TraceRequest<'_>,
+) -> Result<Traced, CommandError> {
     let index = await_warm_index(engine, request.wait).await;
-    let candidates = warm_declarations(engine, &request, index).await?;
-    match select_candidate(&request, candidates)? {
-        Resolution::Ambiguous(outcome) => Ok(outcome),
+    let candidates = warm_declarations(engine, request, index).await?;
+    match select_candidate(request, candidates)? {
+        Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
         Resolution::Ready {
             candidate,
             definition,
@@ -136,7 +149,7 @@ pub(crate) async fn trace_warm(
                 )
                 .await
                 .map_err(CommandError::engine)?;
-            present(&report, request.format).map(CommandOutcome::success)
+            Ok(Traced::Resolved(report))
         }
     }
 }

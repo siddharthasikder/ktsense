@@ -4,6 +4,10 @@
 
 First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
+### Changed
+
+- `context` (and the `explain_kotlin_symbol` MCP tool) now routes through the warm daemon, answering on the daemon's own session as a depth-1 `trace` instead of opening a fresh engine per call (KT-89).
+
 ### Fixed
 
 - A "no declaration named X" answer now says it searched this workspace only, not library dependencies (KT-87).
