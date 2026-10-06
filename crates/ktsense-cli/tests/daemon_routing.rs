@@ -339,7 +339,10 @@ fn a_routed_trace_of_an_absent_name_fails_exactly_as_the_in_process_one_does() {
         ),
         (
             Some(1),
-            format!("ktsense: no declaration named {ABSENT_SYMBOL}"),
+            format!(
+                "ktsense: no declaration named {ABSENT_SYMBOL} in this workspace; library and \
+                 dependency declarations are not searched, so use a text search for external types"
+            ),
             true,
             true,
             Some(1),

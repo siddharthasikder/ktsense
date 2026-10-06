@@ -959,7 +959,8 @@ mod tests {
         let failed = KtsenseServer::new(Recorded::replying(
             1,
             "",
-            "ktsense: no declaration named ZzzNope\n",
+            "ktsense: no declaration named ZzzNope in this workspace; library and dependency \
+             declarations are not searched, so use a text search for external types\n",
         ));
         let params = |query: &str| {
             Parameters(SymbolParams {
@@ -1003,7 +1004,7 @@ mod tests {
                 json!("## Symbols: save\n"),
                 Some(json!(3)),
                 Some(true),
-                json!("ktsense: no declaration named ZzzNope"),
+                json!("ktsense: no declaration named ZzzNope in this workspace; library and dependency declarations are not searched, so use a text search for external types"),
                 Some(json!(1)),
             )
         );

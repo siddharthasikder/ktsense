@@ -331,7 +331,10 @@ impl CommandError {
     fn no_symbol(query: &str) -> Self {
         Self {
             exit: Exit::Failure,
-            message: format!("ktsense: no declaration named {query}"),
+            message: format!(
+                "ktsense: no declaration named {query} in this workspace; library and dependency \
+                 declarations are not searched, so use a text search for external types"
+            ),
         }
     }
 

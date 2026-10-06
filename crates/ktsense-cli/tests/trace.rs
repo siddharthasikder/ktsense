@@ -304,7 +304,9 @@ fn a_name_an_empty_find_missed_is_resolved_from_the_index_unless_it_is_still_bui
             (
                 Some(1),
                 false,
-                "ktsense: no declaration named save".to_string()
+                "ktsense: no declaration named save in this workspace; library and dependency \
+                 declarations are not searched, so use a text search for external types"
+                    .to_string()
             ),
         ),
         "silent engine: {}\nempty array: {}\nstill building: {}",

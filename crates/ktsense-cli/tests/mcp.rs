@@ -198,7 +198,7 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
             json!(false),
             true,
             json!(true),
-            json!("ktsense: no declaration named ZzzNope"),
+            json!("ktsense: no declaration named ZzzNope in this workspace; library and dependency declarations are not searched, so use a text search for external types"),
             json!(false),
             true,
             Some(0),
