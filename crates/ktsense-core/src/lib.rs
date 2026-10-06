@@ -16,6 +16,7 @@ pub mod render;
 pub mod repo_map;
 pub mod scc;
 pub mod skeleton;
+pub mod symbol_search;
 pub mod text;
 pub mod trace;
 
@@ -39,6 +40,7 @@ pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,
     MAX_NESTING_DEPTH,
 };
+pub use symbol_search::{contained_declarations, SymbolMatch};
 pub use text::{fence_for, neutralize, normalize_signature_layout, MIN_FENCE_BACKTICKS};
 pub use trace::{
     build_trace, callers_of, CallerLevel, Definition, ExcludedSite, IndexCompleteness,

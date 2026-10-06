@@ -128,6 +128,10 @@ enum Command {
         /// Select the single candidate with this fully-qualified name and exit successfully.
         #[arg(long, value_name = "FQN")]
         pick: Option<String>,
+        /// List declarations whose simple name contains the query, from the syntax index, instead
+        /// of matching the name exactly through the engine.
+        #[arg(long)]
+        contains: bool,
     },
     /// Definition, usages, implementors and callers of one symbol
     Trace {
@@ -445,7 +449,16 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             kind,
             limit,
             pick,
-        } => symbols(&base, &query, kind, limit, pick.as_deref(), format),
+            contains,
+        } => symbols(
+            &base,
+            &query,
+            kind,
+            limit,
+            pick.as_deref(),
+            contains,
+            format,
+        ),
         Command::Map { budget } => route(&base, routing::RoutedCommand::Map { budget }, format),
         Command::Trace {
             symbol,
@@ -533,8 +546,13 @@ fn symbols(
     kind: Option<KindFilter>,
     limit: Option<usize>,
     pick: Option<&str>,
+    contains: bool,
     format: Format,
 ) -> Result<CommandOutcome, CommandError> {
+    if contains {
+        return symbols::present_contained(root, query, kind, limit, format)
+            .map(CommandOutcome::from);
+    }
     let candidates = block_on(ktsense_lsp::run_symbols(root, query))
         .map_err(|error| CommandError::passthrough(&error))?;
     symbols::present_symbols(root, query, candidates, kind, limit, pick, format)

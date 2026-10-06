@@ -23,6 +23,8 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Added
 
+- `ktsense symbols --contains <query>` lists every declaration whose simple name contains the query, drawn from the workspace's own syntax index rather than the engine, so it needs no warm index and states `source: syntax index`. Matches are ranked exact name first, then prefix, then shorter name, then qualified name, path and line, capped by `--limit` (default 50) with a note when more were found; a query nothing contains exits with the workspace-scope wording. The `find_kotlin_symbol` MCP tool gains a `contains` flag (KT-88).
+
 - `ktsense map` now says where its omitted files live. When files are dropped for budget, the Markdown map ends with an `Omitted: <dir> (<count>), ...` line grouping them by directory, most files first, truncated to `and N more directories` when the reserved room runs out; the summary's cost is reserved before files are chosen so the total stays within the budget. The map also states how many read files declare nothing public and were not mapped, and the JSON gains `omitted_directories` and `files_without_public_declarations` (KT-93).
 
 - `trace` lists production callers under `## Callers` and test callers under a following `## Test callers`, at every `--depth` level, and `context` orders production callers ahead of test ones and labels the test ones, so who calls a symbol in production reads before who exercises it in tests. A caller counts as a test by its source path (a `test`, `androidTest`, `testFixtures`, `commonTest`, `jvmTest` or `<flavour>Test` source set, or a `Test.kt` / `Tests.kt` / `Spec.kt` file); JSON gains a `test` flag per caller (KT-91).

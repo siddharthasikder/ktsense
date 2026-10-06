@@ -210,6 +210,10 @@ pub struct SymbolParams {
     pub limit: Option<usize>,
     /// Select the single candidate with this fully-qualified name.
     pub pick: Option<String>,
+    /// List declarations whose simple name contains the query, from the syntax index, instead of
+    /// matching the name exactly.
+    #[serde(default)]
+    pub contains: bool,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -603,7 +607,8 @@ impl KtsenseServer {
             .positional(params.query)
             .option("kind", params.kind)
             .option("limit", params.limit)
-            .option("pick", params.pick);
+            .option("pick", params.pick)
+            .flag("contains", params.contains);
         self.invoke(&crate::SYMBOLS, args.0).await
     }
 
@@ -972,6 +977,7 @@ mod tests {
                 kind: None,
                 limit: None,
                 pick: None,
+                contains: false,
                 root: None,
             })
         };

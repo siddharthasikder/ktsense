@@ -16,7 +16,10 @@
 
 use std::path::Path;
 
-use ktsense_core::{render_skeleton, DeclKind, Declaration, FileSkeleton, RenderOptions};
+use ktsense_core::{
+    contained_declarations, render_skeleton, DeclKind, Declaration, FileSkeleton, RenderOptions,
+    SymbolMatch,
+};
 use ktsense_lsp::SymbolCandidate;
 use serde::Serialize;
 
@@ -158,6 +161,130 @@ fn pick_one(
         Some(chosen) => render(query, &[chosen], None, Exit::Success, format),
         None => Err(CommandError::pick_missed(pick)),
     }
+}
+
+/// The default cap on a `--contains` listing: a partial-name search can match a great many
+/// declarations, so a bound keeps the answer readable when the caller gives no `--limit`.
+const DEFAULT_CONTAINS_LIMIT: usize = 50;
+
+/// Lists declarations whose simple name contains `query`, ranked by [`contained_declarations`]. The
+/// candidates come from the workspace's own syntax skeletons, not the engine, so the answer states
+/// `source: syntax index` and never depends on the index being warm. A listing is the whole answer,
+/// so this exits successfully however many it found; only a query nothing contains is a failure.
+pub(crate) fn present_contained(
+    root: &Path,
+    query: &str,
+    kind: Option<KindFilter>,
+    limit: Option<usize>,
+    format: Format,
+) -> Result<SymbolsOutcome, CommandError> {
+    let mut ranked = contained_declarations(query, gather_workspace_declarations(root)?);
+    if let Some(kind) = kind {
+        ranked.retain(|found| kind_label(found.kind) == kind.label());
+    }
+    if ranked.is_empty() {
+        return Err(CommandError::no_symbol(query));
+    }
+
+    let total = ranked.len();
+    let shown = limit.unwrap_or(DEFAULT_CONTAINS_LIMIT).min(total);
+    ranked.truncate(shown);
+    let resolved: Vec<ResolvedSymbol> = ranked.into_iter().map(resolved_from_match).collect();
+
+    let text = match format {
+        Format::Md => contains_markdown(query, &resolved, total - shown),
+        Format::Json => contains_json(&resolved, total - shown)?,
+        Format::Dot => return Err(CommandError::unsupported_format("symbols")),
+    };
+    Ok(SymbolsOutcome {
+        text,
+        exit: Exit::Success,
+        stderr: None,
+    })
+}
+
+fn resolved_from_match(found: SymbolMatch) -> ResolvedSymbol {
+    ResolvedSymbol {
+        fqn: found.qualified_name,
+        kind: kind_label(found.kind).to_string(),
+        file: found.path,
+        line: found.line,
+        signature: found.signature,
+    }
+}
+
+/// Every named declaration in the workspace's Kotlin sources, as [`SymbolMatch`] values ready to
+/// rank. It walks the same tree `map` does, so build, target and bin copies are skipped; an
+/// unreadable or unparseable file is dropped rather than aborting the search.
+fn gather_workspace_declarations(root: &Path) -> Result<Vec<SymbolMatch>, CommandError> {
+    let mut matches = Vec::new();
+    for path in crate::collect_kotlin_files(root)? {
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let display = normalized_path(root, &path);
+        let Ok(skeleton) = ktsense_syntax::extract(display.clone(), &source) else {
+            continue;
+        };
+        let mut ancestors = Vec::new();
+        gather_declarations(
+            skeleton.package.as_deref(),
+            &display,
+            &skeleton.declarations,
+            &mut ancestors,
+            &mut matches,
+        );
+    }
+    Ok(matches)
+}
+
+fn gather_declarations(
+    package: Option<&str>,
+    path: &str,
+    declarations: &[Declaration],
+    ancestors: &mut Vec<String>,
+    out: &mut Vec<SymbolMatch>,
+) {
+    for declaration in declarations {
+        if !declaration.name.is_empty() {
+            out.push(SymbolMatch {
+                qualified_name: fqn(package, ancestors, &declaration.name),
+                simple_name: declaration.name.clone(),
+                kind: declaration.kind,
+                path: path.to_string(),
+                line: declaration.line,
+                signature: signature_of(path, declaration),
+            });
+        }
+        ancestors.push(declaration.name.clone());
+        gather_declarations(package, path, &declaration.children, ancestors, out);
+        ancestors.pop();
+    }
+}
+
+fn contains_markdown(query: &str, resolved: &[ResolvedSymbol], hidden: usize) -> String {
+    let mut out = format!("## Symbols: {}\n", neutralize(query));
+    out.push_str("source: syntax index\n");
+    out.push('\n');
+    out.push_str(&crate::fenced_block(&rows(resolved)));
+    if hidden > 0 {
+        out.push_str(&format!("\n... {hidden} more matches not shown\n"));
+    }
+    out
+}
+
+fn contains_json(resolved: &[ResolvedSymbol], hidden: usize) -> Result<String, CommandError> {
+    #[derive(serde::Serialize)]
+    struct ContainsAnswer<'a> {
+        source: &'static str,
+        matches: &'a [ResolvedSymbol],
+        more_matches: usize,
+    }
+    crate::as_json(&ContainsAnswer {
+        source: "syntax index",
+        matches: resolved,
+        more_matches: hidden,
+    })
 }
 
 fn hidden_note(hidden: usize) -> Option<usize> {

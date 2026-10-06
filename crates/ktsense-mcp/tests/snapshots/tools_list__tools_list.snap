@@ -470,6 +470,11 @@ expression: listed
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "contains": {
+            "default": false,
+            "description": "List declarations whose simple name contains the query, from the syntax index, instead of\nmatching the name exactly.",
+            "type": "boolean"
+          },
           "kind": {
             "description": "Keep only declarations of this kind: class, interface, object, fun, val, var, typealias\nor constructor.",
             "type": [
