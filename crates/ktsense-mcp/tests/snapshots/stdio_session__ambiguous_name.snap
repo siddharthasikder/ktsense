@@ -30,12 +30,14 @@ structuredContent:
   "tool": "trace_kotlin_symbol"
 }
 ---
-## Symbols: save
+## Ambiguous: save (2 candidates)
 
 ```text
 shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
 shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
+
+ambiguous: 2 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save
 
 === explain_kotlin_symbol ===
 isError: false
@@ -63,12 +65,14 @@ structuredContent:
   "tool": "explain_kotlin_symbol"
 }
 ---
-## Symbols: save
+## Ambiguous: save (2 candidates)
 
 ```text
 shop.db.InMemoryOrderRepository.save  fun  db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt:13  override fun save(order: Order): OrderId
 shop.db.JdbcOrderRepository.save  fun  db/src/main/kotlin/shop/db/JdbcOrderRepository.kt:9  override fun save(order: Order): OrderId
 ```
+
+ambiguous: 2 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save
 
 === find_kotlin_symbol ===
 isError: false

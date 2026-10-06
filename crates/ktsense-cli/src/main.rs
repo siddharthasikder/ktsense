@@ -345,10 +345,13 @@ impl CommandError {
 
 /// A completed command: the text to print on stdout and the status the process should end with.
 /// Most commands succeed, but `check` must be able to print its report and still exit non-zero, so
-/// the exit travels with the output rather than being inferred from success or failure alone.
+/// the exit travels with the output rather than being inferred from success or failure alone. An
+/// ambiguous resolution also carries a `--pick` hint for stderr, so the same instruction reaches a
+/// caller watching stderr as reaches one reading the candidate list.
 struct CommandOutcome {
     text: String,
     exit: Exit,
+    stderr: Option<String>,
 }
 
 impl CommandOutcome {
@@ -356,6 +359,7 @@ impl CommandOutcome {
         Self {
             text,
             exit: Exit::Success,
+            stderr: None,
         }
     }
 }
@@ -369,6 +373,9 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(outcome) => {
             print!("{}", outcome.text);
+            if let Some(stderr) = &outcome.stderr {
+                eprintln!("{stderr}");
+            }
             outcome.exit.into()
         }
         Err(failure) => {
@@ -535,6 +542,7 @@ fn check(root: &Path, path: &Path, format: Format) -> Result<CommandOutcome, Com
     Ok(CommandOutcome {
         text: render_check(&report, format)?,
         exit,
+        stderr: None,
     })
 }
 

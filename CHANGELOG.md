@@ -15,6 +15,7 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Added
 
+- On an ambiguous name, `trace` and `context` title the block `## Ambiguous: <name> (N candidates)` and print a `rerun with --pick <FQN>` hint on stdout and stderr, still exiting 3 (KT-85).
 - `status` reports whether `rg` is on `PATH` and warns when it is missing, because engine `find` and references return nothing without it (KT-80).
 - `outline` states how many private or internal declarations it hid and that `--private` includes them (KT-79).
 - `scripts/install.sh`, a one-script installer. It asks before trusting the tap, installs ripgrep, and proves the install by running the binary (KT-75).

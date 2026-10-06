@@ -41,10 +41,19 @@ impl ResolvedSymbol {
 }
 
 /// The rendered answer and the exit status it ends with, kept together so the caller never infers
-/// an exit from the text.
+/// an exit from the text. An ambiguity carries a `--pick` hint for stderr, so a caller reading only
+/// stdout is not the sole audience for how to resolve the name.
 pub(crate) struct SymbolsOutcome {
     text: String,
     exit: Exit,
+    stderr: Option<String>,
+}
+
+impl SymbolsOutcome {
+    fn with_stderr(mut self, stderr: String) -> Self {
+        self.stderr = Some(stderr);
+        self
+    }
 }
 
 impl From<SymbolsOutcome> for CommandOutcome {
@@ -52,6 +61,7 @@ impl From<SymbolsOutcome> for CommandOutcome {
         CommandOutcome {
             text: outcome.text,
             exit: outcome.exit,
+            stderr: outcome.stderr,
         }
     }
 }
@@ -84,6 +94,7 @@ pub(crate) fn present_symbols(
         1 => render(query, &resolved, None, Exit::Success, format),
         _ => {
             let total = resolved.len();
+            let hint = ambiguity_hint(query, total, &resolved[0].fqn);
             let shown = limit.unwrap_or(total).min(total);
             let hidden = total - shown;
             resolved.truncate(shown);
@@ -94,6 +105,7 @@ pub(crate) fn present_symbols(
                 Exit::Ambiguous,
                 format,
             )
+            .map(|outcome| outcome.with_stderr(hint))
         }
     }
 }
@@ -131,7 +143,7 @@ pub(crate) fn select(
         _ => {
             let resolved: Vec<ResolvedSymbol> =
                 enriched.into_iter().map(|(_, resolved)| resolved).collect();
-            render(query, &resolved, None, Exit::Ambiguous, format).map(Selection::Ambiguous)
+            render_ambiguous_selection(query, &resolved, format).map(Selection::Ambiguous)
         }
     }
 }
@@ -164,7 +176,44 @@ fn render(
         Format::Json => symbols_json(resolved)?,
         Format::Dot => return Err(CommandError::unsupported_format("symbols")),
     };
-    Ok(SymbolsOutcome { text, exit })
+    Ok(SymbolsOutcome {
+        text,
+        exit,
+        stderr: None,
+    })
+}
+
+/// The answer for a name that resolved to several declarations on the `trace`/`context` path: the
+/// candidate list under an `## Ambiguous:` heading, ending with the `--pick` hint that same line
+/// carries on stderr, so an agent reading the list is told outright it is not the answer and how to
+/// get one. The `symbols` command keeps its plain `## Symbols:` listing and carries the hint on
+/// stderr alone, because a listing is what it was asked for.
+fn render_ambiguous_selection(
+    query: &str,
+    resolved: &[ResolvedSymbol],
+    format: Format,
+) -> Result<SymbolsOutcome, CommandError> {
+    let hint = ambiguity_hint(query, resolved.len(), &resolved[0].fqn);
+    let text = match format {
+        Format::Md => ambiguous_markdown(query, resolved, &hint),
+        Format::Json => symbols_json(resolved)?,
+        Format::Dot => return Err(CommandError::unsupported_format("symbols")),
+    };
+    Ok(SymbolsOutcome {
+        text,
+        exit: Exit::Ambiguous,
+        stderr: Some(hint),
+    })
+}
+
+/// The line that tells the caller how to turn an ambiguous name into an answer: how many
+/// declarations carry it and the fully-qualified name of the first after the deterministic sort, so
+/// a `--pick` reproduces without the caller having to read the list.
+fn ambiguity_hint(query: &str, count: usize, first_fqn: &str) -> String {
+    neutralize(&format!(
+        "ambiguous: {count} declarations named {query}; rerun with --pick {first_fqn}"
+    ))
+    .into_owned()
 }
 
 /// Enriches every engine candidate and orders the result deterministically, so a set of
@@ -323,7 +372,30 @@ fn kind_label(kind: DeclKind) -> &'static str {
 
 fn symbols_markdown(query: &str, resolved: &[ResolvedSymbol], hidden: Option<usize>) -> String {
     let mut out = format!("## Symbols: {}\n", neutralize(query));
-    let rows: Vec<String> = resolved
+    out.push('\n');
+    out.push_str(&crate::fenced_block(&rows(resolved)));
+    if let Some(hidden) = hidden {
+        out.push_str(&format!("\n... {hidden} more (use --limit)\n"));
+    }
+    out
+}
+
+/// The candidate listing under the `## Ambiguous:` heading the `trace`/`context` path uses, ending
+/// with the `--pick` hint so the last line of the block is the same instruction that reaches stderr.
+fn ambiguous_markdown(query: &str, resolved: &[ResolvedSymbol], hint: &str) -> String {
+    let mut out = format!(
+        "## Ambiguous: {} ({} candidates)\n",
+        neutralize(query),
+        resolved.len()
+    );
+    out.push('\n');
+    out.push_str(&crate::fenced_block(&rows(resolved)));
+    out.push_str(&format!("\n{hint}\n"));
+    out
+}
+
+fn rows(resolved: &[ResolvedSymbol]) -> Vec<String> {
+    resolved
         .iter()
         .map(|symbol| {
             format!(
@@ -331,13 +403,7 @@ fn symbols_markdown(query: &str, resolved: &[ResolvedSymbol], hidden: Option<usi
                 symbol.fqn, symbol.kind, symbol.file, symbol.line, symbol.signature
             )
         })
-        .collect();
-    out.push('\n');
-    out.push_str(&crate::fenced_block(&rows));
-    if let Some(hidden) = hidden {
-        out.push_str(&format!("\n... {hidden} more (use --limit)\n"));
-    }
-    out
+        .collect()
 }
 
 fn symbols_json(resolved: &[ResolvedSymbol]) -> Result<String, CommandError> {
@@ -404,7 +470,7 @@ mod tests {
             Format::Md,
         );
         match outcome {
-            Ok(SymbolsOutcome { text, exit }) => (exit.code(), text),
+            Ok(SymbolsOutcome { text, exit, .. }) => (exit.code(), text),
             Err(error) => (error.exit.code(), format!("{}\n", error.message)),
         }
     }
@@ -425,6 +491,37 @@ mod tests {
     fn several_exact_matches_list_all_and_exit_three() {
         let (code, text) = present(save_candidates(), None, None, None);
         insta::assert_snapshot!("ambiguous_exits_three", format!("exit {code}\n{text}"));
+    }
+
+    #[test]
+    fn an_ambiguous_listing_keeps_its_symbols_heading_and_writes_the_pick_hint_to_stderr() {
+        let outcome = present_symbols(
+            &fixtures().join("multi-module"),
+            "save",
+            save_candidates(),
+            None,
+            None,
+            None,
+            Format::Md,
+        )
+        .expect("ambiguous listing");
+
+        let observed = (
+            outcome.exit.code(),
+            outcome.text.lines().next().map(str::to_string),
+            outcome.stderr,
+        );
+        assert_eq!(
+            observed,
+            (
+                3,
+                Some("## Symbols: save".to_string()),
+                Some(
+                    "ambiguous: 3 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save"
+                        .to_string()
+                ),
+            )
+        );
     }
 
     #[test]

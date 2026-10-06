@@ -202,6 +202,10 @@ An answer marked `index: partial` means the reference index had not finished whe
 answered. It is a real answer about what was indexed, not a complete one. Ask again once the index has
 had time, or pass `--wait-index` when driving `trace` from the CLI.
 
+An `exit 3` from `trace` or `explain_kotlin_symbol` means the name was ambiguous, not that the call
+failed: the candidate list ends with a `rerun with --pick <FQN>` hint, also written to stderr, naming
+the first candidate to pick and retry with.
+
 An error from `check_kotlin_syntax` or `find_kotlin_symbol` where the tool list itself worked is a
 missing or unusable engine rather than a broken client: the client found `ktsense` and `ktsense` could
 not usefully run `kmp-lsp`. Check `KTSENSE_LSP_PATH` and `PATH` before touching the client

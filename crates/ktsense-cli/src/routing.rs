@@ -246,12 +246,15 @@ enum DaemonAnswer {
 /// The wire shape of a routed answer: the rendered text plus the exit status it should end with, so
 /// a routed `trace` that lists ambiguous candidates ends 3 exactly as the in-process one does rather
 /// than being flattened to success. An answer whose exit is not carried defaults to success, which
-/// is what `outline`, `deps` and `map` always report.
+/// is what `outline`, `deps` and `map` always report. An ambiguous `trace` also carries its `--pick`
+/// hint, so a routed answer writes the same stderr line the in-process path does.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RoutedReply {
     text: String,
     #[serde(default)]
     exit: WireExit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stderr: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +274,7 @@ impl RoutedReply {
         Self {
             text: outcome.text,
             exit,
+            stderr: outcome.stderr,
         }
     }
 
@@ -282,6 +286,7 @@ impl RoutedReply {
         CommandOutcome {
             text: self.text,
             exit,
+            stderr: self.stderr,
         }
     }
 }
@@ -504,6 +509,7 @@ mod tests {
         let ambiguous = RoutedReply::of(CommandOutcome {
             text: "candidates".to_string(),
             exit: Exit::Ambiguous,
+            stderr: None,
         });
         let wire = serde_json::to_value(&ambiguous).expect("serializes");
         let round_tripped = ambiguous.clone().into_outcome();

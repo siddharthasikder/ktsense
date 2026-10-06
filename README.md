@@ -396,18 +396,21 @@ gets to make.
 file parsed, not that it compiles.
 
 **Ambiguity is an answer, not a guess.** When a name resolves to several declarations, ktsense lists
-every candidate and exits 3 rather than picking one, three of nine here with their paths shortened:
+every candidate and exits 3 rather than picking one, ending with a `--pick` hint it also writes to
+stderr; three of nine here with their paths shortened:
 
 ````
 $ ktsense trace Plugin
-## Symbols: Plugin
+## Ambiguous: Plugin (9 candidates)
 
 ```text
-io.ktor.server.websocket.WebSockets.Plugin  object  .../WebSockets.kt:111  companion object Plugin : BaseApplicationPlugin<Application, WebSocketOptions, WebSockets>
 io.ktor.client.plugins.DefaultRequest.Plugin object  .../DefaultRequest.kt:63 companion object Plugin : HttpClientPlugin<DefaultRequestBuilder, DefaultRequest>
 io.ktor.server.application.Plugin            interface .../ApplicationPlugin.kt:21 interface Plugin<in TPipeline : Pipeline<*, PipelineCall>, out TConfiguration : Any, TPlugin : Any>
+io.ktor.server.websocket.WebSockets.Plugin  object  .../WebSockets.kt:111  companion object Plugin : BaseApplicationPlugin<Application, WebSocketOptions, WebSockets>
 ...
 ```
+
+ambiguous: 9 declarations named Plugin; rerun with --pick io.ktor.client.plugins.DefaultRequest.Plugin
 ````
 
 Retry with `--pick <fully.qualified.name>`.

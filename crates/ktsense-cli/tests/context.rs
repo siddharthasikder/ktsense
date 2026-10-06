@@ -184,6 +184,15 @@ fn bound_line(run: &Run) -> Option<&str> {
     run.stdout.lines().find(|line| line.starts_with("Budget "))
 }
 
+/// The last non-blank line of stdout, which is where the ambiguity path prints its `--pick` hint.
+fn last_line(run: &Run) -> Option<String> {
+    run.stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .next_back()
+        .map(str::to_string)
+}
+
 #[test]
 fn a_generous_budget_carries_the_declaration_its_file_outline_callers_and_implementors() {
     let run = context(
@@ -269,11 +278,13 @@ fn an_ambiguous_name_exits_three_and_a_pick_narrows_it_to_one_bundle() {
         &session(completed_index()),
     );
 
+    let hint =
+        "ambiguous: 3 declarations named save; rerun with --pick shop.db.InMemoryOrderRepository.save";
     let observed = (
         ambiguous.code,
-        ambiguous
-            .stdout
-            .contains("shop.db.JdbcOrderRepository.save"),
+        ambiguous.stderr.trim().to_string(),
+        last_line(&ambiguous),
+        ambiguous.stdout.lines().next().map(str::to_string),
         picked.code,
         picked
             .stdout
@@ -283,7 +294,16 @@ fn an_ambiguous_name_exits_three_and_a_pick_narrows_it_to_one_bundle() {
     );
     assert_eq!(
         observed,
-        (Some(3), true, Some(0), true, true, true),
+        (
+            Some(3),
+            hint.to_string(),
+            Some(hint.to_string()),
+            Some("## Ambiguous: save (3 candidates)".to_string()),
+            Some(0),
+            true,
+            true,
+            true,
+        ),
         "ambiguous stdout: {}\npicked stdout: {}",
         ambiguous.stdout,
         picked.stdout
