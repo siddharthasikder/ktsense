@@ -35,7 +35,7 @@ use crate::skeleton::{
 use crate::text::{fence_for, neutralize};
 use crate::text_refs::TextReferences;
 use crate::text_search::TextSearch;
-use crate::trace::{CallerLevel, RelatedDeclaration, TraceReport};
+use crate::trace::{CallerLevel, IndexCompleteness, RelatedDeclaration, TraceReport};
 
 const INDENT: &str = "    ";
 
@@ -436,25 +436,37 @@ pub fn render_text_references_markdown(refs: &TextReferences) -> String {
 /// minified line cannot bloat the answer past what a reader can scan.
 const MAX_HIT_LINE_CHARS: usize = 160;
 
+/// A grep answering fewer than this many hits is a one-fact answer: every hit is shown, so the
+/// aggregate count is chrome a reader can see for themselves and is dropped to keep the answer close
+/// to raw `rg -n` (KT-107). The `precision:` marker stays, because the output always carries its
+/// precision level and a text match is never left to read as a resolved reference.
+const ONE_FACT_HIT_LIMIT: usize = 5;
+
 /// Renders a `grep` answer (KT-102): the pattern, the text-match precision, and every hit grouped
 /// under its file and the declaration enclosing it. A hit line is `  <line>: <source>`, the source
 /// trimmed of its indentation, neutralized, and cut to [`MAX_HIT_LINE_CHARS`] with an ellipsis so a
 /// pathological line stays compact. The file header carries its production-or-test label, and a
 /// hit outside any declaration sits under a `(file header)` group.
+///
+/// A grep with fewer than [`ONE_FACT_HIT_LIMIT`] hits drops the aggregate count line, keeping the
+/// `precision:` marker, the per-file attribution and the hits themselves (KT-107).
 pub fn render_text_search_markdown(search: &TextSearch) -> String {
+    let one_fact = search.total_hits < ONE_FACT_HIT_LIMIT;
     let mut out = format!("# Grep: {}\n", neutralize(&search.pattern));
     out.push_str(&format!("precision: {}\n", search.precision));
     if search.total_hits == 0 {
         out.push_str("\nNo matches.\n");
         return out;
     }
-    let code_hits = search.total_hits - search.text_mention_hits;
-    out.push_str(&format!(
-        "{} in {}. {code_hits} in code, {} in comments or strings.\n",
-        pluralize(search.total_hits, "hit"),
-        pluralize(search.file_count, "file"),
-        search.text_mention_hits,
-    ));
+    if !one_fact {
+        let code_hits = search.total_hits - search.text_mention_hits;
+        out.push_str(&format!(
+            "{} in {}. {code_hits} in code, {} in comments or strings.\n",
+            pluralize(search.total_hits, "hit"),
+            pluralize(search.file_count, "file"),
+            search.text_mention_hits,
+        ));
+    }
     for file in &search.files {
         let label = if file.test { "test" } else { "production" };
         out.push_str(&format!("\n### {} ({label})\n", neutralize(&file.path)));
@@ -494,18 +506,35 @@ fn trimmed_hit_line(source: &str) -> String {
 /// Renders a budgeted `context` bundle: the declaration, the outline of its file, its callers and
 /// its implementors, in the priority order the budget spent itself on.
 ///
-/// The index marker comes first for the same reason it does in a trace. Every section is printed
-/// even when the budget reached none of it, because a missing `Callers` section would read as a
-/// symbol nobody calls; a section that lost lines says how many.
+/// The index marker comes first for the same reason it does in a trace. Every section the caller
+/// asked for is printed even when the budget reached none of it, because a missing `Callers` section
+/// would read as a symbol nobody calls; a section that lost lines says how many.
+///
+/// A focused bundle (narrowed by `--only`, or a `--match` view of the body) is a one-fact answer, so
+/// it drops the budget line, the `index: complete` line and the trailing resolution note a full
+/// bundle carries, keeping the answer close to the fact it states (KT-107). A partial index still
+/// prints its warning, and the declaration itself is never dropped. A full, unfiltered bundle is
+/// byte-identical to before.
 pub fn render_context_markdown(context: &SymbolContext) -> String {
-    let mut out = format!("# Context: {}\n\n", neutralize(&context.symbol));
-    out.push_str(&format!("index: {}\n", context.index.label()));
-    out.push_str(&format!(
-        "Budget {} tokens, content bound {}. {} omitted for budget.\n",
-        context.budget,
-        context.token_upper_bound,
-        pluralize(context.omitted(), "item"),
-    ));
+    let one_fact = !context.sections.is_all() || context.matched_source.is_some();
+    let mut out = format!("# Context: {}\n", neutralize(&context.symbol));
+
+    let mut preamble = String::new();
+    if !one_fact || context.index == IndexCompleteness::Partial {
+        preamble.push_str(&format!("index: {}\n", context.index.label()));
+    }
+    if !one_fact {
+        preamble.push_str(&format!(
+            "Budget {} tokens, content bound {}. {} omitted for budget.\n",
+            context.budget,
+            context.token_upper_bound,
+            pluralize(context.omitted(), "item"),
+        ));
+    }
+    if !preamble.is_empty() {
+        out.push('\n');
+        out.push_str(&preamble);
+    }
 
     out.push_str("\n## Declaration\n\n");
     out.push_str(&format!(
@@ -538,16 +567,12 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
         append_context_lines(&mut out, &context.implementors, related_line);
     }
 
-    if context.sections.is_all() {
+    if !one_fact {
         out.push_str(
             "\nCallers are the declarations enclosing each reference site; the engine reports no \
              call hierarchy. Resolution is syntactic, not type-checked. The content bound covers \
              the declaration, its source, the outline, and the caller and implementor lines the \
              budget gated, not the headings around them.\n",
-        );
-    } else {
-        out.push_str(
-            "\nOnly the requested sections are shown. Resolution is syntactic, not type-checked.\n",
         );
     }
     out
@@ -1231,7 +1256,7 @@ mod tests {
         let search = TextSearch {
             pattern: "save|OrderId".to_string(),
             precision: "text match",
-            total_hits: 4,
+            total_hits: 5,
             file_count: 1,
             text_mention_hits: 1,
             files: vec![TextSearchFile {
@@ -1259,6 +1284,11 @@ mod tests {
                                 kind: SiteKind::Comment,
                                 source_line: "    // OrderId note".to_string(),
                             },
+                            TextSearchLine {
+                                line: 7,
+                                kind: SiteKind::Code,
+                                source_line: "        repo.save(other)".to_string(),
+                            },
                         ],
                     },
                 ],
@@ -1271,13 +1301,14 @@ mod tests {
             concat!(
                 "# Grep: save|OrderId\n",
                 "precision: text match\n",
-                "4 hits in 1 file. 3 in code, 1 in comments or strings.\n",
+                "5 hits in 1 file. 4 in code, 1 in comments or strings.\n",
                 "\n### core/src/main/kotlin/shop/order/Repo.kt (production)\n",
                 "(file header)\n",
                 "  1: import shop.order.OrderId\n",
                 "shop.order.OrderRepository.save\n",
                 "  5: return repo.save(order)\n",
                 "  6: // OrderId note\n",
+                "  7: repo.save(other)\n",
                 "  ... 1 more\n",
             )
         );

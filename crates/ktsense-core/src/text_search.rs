@@ -266,4 +266,31 @@ mod tests {
             }
         );
     }
+
+    /// A grep answering fewer than five hits is a one-fact answer: it drops the aggregate count
+    /// line but keeps the `precision:` marker, so the honesty level stays while the answer stays
+    /// close to raw `rg -n`. A grep with five or more hits keeps both the precision and the count
+    /// lines. The hit lines survive either way. Composed as one table over a two-hit and a five-hit
+    /// render.
+    #[test]
+    fn a_few_hit_grep_drops_the_count_chrome_but_keeps_precision_a_larger_grep_keeps_both() {
+        use crate::render_text_search_markdown;
+
+        let code_hit = |line: u32| hit("app/A.kt", line, "val x = save()", SiteKind::Code);
+        let two: Vec<TextSearchHit> = (1..=2).map(code_hit).collect();
+        let five: Vec<TextSearchHit> = (1..=5).map(code_hit).collect();
+        let few = render_text_search_markdown(&build_text_search("save", &two, &[], None));
+        let many = render_text_search_markdown(&build_text_search("save", &five, &[], None));
+
+        let observed = (
+            few.contains("precision: text match"),
+            few.contains(" in code,"),
+            few.contains("1: val x = save()"),
+            many.contains("precision: text match"),
+            many.contains("5 hits in 1 file. 5 in code, 0 in comments or strings."),
+            many.contains("1: val x = save()"),
+        );
+
+        assert_eq!(observed, (true, false, true, true, true, true));
+    }
 }

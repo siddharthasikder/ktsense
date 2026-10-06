@@ -1134,4 +1134,84 @@ mod tests {
             (vec![3, 4, 5, 6, 7, 8, 9], 0, 0, 0, false, false)
         );
     }
+
+    /// Renders the greeter bundle under one filter so a test can compare the chrome a focused and a
+    /// full bundle carry. `matched` filters the body with `--match fun`, `sections` drops the other
+    /// sections like `--only`, and `index` chooses the completeness marker.
+    fn rendered(sections: ContextSections, index: IndexCompleteness, matched: bool) -> String {
+        let (file, source) = greeter();
+        let matcher = Contains("fun");
+        let source_match = matched.then_some(SourceMatch {
+            matcher: &matcher,
+            around: 0,
+        });
+        let bundle = build_context(
+            ContextInput {
+                definition: greet_definition(),
+                index,
+                sections,
+                file: Some(&file),
+                source: Some(&source),
+                source_match,
+                callers: &[],
+                implementors: &[],
+                budget: 10_000,
+            },
+            &ByteRatioEstimator,
+        );
+        render_context_markdown(&bundle)
+    }
+
+    /// A one-fact answer (`--only` or `--match`) drops the budget line, the `index: complete` line
+    /// and the trailing resolution note, while the declaration fence stays and a partial index keeps
+    /// its warning. A full, unfiltered bundle keeps all three. One table over the four renders.
+    #[test]
+    fn a_focused_bundle_drops_the_chrome_a_full_bundle_keeps() {
+        let only = ContextSections {
+            source: true,
+            outline: false,
+            callers: false,
+            implementors: false,
+        };
+        let note = "Resolution is syntactic";
+        let full = rendered(ContextSections::all(), IndexCompleteness::Complete, false);
+        let filtered = rendered(only, IndexCompleteness::Complete, false);
+        let matched = rendered(ContextSections::all(), IndexCompleteness::Complete, true);
+        let partial = rendered(only, IndexCompleteness::Partial, false);
+
+        let observed = (
+            (
+                full.contains("Budget "),
+                full.contains("index: complete"),
+                full.contains(note),
+                full.contains("## Declaration"),
+            ),
+            (
+                filtered.contains("Budget "),
+                filtered.contains("index:"),
+                filtered.contains(note),
+                filtered.contains("## Declaration"),
+            ),
+            (
+                matched.contains("Budget "),
+                matched.contains("index:"),
+                matched.contains(note),
+            ),
+            (
+                partial.contains("index: partial"),
+                partial.contains("Budget "),
+                partial.contains(note),
+            ),
+        );
+
+        assert_eq!(
+            observed,
+            (
+                (true, true, true, true),
+                (false, false, false, true),
+                (false, false, false),
+                (true, false, false),
+            )
+        );
+    }
 }
