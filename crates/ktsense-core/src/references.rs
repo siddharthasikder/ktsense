@@ -93,6 +93,33 @@ impl Location {
     }
 }
 
+/// Whether a root-relative path is a test source, by Kotlin's multiplatform source-set and file
+/// naming conventions: a path segment that is `test`, `androidTest`, `testFixtures`, `commonTest`,
+/// `jvmTest`, or any segment ending in `Test` (a `<flavour>Test` source set), or a file whose name
+/// ends in `Test.kt`, `Tests.kt` or `Spec.kt`. Pure over the string so `trace` and `context` order
+/// production callers ahead of test callers from the same rule (KT-91).
+pub fn is_test_source(path: &str) -> bool {
+    let mut segments = path
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty());
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    if file.ends_with("Test.kt") || file.ends_with("Tests.kt") || file.ends_with("Spec.kt") {
+        return true;
+    }
+    segments.any(is_test_segment)
+}
+
+fn is_test_segment(segment: &str) -> bool {
+    const NAMED_SOURCE_SETS: &[&str] = &[
+        "test",
+        "androidTest",
+        "testFixtures",
+        "commonTest",
+        "jvmTest",
+    ];
+    NAMED_SOURCE_SETS.contains(&segment) || segment.ends_with("Test")
+}
+
 /// What to include when grouping. The default is the cheapest useful answer: no cap, imports hidden.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GroupingOptions {
@@ -529,6 +556,34 @@ mod tests {
             &[Location::new("app/B.kt", 11)],
             &[skeleton],
             GroupingOptions::default(),
+        );
+    }
+
+    /// Every source-set and filename convention KT-91 splits on, and the near-misses that must not
+    /// be mistaken for tests (`latest` ends in a lowercase `test`, `Contest.kt` ends in `test` not
+    /// `Test`, a production path with none of the markers). Checked as one table.
+    #[test]
+    fn a_path_is_a_test_source_only_by_a_named_source_set_or_a_test_filename() {
+        let paths = [
+            "src/test/kotlin/app/FooTest.kt",
+            "src/commonTest/kotlin/app/Foo.kt",
+            "app/src/jvmTest/kotlin/Foo.kt",
+            "androidTest/Foo.kt",
+            "testFixtures/Support.kt",
+            "app/integrationTest/Foo.kt",
+            "app/src/main/kotlin/app/WidgetTest.kt",
+            "app/src/main/kotlin/app/WidgetTests.kt",
+            "app/src/main/kotlin/app/WidgetSpec.kt",
+            "app/src/main/kotlin/app/Widget.kt",
+            "app/latest/kotlin/Widget.kt",
+            "app/src/main/kotlin/app/Contest.kt",
+        ];
+
+        let observed: Vec<bool> = paths.iter().map(|path| is_test_source(path)).collect();
+
+        assert_eq!(
+            observed,
+            vec![true, true, true, true, true, true, true, true, true, false, false, false]
         );
     }
 }

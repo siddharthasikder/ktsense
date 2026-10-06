@@ -26,7 +26,7 @@ use serde::Serialize;
 
 use crate::budget::emit_within_budget;
 use crate::references::declaration_span_at;
-use crate::render::{related_line, render_skeleton, RenderOptions};
+use crate::render::{context_caller_line, related_line, render_skeleton, RenderOptions};
 use crate::skeleton::{Declaration, FileSkeleton};
 use crate::text::neutralize;
 use crate::trace::{Definition, IndexCompleteness, RelatedDeclaration};
@@ -215,7 +215,7 @@ fn units_in_priority_order(input: &ContextInput<'_>, source: Option<&SourceBody>
         }));
     }
     units.extend(input.callers.iter().map(|caller| Unit {
-        text: related_line(caller),
+        text: context_caller_line(caller),
         payload: Payload::Caller(caller.clone()),
     }));
     units.extend(input.implementors.iter().map(|implementor| Unit {
@@ -356,6 +356,7 @@ mod tests {
             qualified_name: Some(name.to_string()),
             kind: Some(DeclKind::Function),
             sites,
+            test: crate::references::is_test_source(path),
         }
     }
 

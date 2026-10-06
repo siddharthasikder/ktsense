@@ -32,7 +32,7 @@ use crate::skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
 };
 use crate::text::{fence_for, neutralize};
-use crate::trace::{RelatedDeclaration, TraceReport};
+use crate::trace::{CallerLevel, RelatedDeclaration, TraceReport};
 
 const INDENT: &str = "    ";
 
@@ -339,12 +339,7 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
     append_lines(&mut out, &report.implementors, related_line);
 
     for level in &report.callers {
-        let heading = match level.depth {
-            1 => format!("\n## Callers ({})\n", level.callers.len()),
-            depth => format!("\n### Callers at depth {depth} ({})\n", level.callers.len()),
-        };
-        out.push_str(&heading);
-        append_lines(&mut out, &level.callers, related_line);
+        append_caller_level(&mut out, level);
     }
 
     out.push_str(&format!(
@@ -399,13 +394,13 @@ pub fn render_context_markdown(context: &SymbolContext) -> String {
     append_context_blocks(&mut out, &context.file_outline, "declaration");
 
     out.push_str(&format!("\n## Callers ({})\n", context.callers.available()));
-    append_context_lines(&mut out, &context.callers);
+    append_context_lines(&mut out, &context.callers, context_caller_line);
 
     out.push_str(&format!(
         "\n## Implementors ({})\n",
         context.implementors.available()
     ));
-    append_context_lines(&mut out, &context.implementors);
+    append_context_lines(&mut out, &context.implementors, related_line);
 
     out.push_str(
         "\nCallers are the declarations enclosing each reference site; the engine reports no call \
@@ -472,18 +467,58 @@ fn append_context_blocks(out: &mut String, section: &ContextSection<String>, uni
 }
 
 /// A list of related declarations, rendered by the same writer a trace uses, with the count the
-/// budget dropped. `- none` distinguishes "nothing found" from "nothing affordable".
-fn append_context_lines(out: &mut String, section: &ContextSection<RelatedDeclaration>) {
+/// budget dropped. `- none` distinguishes "nothing found" from "nothing affordable". `line` renders
+/// each entry, so callers can carry a test label the trace conveys through a separate heading.
+fn append_context_lines(
+    out: &mut String,
+    section: &ContextSection<RelatedDeclaration>,
+    line: impl Fn(&RelatedDeclaration) -> String,
+) {
     if section.items.is_empty() && section.omitted == 0 {
         out.push_str("- none\n");
         return;
     }
     for declaration in &section.items {
-        out.push_str(&related_line(declaration));
+        out.push_str(&line(declaration));
         out.push('\n');
     }
     if section.omitted > 0 {
         out.push_str(&format!("- ... {} omitted for budget\n", section.omitted));
+    }
+}
+
+/// A caller line for a `context` bundle: the shared [`related_line`], with a `[test]` marker when
+/// the caller is a test source. `context` keeps one Callers section rather than a second heading, so
+/// the marker is how a reader tells a test caller apart; the ordering already puts production first
+/// so the budget spends on production callers before test ones (KT-91). The marker is part of the
+/// measured line, so the budget never underestimates what it emits.
+pub(crate) fn context_caller_line(declaration: &RelatedDeclaration) -> String {
+    let mut line = related_line(declaration);
+    if declaration.test {
+        line.push_str("  [test]");
+    }
+    line
+}
+
+/// One caller level as up to two lists: production callers under `## Callers (N)` (always shown,
+/// `- none` when empty as before), then test callers under `## Test callers (M)` only when any
+/// exist. A deeper level uses `### Callers at depth D` and `### Test callers at depth D`. The split
+/// applies at every level (KT-91).
+fn append_caller_level(out: &mut String, level: &CallerLevel) {
+    let (production, tests): (Vec<&RelatedDeclaration>, Vec<&RelatedDeclaration>) =
+        level.callers.iter().partition(|caller| !caller.test);
+    let (production_heading, test_heading) = match level.depth {
+        1 => ("## Callers".to_string(), "## Test callers".to_string()),
+        depth => (
+            format!("### Callers at depth {depth}"),
+            format!("### Test callers at depth {depth}"),
+        ),
+    };
+    out.push_str(&format!("\n{production_heading} ({})\n", production.len()));
+    append_lines(out, &production, |caller| related_line(caller));
+    if !tests.is_empty() {
+        out.push_str(&format!("\n{test_heading} ({})\n", tests.len()));
+        append_lines(out, &tests, |caller| related_line(caller));
     }
 }
 
@@ -1524,5 +1559,60 @@ mod tests {
             ),
         );
         assert_eq!(observed, (true, true), "rendered was:\n{rendered}");
+    }
+
+    /// KT-91: production callers are listed under `## Callers`, test callers under `## Test callers`,
+    /// and nothing is dropped. The two code sites resolve to one production caller and one caller in
+    /// a `src/test` source.
+    #[test]
+    fn callers_split_production_before_test_by_source_path() {
+        use crate::references::{GroupingOptions, Location};
+        use crate::trace::{build_trace, Definition, IndexCompleteness, TraceInput};
+
+        let production = FileSkeleton::new("app/src/main/kotlin/app/CheckoutService.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::class("CheckoutService", 3)
+                .containing(vec![Declaration::function("place", 4)])]);
+        let test = FileSkeleton::new("app/src/test/kotlin/app/CheckoutServiceTest.kt")
+            .in_package("app")
+            .with_declarations(vec![Declaration::class("CheckoutServiceTest", 3)
+                .containing(vec![Declaration::function("placeOrders", 4)])]);
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "core.Repo.save".to_string(),
+                path: "core/Repo.kt".to_string(),
+                line: 4,
+                signature: "fun save()".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("core/Repo.kt", 4),
+            implementation_sites: vec![],
+            reference_sites: vec![
+                Location::new("app/src/main/kotlin/app/CheckoutService.kt", 5),
+                Location::new("app/src/test/kotlin/app/CheckoutServiceTest.kt", 5),
+            ],
+            skeletons: &[production, test],
+            options: GroupingOptions::default(),
+        });
+
+        let rendered = render_trace_markdown(&report);
+        let callers_section: String = rendered
+            .lines()
+            .skip_while(|line| !line.starts_with("## Callers"))
+            .take_while(|line| !line.starts_with("## Usages"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(
+            callers_section,
+            concat!(
+                "## Callers (1)\n",
+                "- app.CheckoutService.place  app/src/main/kotlin/app/CheckoutService.kt:4\n",
+                "\n",
+                "## Test callers (1)\n",
+                "- app.CheckoutServiceTest.placeOrders  \
+                 app/src/test/kotlin/app/CheckoutServiceTest.kt:4\n"
+            )
+        );
     }
 }

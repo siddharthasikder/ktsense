@@ -24,8 +24,8 @@ pub use context::{build_context, ContextInput, ContextSection, SourceSection, Sy
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
-    group_references, EnclosingDeclaration, GroupingOptions, Location, Reference, ReferenceGroup,
-    SiteKind,
+    group_references, is_test_source, EnclosingDeclaration, GroupingOptions, Location, Reference,
+    ReferenceGroup, SiteKind,
 };
 pub use render::{
     render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,

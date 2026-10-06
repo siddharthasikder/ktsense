@@ -504,7 +504,7 @@ impl<'a> Session<'a> {
             let own = Location::new(caller.path.clone(), caller.line);
             found.extend(callers_of(&sites, &[own], self.skeletons.all()));
         }
-        found.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+        found.sort_by(|a, b| (a.test, &a.path, a.line).cmp(&(b.test, &b.path, b.line)));
         found.dedup_by(|a, b| a.path == b.path && a.line == b.line);
         Ok(found)
     }

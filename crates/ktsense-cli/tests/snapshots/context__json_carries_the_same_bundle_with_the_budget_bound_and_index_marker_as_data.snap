@@ -42,21 +42,24 @@ stderr empty
         "line": 12,
         "qualified_name": "shop.app.checkout.CheckoutService.placeOrder",
         "kind": "function",
-        "sites": 1
+        "sites": 1,
+        "test": false
       },
       {
         "path": "app/src/main/kotlin/shop/app/checkout/OrderImporter.kt",
         "line": 8,
         "qualified_name": "shop.app.checkout.OrderImporter.importAll",
         "kind": "function",
-        "sites": 1
+        "sites": 1,
+        "test": false
       },
       {
         "path": "app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt",
         "line": 9,
         "qualified_name": "shop.app.reporting.ReportBackfill.rebuild",
         "kind": "function",
-        "sites": 1
+        "sites": 1,
+        "test": false
       }
     ],
     "omitted": 0
@@ -68,14 +71,16 @@ stderr empty
         "line": 13,
         "qualified_name": "shop.db.InMemoryOrderRepository.save",
         "kind": "function",
-        "sites": 1
+        "sites": 1,
+        "test": false
       },
       {
         "path": "db/src/main/kotlin/shop/db/JdbcOrderRepository.kt",
         "line": 8,
         "qualified_name": "shop.db.JdbcOrderRepository.save",
         "kind": "function",
-        "sites": 1
+        "sites": 1,
+        "test": false
       }
     ],
     "omitted": 0

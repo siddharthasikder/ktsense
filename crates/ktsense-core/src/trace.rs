@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::references::{
-    declaration_starting_at, enclosing_declaration, group_references, GroupingOptions, Location,
-    ReferenceGroup, SiteKind,
+    declaration_starting_at, enclosing_declaration, group_references, is_test_source,
+    GroupingOptions, Location, ReferenceGroup, SiteKind,
 };
 use crate::skeleton::{DeclKind, FileSkeleton};
 
@@ -58,6 +58,10 @@ pub struct RelatedDeclaration {
     pub kind: Option<DeclKind>,
     /// How many reference sites inside this declaration refer to the symbol.
     pub sites: usize,
+    /// Whether this caller lives in a test source, by [`is_test_source`]. `trace` lists production
+    /// callers before test callers and `context` orders them the same way (KT-91).
+    #[serde(default)]
+    pub test: bool,
 }
 
 /// The callers found at one distance from the symbol: depth 1 is the declarations that refer to
@@ -260,7 +264,10 @@ impl<'a> SkeletonIndex<'a> {
 }
 
 /// Collapses reference sites onto the declarations enclosing them, counting sites per declaration.
-/// Sites whose declaration cannot be resolved stay as individual entries so nothing is dropped.
+/// Sites whose declaration cannot be resolved stay as individual entries so nothing is dropped. The
+/// result is ordered production declarations first, then test declarations, each in path order, so
+/// `trace` and `context` spend the reader's attention and the budget on production callers first
+/// (KT-91).
 fn related_declarations(
     sites: &[Location],
     skeletons: &SkeletonIndex<'_>,
@@ -275,6 +282,7 @@ fn related_declarations(
                 qualified_name: Some(qualified_name),
                 kind: Some(kind),
                 sites: 0,
+                test: is_test_source(&site.path),
             },
             None => RelatedDeclaration {
                 path: site.path.clone(),
@@ -282,12 +290,15 @@ fn related_declarations(
                 qualified_name: None,
                 kind: None,
                 sites: 0,
+                test: is_test_source(&site.path),
             },
         };
         let key = (entry.path.clone(), entry.line, entry.qualified_name.clone());
         by_declaration.entry(key).or_insert(entry).sites += 1;
     }
-    by_declaration.into_values().collect()
+    let mut declarations: Vec<RelatedDeclaration> = by_declaration.into_values().collect();
+    declarations.sort_by(|a, b| a.test.cmp(&b.test));
+    declarations
 }
 
 #[cfg(test)]
@@ -353,6 +364,7 @@ mod tests {
             qualified_name: name.map(str::to_string),
             kind,
             sites,
+            test: crate::references::is_test_source(path),
         }
     }
 
