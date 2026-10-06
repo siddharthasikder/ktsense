@@ -299,6 +299,9 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
         pluralize(report.sites, "site"),
         pluralize(report.usages.len(), "file")
     ));
+    if let Some(line) = omitted_sites_line(report) {
+        out.push_str(&line);
+    }
     for group in &report.usages {
         append_usage_group(&mut out, group);
     }
@@ -418,6 +421,36 @@ pub(crate) fn related_line(declaration: &RelatedDeclaration) -> String {
         neutralize(&declaration.path),
         declaration.line
     )
+}
+
+/// Reconciles the Usages heading, which counts every reference site the engine reported, with the
+/// listing, which drops import references sitting in a file header and caps each file. When those
+/// two disagree the difference is stated with its reasons, so the heading count is never larger than
+/// the listed rows without saying why. `None` when every counted site is listed.
+fn omitted_sites_line(report: &TraceReport) -> Option<String> {
+    let shown: usize = report
+        .usages
+        .iter()
+        .map(|group| group.references.len())
+        .sum();
+    let by_limit: usize = report.usages.iter().map(|group| group.omitted).sum();
+    let not_listed = report.sites.saturating_sub(shown);
+    if not_listed == 0 {
+        return None;
+    }
+    let in_headers = not_listed.saturating_sub(by_limit);
+    let mut reasons = Vec::new();
+    if in_headers > 0 {
+        reasons.push(format!("{in_headers} in file headers"));
+    }
+    if by_limit > 0 {
+        reasons.push(format!("{by_limit} by the per-file limit"));
+    }
+    Some(format!(
+        "{} omitted: {}.\n",
+        pluralize(not_listed, "site"),
+        reasons.join(", ")
+    ))
 }
 
 fn append_usage_group(out: &mut String, group: &ReferenceGroup) {
@@ -1177,6 +1210,65 @@ mod tests {
                 "```kotlin\n",
                 "class C\n",
                 "```\n",
+            )
+        );
+    }
+
+    /// The Usages heading counts every reference site the engine reported, but the listing drops
+    /// header (import) references and caps each file. Without reconciliation the heading and the
+    /// listed rows disagree: KT-82 saw `42 sites` over a 36-site listing on ktor `Plugin`. Built so
+    /// one file carries an import reference (line 1, dropped) and four in-body references capped at
+    /// two, the heading must state how the dropped sites are accounted for.
+    #[test]
+    fn the_usages_section_accounts_for_every_site_the_heading_counts() {
+        use crate::references::{GroupingOptions, Location};
+        use crate::trace::{build_trace, Definition, IndexCompleteness, TraceInput};
+
+        let skeleton = FileSkeleton::new("app/Repo.kt")
+            .in_package("app")
+            .with_declarations(vec![
+                Declaration::class("Repo", 3).containing(vec![Declaration::function("save", 4)])
+            ]);
+        let reference_sites = vec![
+            Location::new("app/Repo.kt", 1),
+            Location::new("app/Repo.kt", 5),
+            Location::new("app/Repo.kt", 6),
+            Location::new("app/Repo.kt", 7),
+        ];
+        let report = build_trace(TraceInput {
+            definition: Definition {
+                qualified_name: "app.Repo.save".to_string(),
+                path: "app/Repo.kt".to_string(),
+                line: 4,
+                signature: "fun save()".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("app/Repo.kt", 4),
+            implementation_sites: vec![],
+            reference_sites,
+            skeletons: &[skeleton],
+            options: GroupingOptions::default().with_limit(2),
+        });
+
+        let rendered = render_trace_markdown(&report);
+        let usages = rendered
+            .split("## Usages")
+            .nth(1)
+            .expect("a Usages section")
+            .split("\nCallers are")
+            .next()
+            .expect("the closing note follows Usages");
+
+        assert_eq!(
+            format!("## Usages{usages}"),
+            concat!(
+                "## Usages (4 sites in 1 file)\n",
+                "2 sites omitted: 1 in file headers, 1 by the per-file limit.\n",
+                "\n",
+                "app/Repo.kt\n",
+                "- 5 in Repo.save\n",
+                "- 6 in Repo.save\n",
+                "- ... 1 more\n",
             )
         );
     }
