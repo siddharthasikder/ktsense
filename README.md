@@ -430,6 +430,14 @@ Callers are the declarations enclosing each reference site; the engine reports n
 `index: partial` means the reference index had not settled. It is a real answer about what was
 indexed, not a complete one. Ask again, or pass `--wait-index`.
 
+**A name the workspace does not declare still gets an answer.** When `trace` or `context` resolves no
+declaration named X, it lists where X is written in the workspace's Kotlin sources under `## Text
+references (N sites in M files)`, grouped by file, capped by `--limit`, and marked `precision: text
+match` so it is never read as resolved usages; comment and string mentions are listed but counted
+apart from code. The scope wording stays and the exit stays 1, but the listing is the answer, so a
+library method such as `putMetric` or an annotation from a dependency points at its use sites instead
+of at nothing.
+
 **Exit codes are a contract an agent can branch on.**
 
 | Code | Meaning |

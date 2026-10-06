@@ -617,7 +617,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "trace_kotlin_symbol",
-        description = "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
+        description = "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -686,7 +686,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "explain_kotlin_symbol",
-        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
+        description = "Answers everything worth knowing about one symbol in a single budgeted bundle: its declaration, the outline of its file, its direct callers and its implementors, trimmed in that order of priority. Prefer it over calling find, outline and trace separately when you are orienting yourself around an unfamiliar symbol; reach for trace_kotlin_symbol instead when you need every reference site or callers deeper than one level. An ambiguous name comes back as the candidate list; pass pick with one fully-qualified name to choose. Carries the same index: complete or partial marker a trace does. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-34).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -1095,6 +1095,45 @@ mod tests {
                     json!([])
                 ),
             ]
+        );
+    }
+
+    /// KT-94: a `trace` of a name nothing declares exits 1 but writes its text-reference listing to
+    /// stdout with an empty stderr. `present` carries that stdout as the result content instead of a
+    /// bare failure, so the MCP answer is the listing the CLI prints and its cited file is indexed
+    /// for the agent to follow.
+    #[test]
+    fn a_not_found_trace_carries_its_text_reference_listing_and_citation_through_present() {
+        let listing = concat!(
+            "no declaration named putMetric in this workspace; library and dependency ",
+            "declarations are not searched, so use a text search for external types\n",
+            "\n",
+            "## Text references (1 site in 1 file)\n",
+            "precision: text match\n",
+            "1 in code, 0 in comments or strings.\n",
+            "\n",
+            "app/Metrics.kt\n",
+            "- 12\n",
+        );
+        let invocation = Invocation {
+            code: Some(1),
+            stdout: listing.to_string(),
+            stderr: String::new(),
+            root: "/repo".to_string(),
+        };
+
+        let result = present(&crate::TRACE, invocation, None);
+        let text = serde_json::to_value(&result.content).expect("json")[0]["text"].clone();
+        let citations =
+            result.structured_content.clone().unwrap_or(Value::Null)["citations"].clone();
+
+        assert_eq!(
+            (result.is_error, text, citations),
+            (
+                Some(true),
+                json!(listing.trim()),
+                json!([{ "path": "app/Metrics.kt", "line": 12 }]),
+            )
         );
     }
 

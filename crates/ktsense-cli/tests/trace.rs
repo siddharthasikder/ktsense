@@ -193,6 +193,21 @@ fn unanswered_session(progress_stream: Vec<Value>) -> Value {
     json!({ "steps": steps })
 }
 
+/// A fresh session whose completed index answers the resolving `workspace/symbol` with nothing, so
+/// the name is confirmed absent and `trace` lists its text references instead (KT-94). No positional
+/// requests follow, because there is no declaration to trace.
+fn not_found_session(symbol: &str) -> Value {
+    let mut steps = handshake();
+    steps.extend(completed_index());
+    steps.push(json!({
+        "kind": "expect", "method": "workspace/symbol",
+        "params": { "query": symbol },
+        "respond": { "result": [] }
+    }));
+    steps.extend(teardown());
+    json!({ "steps": steps })
+}
+
 fn handshake() -> Vec<Value> {
     vec![
         json!({ "kind": "expect", "method": "initialize", "respond": { "result": {} } }),
@@ -289,6 +304,7 @@ fn a_name_an_empty_find_missed_is_resolved_from_the_index_unless_it_is_still_bui
         (
             run.code,
             run.stdout.contains("## Callers (3)"),
+            run.stdout.contains("## Text references"),
             run.stderr.trim().to_string(),
         )
     };
@@ -299,20 +315,44 @@ fn a_name_an_empty_find_missed_is_resolved_from_the_index_unless_it_is_still_bui
             observed(&still_building),
         ),
         (
-            (Some(0), true, String::new()),
-            (Some(0), true, String::new()),
-            (
-                Some(1),
-                false,
-                "ktsense: no declaration named save in this workspace; library and dependency \
-                 declarations are not searched, so use a text search for external types"
-                    .to_string()
-            ),
+            (Some(0), true, false, String::new()),
+            (Some(0), true, false, String::new()),
+            (Some(1), false, true, String::new()),
         ),
         "silent engine: {}\nempty array: {}\nstill building: {}",
         record(&silent_engine),
         record(&empty_array),
         record(&still_building),
+    );
+}
+
+/// KT-94: a name the workspace does not declare is no longer a bare exit 1. `find` reports nothing
+/// and the fresh index confirms it, so the answer lists where the name appears as text, marked a
+/// text match so it cannot be read as resolved usages, with the KT-87 scope wording kept. The exit
+/// stays 1 and the reason moves onto stdout with the listing, so a routed daemon and the MCP layer
+/// carry the same self-contained answer.
+#[test]
+fn a_name_the_workspace_does_not_declare_lists_its_text_references() {
+    let run = trace_with_find(&["mutableListOf"], "", &not_found_session("mutableListOf"));
+
+    assert_eq!(
+        (run.code, run.stderr.trim().to_string(), run.stdout),
+        (
+            Some(1),
+            String::new(),
+            concat!(
+                "no declaration named mutableListOf in this workspace; library and dependency ",
+                "declarations are not searched, so use a text search for external types\n",
+                "\n",
+                "## Text references (1 site in 1 file)\n",
+                "precision: text match\n",
+                "1 in code, 0 in comments or strings.\n",
+                "\n",
+                "app/src/main/kotlin/shop/app/reporting/AuditTrail.kt\n",
+                "- 4\n",
+            )
+            .to_string(),
+        )
     );
 }
 

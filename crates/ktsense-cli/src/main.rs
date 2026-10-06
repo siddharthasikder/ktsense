@@ -13,6 +13,7 @@ mod identifiers;
 mod routing;
 mod status;
 mod symbols;
+mod text_refs;
 mod trace;
 
 use std::fs;
@@ -341,10 +342,7 @@ impl CommandError {
     fn no_symbol(query: &str) -> Self {
         Self {
             exit: Exit::Failure,
-            message: format!(
-                "ktsense: no declaration named {query} in this workspace; library and dependency \
-                 declarations are not searched, so use a text search for external types"
-            ),
+            message: format!("ktsense: {}", no_symbol_message(query)),
         }
     }
 
@@ -354,6 +352,16 @@ impl CommandError {
             message: format!("ktsense: no candidate has the fully-qualified name {pick}"),
         }
     }
+}
+
+/// The KT-87 scope wording for a name the workspace does not declare, without the `ktsense:` prefix
+/// an error line carries. Stated once so [`CommandError::no_symbol`] and the text-reference listing
+/// a `trace` or `context` prints for such a name (KT-94) quote the same sentence.
+fn no_symbol_message(query: &str) -> String {
+    format!(
+        "no declaration named {query} in this workspace; library and dependency declarations are \
+         not searched, so use a text search for external types"
+    )
 }
 
 /// A completed command: the text to print on stdout and the status the process should end with.

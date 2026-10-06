@@ -32,6 +32,7 @@ use crate::skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, Visibility, MAX_NESTING_DEPTH,
 };
 use crate::text::{fence_for, neutralize};
+use crate::text_refs::TextReferences;
 use crate::trace::{CallerLevel, RelatedDeclaration, TraceReport};
 
 const INDENT: &str = "    ";
@@ -377,6 +378,37 @@ pub fn render_trace_markdown(report: &TraceReport) -> String {
         "\nCallers are the declarations enclosing each reference site; the engine reports no call \
          hierarchy. Resolution is syntactic, not type-checked.\n",
     );
+    out
+}
+
+/// Renders the text-reference evidence for a name the workspace does not declare (KT-94): where the
+/// name appears as text, grouped by file and ordered by line, stated as a text match so it is never
+/// read as a resolved usage. The comment or string share is counted apart from code, because prose
+/// is evidence of a different weight than a call site. Paths are neutralized on the way out for the
+/// same reason every other renderer neutralizes source-derived text.
+pub fn render_text_references_markdown(refs: &TextReferences) -> String {
+    let mut out = format!(
+        "## Text references ({} in {})\n",
+        pluralize(refs.total_sites, "site"),
+        pluralize(refs.file_count, "file"),
+    );
+    out.push_str(&format!("precision: {}\n", refs.precision));
+    if refs.total_sites > 0 {
+        let code_sites = refs.total_sites - refs.text_mention_sites;
+        out.push_str(&format!(
+            "{code_sites} in code, {} in comments or strings.\n",
+            refs.text_mention_sites
+        ));
+    }
+    for group in &refs.groups {
+        out.push_str(&format!("\n{}\n", neutralize(&group.path)));
+        for site in &group.sites {
+            out.push_str(&format!("- {}\n", site.line));
+        }
+        if group.omitted > 0 {
+            out.push_str(&format!("- ... {} more\n", group.omitted));
+        }
+    }
     out
 }
 
@@ -998,6 +1030,60 @@ fn render_parameter(parameter: &Parameter) -> String {
 mod tests {
     use super::*;
     use crate::skeleton::DeclKind;
+    use crate::text_refs::{TextReferenceGroup, TextReferenceSite, TextReferences};
+
+    /// The whole rendered block for a name the workspace does not declare: the count heading, the
+    /// text-match precision, the code-versus-mention split over every site before the cap, and the
+    /// sites grouped by file with a per-file `... N more`. Asserted once against the exact text.
+    #[test]
+    fn text_references_render_the_counts_precision_split_and_grouped_sites() {
+        let refs = TextReferences {
+            symbol: "putMetric".to_string(),
+            precision: "text match",
+            total_sites: 4,
+            file_count: 2,
+            text_mention_sites: 1,
+            groups: vec![
+                TextReferenceGroup {
+                    path: "app/Metrics.kt".to_string(),
+                    sites: vec![
+                        TextReferenceSite {
+                            line: 12,
+                            kind: SiteKind::Code,
+                        },
+                        TextReferenceSite {
+                            line: 19,
+                            kind: SiteKind::Comment,
+                        },
+                    ],
+                    omitted: 1,
+                },
+                TextReferenceGroup {
+                    path: "app/Report.kt".to_string(),
+                    sites: vec![TextReferenceSite {
+                        line: 7,
+                        kind: SiteKind::Code,
+                    }],
+                    omitted: 0,
+                },
+            ],
+        };
+
+        assert_eq!(
+            render_text_references_markdown(&refs),
+            concat!(
+                "## Text references (4 sites in 2 files)\n",
+                "precision: text match\n",
+                "3 in code, 1 in comments or strings.\n",
+                "\napp/Metrics.kt\n",
+                "- 12\n",
+                "- 19\n",
+                "- ... 1 more\n",
+                "\napp/Report.kt\n",
+                "- 7\n",
+            )
+        );
+    }
 
     /// The skeleton the plan pins as the compressor's contract. Built by hand: this crate has no
     /// parser, and that is the point.

@@ -78,6 +78,15 @@ fn trace_request<'a>(request: &ContextRequest<'a>) -> TraceRequest<'a> {
 fn finish(request: &ContextRequest<'_>, traced: Traced) -> Result<CommandOutcome, CommandError> {
     let report = match traced {
         Traced::Ambiguous(outcome) => return Ok(outcome),
+        Traced::NotFound => {
+            return crate::text_refs::not_found_outcome(
+                request.root,
+                request.symbol,
+                None,
+                request.format,
+                "context",
+            )
+        }
         Traced::Resolved(report) => report,
     };
 

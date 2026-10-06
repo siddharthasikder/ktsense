@@ -298,12 +298,14 @@ enum WireExit {
     #[default]
     Success,
     Ambiguous,
+    Failure,
 }
 
 impl RoutedReply {
     fn of(outcome: CommandOutcome) -> Self {
         let exit = match outcome.exit {
             Exit::Ambiguous => WireExit::Ambiguous,
+            Exit::Failure => WireExit::Failure,
             _ => WireExit::Success,
         };
         Self {
@@ -317,6 +319,7 @@ impl RoutedReply {
         let exit = match self.exit {
             WireExit::Success => Exit::Success,
             WireExit::Ambiguous => Exit::Ambiguous,
+            WireExit::Failure => Exit::Failure,
         };
         CommandOutcome {
             text: self.text,
@@ -531,7 +534,7 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                2,
+                3,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },
@@ -646,20 +649,34 @@ mod tests {
             exit: Exit::Ambiguous,
             stderr: None,
         });
+        let failure = RoutedReply::of(CommandOutcome {
+            text: "## Text references (0 sites in 0 files)".to_string(),
+            exit: Exit::Failure,
+            stderr: None,
+        });
         let wire = serde_json::to_value(&ambiguous).expect("serializes");
+        let failure_wire = serde_json::to_value(&failure).expect("serializes");
         let round_tripped = ambiguous.clone().into_outcome();
+        let failure_round_tripped = failure.clone().into_outcome();
         let legacy_text_only: RoutedReply =
             serde_json::from_value(serde_json::json!({ "text": "ok" })).expect("deserializes");
 
         assert_eq!(
             (
                 wire,
+                failure_wire,
                 (round_tripped.text, round_tripped.exit),
+                failure_round_tripped.exit,
                 (legacy_text_only.text, legacy_text_only.exit),
             ),
             (
                 serde_json::json!({ "text": "candidates", "exit": "ambiguous" }),
+                serde_json::json!({
+                    "text": "## Text references (0 sites in 0 files)",
+                    "exit": "failure"
+                }),
                 ("candidates".to_string(), Exit::Ambiguous),
+                Exit::Failure,
                 ("ok".to_string(), WireExit::Success),
             )
         );

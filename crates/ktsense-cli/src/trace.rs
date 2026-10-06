@@ -95,6 +95,9 @@ const UNBOUNDED_WAIT: Duration = Duration::from_secs(60 * 60 * 24);
 pub(crate) enum Traced {
     Resolved(TraceReport),
     Ambiguous(CommandOutcome),
+    /// The name resolved to no declaration under the root. `trace` and `context` answer this by
+    /// listing where the name appears as text instead of failing with nothing (KT-94).
+    NotFound,
 }
 
 /// The in-process `trace`: resolve the name, then answer from a fresh engine session. This is the
@@ -104,6 +107,7 @@ pub(crate) fn trace(request: TraceRequest<'_>) -> Result<CommandOutcome, Command
     match resolve(&request)? {
         Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
         Traced::Ambiguous(outcome) => Ok(outcome),
+        Traced::NotFound => not_found(&request),
     }
 }
 
@@ -121,6 +125,7 @@ pub(crate) async fn trace_warm(
     match resolve_warm(engine, &request).await? {
         Traced::Resolved(report) => present(&report, request.format).map(CommandOutcome::success),
         Traced::Ambiguous(outcome) => Ok(outcome),
+        Traced::NotFound => not_found(&request),
     }
 }
 
@@ -135,6 +140,7 @@ pub(crate) async fn resolve_warm(
     let candidates = warm_declarations(engine, request, index).await?;
     match select_candidate(request, candidates)? {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
+        Resolution::NotFound => Ok(Traced::NotFound),
         Resolution::Ready {
             candidate,
             definition,
@@ -228,6 +234,7 @@ async fn traced(
 ) -> Result<Traced, CommandError> {
     match resolution {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
+        Resolution::NotFound => Ok(Traced::NotFound),
         Resolution::Ready {
             candidate,
             definition,
@@ -279,6 +286,7 @@ async fn indexed_trace(
         .unwrap_or_default();
     match select_candidate(request, candidates)? {
         Resolution::Ambiguous(outcome) => Ok(Traced::Ambiguous(outcome)),
+        Resolution::NotFound => Ok(Traced::NotFound),
         Resolution::Ready {
             candidate,
             definition,
@@ -301,6 +309,9 @@ enum Resolution {
         definition: Definition,
     },
     Ambiguous(CommandOutcome),
+    /// No declaration of the name under the root, with no `--pick` to miss. Carried rather than
+    /// raised as an error so `trace` and `context` can list the name's text references (KT-94).
+    NotFound,
 }
 
 /// Every declaration the engine's command-mode `find` reports for the name. This is the first
@@ -321,6 +332,9 @@ fn select_candidate(
     request: &TraceRequest<'_>,
     candidates: Vec<SymbolCandidate>,
 ) -> Result<Resolution, CommandError> {
+    if candidates.is_empty() && request.pick.is_none() {
+        return Ok(Resolution::NotFound);
+    }
     match symbols::select(
         request.root,
         request.symbol,
@@ -707,6 +721,19 @@ fn present(report: &TraceReport, format: Format) -> Result<String, CommandError>
         Format::Json => serde_json::to_string_pretty(report).map_err(CommandError::serialization),
         Format::Dot => Err(CommandError::unsupported_format("trace")),
     }
+}
+
+/// The answer for a name `trace` resolved to no declaration: the text-reference listing, capped by
+/// the command's own `--limit` so an undeclared name obeys the same per-file bound a resolved one
+/// does.
+fn not_found(request: &TraceRequest<'_>) -> Result<CommandOutcome, CommandError> {
+    crate::text_refs::not_found_outcome(
+        request.root,
+        request.symbol,
+        request.limit,
+        request.format,
+        "trace",
+    )
 }
 
 #[cfg(test)]

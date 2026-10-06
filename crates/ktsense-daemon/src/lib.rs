@@ -34,8 +34,9 @@ use std::path::{Path, PathBuf};
 /// and serde ignores a field it does not know, so an older daemon would otherwise answer a new
 /// flag by silently leaving it out, or reject a new command as a command error instead of letting
 /// the client fall back in-process. Version 2 added routed `context` (KT-89) and outline
-/// `annotations` (KT-90).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// `annotations` (KT-90). Version 3 lets a routed reply carry a failing exit, so a `trace` or
+/// `context` of an undeclared name keeps exit 1 while returning its text-reference listing (KT-94).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Directory holding daemon sockets, honouring `XDG_RUNTIME_DIR` when the platform sets it.
 ///

@@ -371,10 +371,10 @@ fn a_routed_ambiguous_trace_exits_three_through_the_daemon() {
     );
 }
 
-/// A name nothing declares must fail the same way on both paths. The warm index cannot distinguish
+/// A name nothing declares must answer the same way on both paths. The warm index cannot distinguish
 /// "absent" from "not indexed", so the routed path asks command-mode `find` before concluding
-/// anything, and ktsense's own non-zero for no such symbol is what both report rather than the
-/// engine's exit-0-with-no-output.
+/// anything, and both paths then list where the name appears as text under an exit still 1 (KT-94).
+/// The routed and in-process answers must be byte-identical on stdout as well as stderr.
 #[cfg(feature = "real-lsp")]
 #[test]
 fn a_routed_trace_of_an_absent_name_fails_exactly_as_the_in_process_one_does() {
@@ -391,26 +391,22 @@ fn a_routed_trace_of_an_absent_name_fails_exactly_as_the_in_process_one_does() {
     assert_eq!(
         (
             via_daemon.code,
-            via_daemon.stderr.trim().to_string(),
-            via_daemon.stdout.is_empty(),
+            via_daemon.stderr.trim().is_empty(),
+            via_daemon.stdout.contains(&format!(
+                "no declaration named {ABSENT_SYMBOL} in this workspace"
+            )),
+            via_daemon
+                .stdout
+                .contains("## Text references (0 sites in 0 files)"),
+            via_daemon.stdout == in_process.stdout,
             via_daemon.stderr == in_process.stderr,
             in_process.code,
             stopped.code,
         ),
-        (
-            Some(1),
-            format!(
-                "ktsense: no declaration named {ABSENT_SYMBOL} in this workspace; library and \
-                 dependency declarations are not searched, so use a text search for external types"
-            ),
-            true,
-            true,
-            Some(1),
-            Some(0),
-        ),
-        "daemon stderr: {} / in-process stderr: {}",
-        via_daemon.stderr,
-        in_process.stderr
+        (Some(1), true, true, true, true, true, Some(1), Some(0),),
+        "daemon stdout: {}\nin-process stdout: {}",
+        via_daemon.stdout,
+        in_process.stdout
     );
 }
 
