@@ -1,14 +1,14 @@
 # Wiring ktsense into an agent
 
-`ktsense mcp` is an MCP server that speaks JSON-RPC over stdio and exposes eight tools for
+`ktsense mcp` is an MCP server that speaks JSON-RPC over stdio and exposes nine tools for
 understanding a Kotlin workspace. Any MCP client that can launch a local command can use it. This
 page covers Kiro CLI, Claude Code and Codex, and shows how to verify the server before you involve a
 client at all.
 
 The tools are `get_kotlin_outline`, `find_kotlin_symbol`, `trace_kotlin_symbol`,
-`analyze_kotlin_dependencies`, `get_kotlin_repo_map`, `check_kotlin_syntax`, `explain_kotlin_symbol`
-and `ktsense_status`. `contrib/agent-skill/SKILL.md` is a skill file that teaches an agent when to
-reach for which, and is worth installing alongside the server.
+`analyze_kotlin_dependencies`, `get_kotlin_repo_map`, `check_kotlin_syntax`, `explain_kotlin_symbol`,
+`ktsense_status` and `search_kotlin_text`. `contrib/agent-skill/SKILL.md` is a skill file that teaches
+an agent when to reach for which, and is worth installing alongside the server.
 
 ## Before you configure a client
 
@@ -27,8 +27,9 @@ so for that one it is the first and third that matter. An override pointing at a
 exist does not fail: discovery skips the missing candidate and falls through to the bare name, so a
 typo in `KTSENSE_LSP_PATH` silently gets you whichever `kmp-lsp` is on `PATH` instead of an error.
 
-Three tools need no engine at all, because they are pure tree-sitter: `get_kotlin_outline`,
-`analyze_kotlin_dependencies` and `get_kotlin_repo_map`. Every other tool reaches the engine, and
+Four tools need no engine at all, because they are pure tree-sitter: `get_kotlin_outline`,
+`analyze_kotlin_dependencies`, `get_kotlin_repo_map` and `search_kotlin_text`. Every other tool
+reaches the engine, and
 that includes `check_kotlin_syntax`, which is a passthrough to the engine's own checker even though it
 waits for no index. Each tool description carries a three-state `requires:` marker that says which of
 those it is, `nothing`, `kmp-lsp`, or `kmp-lsp and a settled index`, and a separate `cost:` marker for
@@ -98,7 +99,7 @@ There is a wrinkle worth knowing before you debug the wrong thing. A server decl
 `settings/mcp.json` file reaches a chat session only if the active agent opts into those files with
 `"useLegacyMcpJson": true`; an agent configuration without it sees no ktsense tools however correct
 the JSON is. On the host this page was written against, a custom agent with `"tools": ["*"]` and no
-opt-in listed none of the tools, and the same agent with the opt-in listed all eight. If you would
+opt-in listed none of the tools, and the same agent with the opt-in listed all nine. If you would
 rather not depend on that, declare the server in the agent configuration itself, where it is always
 honoured:
 
@@ -171,7 +172,7 @@ printf '%s\n' \
 ```
 
 The first response identifies the server as `ktsense` and advertises a `tools` capability; the second
-carries all eight tools with their input schemas. The server exits 0 when stdin closes, which is how
+carries all nine tools with their input schemas. The server exits 0 when stdin closes, which is how
 a client shuts it down, so the pipe ending is a clean exit rather than a crash.
 
 If that works and your client still shows nothing, the problem is in the client configuration: a
@@ -194,7 +195,7 @@ rest, `find_kotlin_symbol` included, still do their own work per call.
 ## Troubleshooting
 
 A tool error reading `is not implemented yet` would be a command that has not shipped rather than a
-misconfiguration, and no tool answers that today. All eight are implemented: `ktsense_status` since
+misconfiguration, and no tool answers that today. All nine are implemented: `ktsense_status` since
 KT-36 and `explain_kotlin_symbol` since KT-35, whose `context` command was the last one the surface
 advertised without implementing. Exit code 70 has had no caller since, and stays in the contract for
 the next surface-first command.

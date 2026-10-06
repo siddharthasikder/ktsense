@@ -8,8 +8,9 @@ process; it does not link it.
 
 A file's API surface is one `outline` call rather than a whole file in the prompt. "Who implements
 this interface" is one `trace` call rather than a grep and a page of false positives. An unfamiliar
-repository is one token-budgeted `map`. The eight MCP tools cover outlines, symbol lookup, call and
-implementor tracing, an import and dependency graph, a repository map, and a syntax check.
+repository is one token-budgeted `map`. The nine MCP tools cover outlines, symbol lookup, call and
+implementor tracing, an import and dependency graph, a repository map, a syntax check, and an
+attributed text search.
 
 **What it is not.** Resolution is syntactic. ktsense parses with tree-sitter and asks an engine that
 indexes references; it does not type-check. It cannot tell you which overload a call site resolves
@@ -40,6 +41,7 @@ file or a module arrives without the bodies. Specifically:
 | Question shape | Better tool | Why |
 |---|---|---|
 | Where is this exactly-named declaration | `grep` | measured: one call, no false positives |
+| Several concepts at once, or a text hit attributed to its declaration | `ktsense grep` | hits grouped by file and enclosing declaration, labelled production/test and code/comment/string; count equals `rg -c` |
 | What does this file or module declare, without bodies | `outline` | measured 85% to 89% fewer bytes than the source |
 | Orient me in an unfamiliar repository | `map` | one answer inside a token budget you set |
 | What imports what, and are there cycles | `deps` | an import graph, not a pile of matches |
@@ -59,7 +61,8 @@ prefer which tool and with no skill file installed. That is a discoverability fi
 quality one. `contrib/agent-skill/SKILL.md` carries this routing in the form an agent reads, and a
 release tarball ships it at the archive root as `SKILL.md`.
 
-On a host where the bundled engine cannot run, `outline`, `deps`, `map` and `status` still answer and
+On a host where the bundled engine cannot run, `outline`, `deps`, `map`, `grep` and `status` still
+answer and
 the engine-backed rows above do not. See [Requirements](#requirements).
 
 ## Install
@@ -227,6 +230,7 @@ Sixty-six lines of source, twelve lines of signatures. That is the whole idea.
 | `check <paths>` | Syntax check; exits non-zero when a file has errors |
 | `diagnose <file>` | Semantic diagnostics on one file |
 | `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it; `--match <regex>` to filter the shown source lines) |
+| `grep <regex>` | Text search over Kotlin sources, each hit attributed to its declaration (`--path`, `--tests`/`--no-tests`, `--limit`) |
 | `status` | Index phase, file and symbol counts, engine version |
 | `mcp` | Run the MCP stdio server |
 | `daemon start\|status\|stop` | Manage the warm-session daemon |
@@ -264,9 +268,9 @@ one.
 
 ### As an MCP server
 
-`ktsense mcp` speaks JSON-RPC over stdio and exposes eight tools: `get_kotlin_outline`,
+`ktsense mcp` speaks JSON-RPC over stdio and exposes nine tools: `get_kotlin_outline`,
 `find_kotlin_symbol`, `trace_kotlin_symbol`, `analyze_kotlin_dependencies`, `get_kotlin_repo_map`,
-`check_kotlin_syntax`, `explain_kotlin_symbol` and `ktsense_status`.
+`check_kotlin_syntax`, `explain_kotlin_symbol`, `ktsense_status` and `search_kotlin_text`.
 
 [docs/agents.md](docs/agents.md) wires it into Kiro CLI, Claude Code and Codex, and shows how to prove
 the server works before involving a client at all. [docs/mcp-tools.md](docs/mcp-tools.md) is the

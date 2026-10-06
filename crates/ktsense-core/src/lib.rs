@@ -20,6 +20,7 @@ pub mod skeleton;
 pub mod symbol_search;
 pub mod text;
 pub mod text_refs;
+pub mod text_search;
 pub mod trace;
 
 pub use budget::{emit_within_budget, BudgetedEmission};
@@ -31,13 +32,13 @@ pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportG
 pub use pick::{last_segment, match_pick, shortest_unique_suffix, PickMatch};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};
 pub use references::{
-    group_references, is_test_source, EnclosingDeclaration, GroupingOptions, Location, Reference,
-    ReferenceGroup, SiteKind,
+    fully_qualified_enclosing, group_references, is_test_source, EnclosingDeclaration,
+    GroupingOptions, Location, QualifiedEnclosing, Reference, ReferenceGroup, SiteKind,
 };
 pub use render::{
     render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,
     render_markdown, render_member_summary, render_skeleton, render_text_references_markdown,
-    render_trace_markdown, RenderOptions,
+    render_text_search_markdown, render_trace_markdown, RenderOptions,
 };
 pub use repo_map::{
     build_repo_map, MappedFile, OmittedDirectory, ReferenceCounts, RepoMap, RepoMapInput,
@@ -52,6 +53,10 @@ pub use text::{fence_for, neutralize, normalize_signature_layout, MIN_FENCE_BACK
 pub use text_refs::{
     build_text_references, TextReferenceGroup, TextReferenceSite, TextReferences,
     TEXT_MATCH_PRECISION,
+};
+pub use text_search::{
+    build_text_search, TextSearch, TextSearchDeclaration, TextSearchFile, TextSearchHit,
+    TextSearchLine,
 };
 pub use trace::{
     build_trace, callers_of, CallerLevel, Definition, ExcludedSite, IndexCompleteness,

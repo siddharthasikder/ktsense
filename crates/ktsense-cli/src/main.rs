@@ -9,6 +9,7 @@
 mod cache;
 mod context;
 mod daemon;
+mod grep;
 mod identifiers;
 mod routing;
 mod status;
@@ -161,6 +162,24 @@ enum Command {
         /// of matching the name exactly through the engine.
         #[arg(long)]
         contains: bool,
+    },
+    /// Search Kotlin source text with a regex, each hit attributed to its declaration
+    Grep {
+        /// Regular expression to search for. Several concepts are an alternation: `save|OrderId`.
+        #[arg(allow_hyphen_values = true)]
+        pattern: String,
+        /// Restrict to files whose workspace-relative path starts with this prefix.
+        #[arg(long, value_name = "PREFIX")]
+        path: Option<String>,
+        /// Search only test sources (by the source-set and filename conventions).
+        #[arg(long, conflicts_with = "no_tests")]
+        tests: bool,
+        /// Search only production sources.
+        #[arg(long)]
+        no_tests: bool,
+        /// Show at most this many hits per file; the rest are counted.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Definition, usages, implementors and callers of one symbol
     Trace {
@@ -416,6 +435,13 @@ impl CommandError {
             message: format!("ktsense: no candidate has the fully-qualified name {pick}"),
         }
     }
+
+    fn bad_pattern(pattern: &str, error: &regex::Error) -> Self {
+        Self {
+            exit: Exit::Failure,
+            message: format!("ktsense: invalid search pattern {pattern:?}: {error}"),
+        }
+    }
 }
 
 /// The KT-87 scope wording for a name the workspace does not declare, without the `ktsense:` prefix
@@ -549,6 +575,20 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             limit,
             pick.as_deref(),
             contains,
+            format,
+        ),
+        Command::Grep {
+            pattern,
+            path,
+            tests,
+            no_tests,
+            limit,
+        } => grep::run(
+            &base,
+            &pattern,
+            path.as_deref(),
+            grep::TestFilter::from_flags(tests, no_tests),
+            limit,
             format,
         ),
         Command::Map { budget, compact } => route(

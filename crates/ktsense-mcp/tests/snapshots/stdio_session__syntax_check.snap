@@ -2,7 +2,7 @@
 source: crates/ktsense-mcp/tests/stdio_session.rs
 expression: report
 ---
-tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
+tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, search_kotlin_text, trace_kotlin_symbol
 
 === check_kotlin_syntax ===
 isError: false

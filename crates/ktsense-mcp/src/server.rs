@@ -1,4 +1,4 @@
-//! The rmcp server: eight tools, each an invocation of the `ktsense` binary through a [`Runner`].
+//! The rmcp server: nine tools, each an invocation of the `ktsense` binary through a [`Runner`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -290,6 +290,21 @@ pub struct ContextParams {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct StatusParams {
+    /// Workspace root to answer about; defaults to the server's configured root.
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GrepParams {
+    /// Regular expression to search for in Kotlin sources. Several concepts are an alternation,
+    /// such as `save|OrderId`.
+    pub pattern: String,
+    /// Restrict to files whose workspace-relative path starts with this prefix.
+    pub path: Option<String>,
+    /// Limit to test sources (true) or production sources (false); both when unset.
+    pub tests: Option<bool>,
+    /// Show at most this many hits per file; the rest are counted.
+    pub limit: Option<usize>,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -748,6 +763,26 @@ impl KtsenseServer {
         let args = Args::for_tool(&crate::STATUS, root);
         self.invoke(&crate::STATUS, args.0).await
     }
+
+    #[tool(
+        name = "search_kotlin_text",
+        description = "Answers where a regex appears in the Kotlin sources, grouping each hit under its file and the declaration it falls inside, labelled production or test and code, comment or string. Prefer it over raw grep or trace when the subject is not one declaration: several terms at once (save|OrderId), a call-site pattern, or text in a file that nothing declares. It resolves nothing, so the answer states precision: text match and the hit count equals rg -c for the same pattern. requires: nothing. cost: about 720 ms on 1861 files (ktor 3.0.1, median of 9, KT-102).",
+        annotations(read_only_hint = true, open_world_hint = false),
+        output_schema = answer_schema()
+    )]
+    async fn search_kotlin_text(
+        &self,
+        Parameters(params): Parameters<GrepParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let root = self.root_for(params.root, None).await;
+        let args = Args::for_tool(&crate::GREP, root)
+            .positional(params.pattern)
+            .option("path", params.path)
+            .flag("tests", params.tests == Some(true))
+            .flag("no-tests", params.tests == Some(false))
+            .option("limit", params.limit);
+        self.invoke(&crate::GREP, args.0).await
+    }
 }
 
 /// What the client is told before it reads a single tool description. Everything here is true of
@@ -933,7 +968,7 @@ mod tests {
 
         assert_eq!(
             (listed.len(), names, schemas_valid, described, read_only),
-            (8, catalogued_names, true, true, true)
+            (9, catalogued_names, true, true, true)
         );
     }
 

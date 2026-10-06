@@ -2,7 +2,7 @@
 source: crates/ktsense-mcp/tests/stdio_session.rs
 expression: report
 ---
-tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, trace_kotlin_symbol
+tools/list: analyze_kotlin_dependencies, check_kotlin_syntax, explain_kotlin_symbol, find_kotlin_symbol, get_kotlin_outline, get_kotlin_repo_map, ktsense_status, search_kotlin_text, trace_kotlin_symbol
 
 === get_kotlin_outline ===
 isError: false
@@ -240,6 +240,68 @@ class JdbcOrderRepository(private val url: String = "jdbc:h2:mem:orders") : Orde
 Ranking is syntactic: files are ordered by import centrality, then by how often their declarations are referenced by name across the corpus, with import counts breaking ties. A reference is an identifier occurrence outside an import, counted by name and not type-checked, so declarations sharing a simple name across packages share a count.
 
 5 files declare nothing public and are not mapped.
+
+=== search_kotlin_text ===
+isError: false
+structuredContent:
+{
+  "citations": [],
+  "citations_omitted": 0,
+  "command": "grep",
+  "exit": 0,
+  "files": [],
+  "requires": "nothing",
+  "root": "<FIXTURE>",
+  "tool": "search_kotlin_text"
+}
+---
+# Grep: save|OrderId
+precision: text match
+16 hits in 7 files. 16 in code, 0 in comments or strings.
+
+### app/src/main/kotlin/shop/app/checkout/CheckoutService.kt (production)
+(file header)
+  5: import shop.order.OrderId
+shop.app.checkout.CheckoutService.placeOrder
+  12: fun placeOrder(order: Order): OrderId {
+  13: val id = repository.save(order)
+
+### app/src/main/kotlin/shop/app/checkout/OrderImporter.kt (production)
+shop.app.checkout.OrderImporter.importAll
+  11: repository.save(order)
+
+### app/src/main/kotlin/shop/app/reporting/ReportBackfill.kt (production)
+shop.app.reporting.ReportBackfill.rebuild
+  13: repository.save(order)
+
+### core/src/main/kotlin/shop/order/Order.kt (production)
+shop.order.OrderId
+  3: data class OrderId(val value: Long)
+shop.order.Order
+  6: val id: OrderId,
+
+### core/src/main/kotlin/shop/order/OrderRepository.kt (production)
+shop.order.OrderRepository.save
+  4: fun save(order: Order): OrderId
+shop.order.OrderRepository.findById
+  6: fun findById(id: OrderId): Order?
+
+### db/src/main/kotlin/shop/db/InMemoryOrderRepository.kt (production)
+(file header)
+  6: import shop.order.OrderId
+shop.db.InMemoryOrderRepository.save
+  13: override fun save(order: Order): OrderId {
+  14: val id = OrderId(sequence.incrementAndGet())
+shop.db.InMemoryOrderRepository.findById
+  19: override fun findById(id: OrderId): Order? = store[id.value]
+
+### db/src/main/kotlin/shop/db/JdbcOrderRepository.kt (production)
+(file header)
+  4: import shop.order.OrderId
+shop.db.JdbcOrderRepository.save
+  8: override fun save(order: Order): OrderId = order.id
+shop.db.JdbcOrderRepository.findById
+  10: override fun findById(id: OrderId): Order? = null
 
 === ktsense_status ===
 isError: false

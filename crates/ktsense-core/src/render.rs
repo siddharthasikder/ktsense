@@ -34,6 +34,7 @@ use crate::skeleton::{
 };
 use crate::text::{fence_for, neutralize};
 use crate::text_refs::TextReferences;
+use crate::text_search::TextSearch;
 use crate::trace::{CallerLevel, RelatedDeclaration, TraceReport};
 
 const INDENT: &str = "    ";
@@ -429,6 +430,65 @@ pub fn render_text_references_markdown(refs: &TextReferences) -> String {
         }
     }
     out
+}
+
+/// The longest a rendered hit line is allowed to grow before it is cut, so one long generated or
+/// minified line cannot bloat the answer past what a reader can scan.
+const MAX_HIT_LINE_CHARS: usize = 160;
+
+/// Renders a `grep` answer (KT-102): the pattern, the text-match precision, and every hit grouped
+/// under its file and the declaration enclosing it. A hit line is `  <line>: <source>`, the source
+/// trimmed of its indentation, neutralized, and cut to [`MAX_HIT_LINE_CHARS`] with an ellipsis so a
+/// pathological line stays compact. The file header carries its production-or-test label, and a
+/// hit outside any declaration sits under a `(file header)` group.
+pub fn render_text_search_markdown(search: &TextSearch) -> String {
+    let mut out = format!("# Grep: {}\n", neutralize(&search.pattern));
+    out.push_str(&format!("precision: {}\n", search.precision));
+    if search.total_hits == 0 {
+        out.push_str("\nNo matches.\n");
+        return out;
+    }
+    let code_hits = search.total_hits - search.text_mention_hits;
+    out.push_str(&format!(
+        "{} in {}. {code_hits} in code, {} in comments or strings.\n",
+        pluralize(search.total_hits, "hit"),
+        pluralize(search.file_count, "file"),
+        search.text_mention_hits,
+    ));
+    for file in &search.files {
+        let label = if file.test { "test" } else { "production" };
+        out.push_str(&format!("\n### {} ({label})\n", neutralize(&file.path)));
+        for declaration in &file.declarations {
+            let header = declaration.fqn.as_deref().unwrap_or("(file header)");
+            out.push_str(&format!("{}\n", neutralize(header)));
+            for hit in &declaration.hits {
+                out.push_str(&format!(
+                    "  {}: {}\n",
+                    hit.line,
+                    trimmed_hit_line(&hit.source_line)
+                ));
+            }
+        }
+        if file.omitted > 0 {
+            out.push_str(&format!("  ... {} more\n", file.omitted));
+        }
+    }
+    out
+}
+
+/// A source line as a hit line shows it: leading and trailing whitespace dropped, source-derived
+/// text neutralized so it cannot break the line or reorder it, and cut to [`MAX_HIT_LINE_CHARS`]
+/// with a trailing ellipsis when it is longer. Cutting on a character boundary keeps a multi-byte
+/// character whole.
+fn trimmed_hit_line(source: &str) -> String {
+    let neutral = neutralize(source.trim());
+    let mut characters = neutral.chars();
+    let head: String = characters.by_ref().take(MAX_HIT_LINE_CHARS).collect();
+    if characters.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
 }
 
 /// Renders a budgeted `context` bundle: the declaration, the outline of its file, its callers and
@@ -1153,6 +1213,96 @@ mod tests {
                 "- ... 1 more\n",
                 "\napp/Report.kt\n",
                 "- 7\n",
+            )
+        );
+    }
+
+    /// The whole rendered `grep` answer: the pattern title, the text-match precision, the
+    /// code-versus-mention split over every hit before the cap, and each hit under its file (with
+    /// the production-or-test label) and its enclosing declaration, a hit outside any declaration
+    /// under `(file header)`, indentation trimmed from the source, and a per-file `... N more`.
+    /// Asserted once against the exact text.
+    #[test]
+    fn text_search_renders_hits_grouped_by_file_and_declaration_with_labels_and_the_cap() {
+        use crate::text_search::{
+            TextSearch, TextSearchDeclaration, TextSearchFile, TextSearchLine,
+        };
+
+        let search = TextSearch {
+            pattern: "save|OrderId".to_string(),
+            precision: "text match",
+            total_hits: 4,
+            file_count: 1,
+            text_mention_hits: 1,
+            files: vec![TextSearchFile {
+                path: "core/src/main/kotlin/shop/order/Repo.kt".to_string(),
+                test: false,
+                declarations: vec![
+                    TextSearchDeclaration {
+                        fqn: None,
+                        hits: vec![TextSearchLine {
+                            line: 1,
+                            kind: SiteKind::Code,
+                            source_line: "import shop.order.OrderId".to_string(),
+                        }],
+                    },
+                    TextSearchDeclaration {
+                        fqn: Some("shop.order.OrderRepository.save".to_string()),
+                        hits: vec![
+                            TextSearchLine {
+                                line: 5,
+                                kind: SiteKind::Code,
+                                source_line: "        return repo.save(order)  ".to_string(),
+                            },
+                            TextSearchLine {
+                                line: 6,
+                                kind: SiteKind::Comment,
+                                source_line: "    // OrderId note".to_string(),
+                            },
+                        ],
+                    },
+                ],
+                omitted: 1,
+            }],
+        };
+
+        assert_eq!(
+            render_text_search_markdown(&search),
+            concat!(
+                "# Grep: save|OrderId\n",
+                "precision: text match\n",
+                "4 hits in 1 file. 3 in code, 1 in comments or strings.\n",
+                "\n### core/src/main/kotlin/shop/order/Repo.kt (production)\n",
+                "(file header)\n",
+                "  1: import shop.order.OrderId\n",
+                "shop.order.OrderRepository.save\n",
+                "  5: return repo.save(order)\n",
+                "  6: // OrderId note\n",
+                "  ... 1 more\n",
+            )
+        );
+    }
+
+    /// The hit-line trim at its three boundaries: a short line is left whole, a line of exactly the
+    /// cap keeps every character with no ellipsis, and a longer line is cut to the cap with one
+    /// appended. Asserted as one table so the off-by-one at the cap cannot slip through.
+    #[test]
+    fn a_hit_line_is_trimmed_and_cut_to_the_cap_with_an_ellipsis_only_when_longer() {
+        let at_cap = "a".repeat(MAX_HIT_LINE_CHARS);
+        let over_cap = "a".repeat(MAX_HIT_LINE_CHARS + 5);
+
+        let observed = (
+            trimmed_hit_line("   fun save()   "),
+            trimmed_hit_line(&at_cap),
+            trimmed_hit_line(&over_cap),
+        );
+
+        assert_eq!(
+            observed,
+            (
+                "fun save()".to_string(),
+                at_cap.clone(),
+                format!("{}...", "a".repeat(MAX_HIT_LINE_CHARS)),
             )
         );
     }

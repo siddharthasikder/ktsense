@@ -1125,6 +1125,177 @@ expression: listed
       }
     },
     {
+      "name": "search_kotlin_text",
+      "description": "Answers where a regex appears in the Kotlin sources, grouping each hit under its file and the declaration it falls inside, labelled production or test and code, comment or string. Prefer it over raw grep or trace when the subject is not one declaration: several terms at once (save|OrderId), a call-site pattern, or text in a file that nothing declares. It resolves nothing, so the answer states precision: text match and the hit count equals rg -c for the same pattern. requires: nothing. cost: about 720 ms on 1861 files (ktor 3.0.1, median of 9, KT-102).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "limit": {
+            "description": "Show at most this many hits per file; the rest are counted.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Restrict to files whose workspace-relative path starts with this prefix.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pattern": {
+            "description": "Regular expression to search for in Kotlin sources. Several concepts are an alternation,\nsuch as `save|OrderId`.",
+            "type": "string"
+          },
+          "root": {
+            "description": "Workspace root to answer about; defaults to the server's configured root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tests": {
+            "description": "Limit to test sources (true) or production sources (false); both when unset.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "Citation": {
+            "description": "One place an answer points at.",
+            "properties": {
+              "column": {
+                "description": "1-based column, present only where the answer stated one.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "line": {
+                "description": "1-based line.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "description": "Path as the answer printed it: relative to the workspace root, `/`-separated.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "citations": {
+            "description": "Every path and line the answer cites, deduplicated, in the order they appear.",
+            "items": {
+              "$ref": "#/$defs/Citation"
+            },
+            "type": "array"
+          },
+          "citations_omitted": {
+            "description": "How many further citations the text carries that this index does not, once the cap of 500\nis reached. The text is never truncated; only this index is.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The `ktsense` subcommand it delegated to, so a human can reproduce the call.",
+            "type": "string"
+          },
+          "exit": {
+            "description": "The command's exit status, which is a contract to branch on: `0` an answer, `3` a name that\nresolved to several candidates and which one to use is yours to pick, `1` a failure on the\ninput, `2` a malformed invocation. Absent when the child was killed by a signal.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files the answer is about, in the order it introduced them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "findings": {
+            "description": "How many distinct error sites a `check` answer cites: `0` when the file is clean, the count\nof cited positions when it is not, and absent when the check failed to run. It indexes the\nanswer the agent already reads rather than re-invoking the engine to count.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "index": {
+            "description": "`complete` or `partial`, when the answer carried an index marker. `partial` means the list\nis a lower bound.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "Whether the tool ran and answered or failed to run, as a machine-readable category: `clean`\nor `findings` for a `check` that ran, `execution_failure` for one that could not reach the\nengine. Set only where the exit status alone cannot separate an answer from a failure, which\ntoday is `check_kotlin_syntax`: its exit 1 means both \"found a syntax error\" and \"the engine\nis missing\", and an agent branching on `isError` has to be able to tell them apart.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires": {
+            "description": "What had to be installed for this call: `nothing`, `kmp-lsp`, or both engine and index.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The workspace root the answer is about, which is what the cited paths are relative to.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The MCP tool name that produced this.",
+            "type": "string"
+          },
+          "warmth": {
+            "description": "What the server did about keeping an engine warm for this root: `opened`, `left_to_daemon`,\n`already_decided` or `failed`. Absent when the tool's answer does not depend on the index, or\nwhen warming is switched off.\n\nThis is a fact about the server's own action and never a claim about the engine's index, which\nthe commands that carry an `index:` marker state for themselves. It is reported because\n`find_kotlin_symbol` carries no such marker and its answer is shaped by the index anyway:\nagainst a cold one the engine text-searches, and one declaration can arrive as several\ncandidates that look like a genuine ambiguity. A `failed` here is the reason to distrust a\nduplicated-looking result and to call `ktsense_status`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "command",
+          "requires",
+          "root",
+          "files",
+          "citations",
+          "citations_omitted"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "trace_kotlin_symbol",
       "description": "Answers who uses one declaration: its definition, its implementors, the declarations that call it, and every reference site grouped by file. Prefer it over grep for who-calls and who-implements, which grep cannot separate from a definition. Every answer states index: complete or partial, and partial is a lower bound rather than the answer. A name the workspace does not declare comes back with a Text references listing of where the name is written, marked precision: text match, rather than a bare failure. requires: kmp-lsp and a settled index. cost: about 1.2 s on 1861 files (ktor 3.0.1, median of 9, KT-38).",
       "inputSchema": {

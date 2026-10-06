@@ -273,6 +273,34 @@ pub(crate) fn enclosing_declaration(
     (!chain.is_empty()).then(|| EnclosingDeclaration::from_chain(&chain))
 }
 
+/// The declaration enclosing `line`, named by its file's package plus its in-file chain, so a
+/// caller gets `shop.order.OrderRepository.save` rather than the file-local `OrderRepository.save`.
+/// A file with no `package` yields the bare chain, and a declaration chain that is empty (the file
+/// header, above the first declaration) yields the package alone. `None` when no declaration spans
+/// the line. Shared by `trace`, `context` and `grep` so one rule names an enclosing declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedEnclosing {
+    pub fqn: String,
+    pub kind: DeclKind,
+    pub line: u32,
+}
+
+pub fn fully_qualified_enclosing(skeleton: &FileSkeleton, line: u32) -> Option<QualifiedEnclosing> {
+    let enclosing = enclosing_declaration(skeleton, line)?;
+    let fqn = match &skeleton.package {
+        Some(package) if !enclosing.qualified_name.is_empty() => {
+            format!("{package}.{}", enclosing.qualified_name)
+        }
+        Some(package) => package.clone(),
+        None => enclosing.qualified_name,
+    };
+    Some(QualifiedEnclosing {
+        fqn,
+        kind: enclosing.kind,
+        line: enclosing.line,
+    })
+}
+
 /// The innermost declaration that starts exactly on `line`, when the skeleton has one.
 pub(crate) fn declaration_starting_at(skeleton: &FileSkeleton, line: u32) -> Option<&Declaration> {
     enclosing_chain(&skeleton.declarations, line, None)

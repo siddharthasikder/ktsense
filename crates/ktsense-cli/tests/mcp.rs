@@ -117,7 +117,7 @@ impl Session {
 use std::io::Read;
 
 #[test]
-fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
+fn a_scripted_session_lists_nine_tools_and_answers_an_outline_call() {
     let mut session = Session::start(Some(fake_lsp()));
 
     let init = session.request(
@@ -193,6 +193,7 @@ fn a_scripted_session_lists_eight_tools_and_answers_an_outline_call() {
                 "get_kotlin_outline",
                 "get_kotlin_repo_map",
                 "ktsense_status",
+                "search_kotlin_text",
                 "trace_kotlin_symbol",
             ],
             true,

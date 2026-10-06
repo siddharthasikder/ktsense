@@ -27,6 +27,7 @@ the reference index carry a marker saying how complete that index was. Take both
 | I have never seen this repository | `get_kotlin_repo_map` | fast |
 | Did my edit parse? | `check_kotlin_syntax` | fast |
 | Give me everything about `Foo` in one bundle | `explain_kotlin_symbol` | needs index |
+| Where does a regex or several terms appear as text? | `search_kotlin_text` | fast |
 | Is the index complete yet? | `ktsense_status` | fast |
 
 The markers say whether a tool waits for the reference index, not whether it needs the engine binary.
@@ -35,10 +36,10 @@ marked needs index starts or reuses an engine session, and the first such call o
 the one that waits. The markers are in the tool descriptions too, so you can see the cost before you
 call.
 
-Three tools are pure tree-sitter and need no engine at all: `get_kotlin_outline`,
-`analyze_kotlin_dependencies` and `get_kotlin_repo_map`. Every other tool reaches the engine,
-`check_kotlin_syntax` included despite its fast marker, so on a host where `kmp-lsp` is missing those
-fail whatever their marker says.
+Four tools are pure tree-sitter and need no engine at all: `get_kotlin_outline`,
+`analyze_kotlin_dependencies`, `get_kotlin_repo_map` and `search_kotlin_text`. Every other tool
+reaches the engine, `check_kotlin_syntax` included despite its fast marker, so on a host where
+`kmp-lsp` is missing those fail whatever their marker says.
 
 `get_kotlin_outline`, `analyze_kotlin_dependencies`, `get_kotlin_repo_map` and `trace_kotlin_symbol`
 reuse a warm daemon session when one is running. Every other tool does its own work per call, so do

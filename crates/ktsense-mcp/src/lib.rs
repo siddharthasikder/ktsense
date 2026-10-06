@@ -1,6 +1,6 @@
 //! MCP stdio server exposing the ktsense commands as agent tools.
 //!
-//! The eight tools are the [`TOOLS`] catalogue below, kept as data because the CLI, the docs and
+//! The nine tools are the [`TOOLS`] catalogue below, kept as data because the CLI, the docs and
 //! the agent skill file all have to agree with it. Each tool delegates to the `ktsense` binary
 //! itself, run as a child process: the commands, their exit codes and their neutralised output
 //! already carry the product's honesty rules, and this crate must not depend on the binary crate,
@@ -137,15 +137,24 @@ pub const STATUS: Tool = Tool {
     index_shapes_answer: false,
 };
 
+pub const GREP: Tool = Tool {
+    name: "search_kotlin_text",
+    cli_command: "grep",
+    requires: Requirement::Nothing,
+    index_shapes_answer: false,
+};
+
 /// Every tool the MCP server exposes, paired with the CLI command it delegates to.
-pub const TOOLS: &[Tool] = &[OUTLINE, SYMBOLS, TRACE, DEPS, MAP, CHECK, CONTEXT, STATUS];
+pub const TOOLS: &[Tool] = &[
+    OUTLINE, SYMBOLS, TRACE, DEPS, MAP, CHECK, CONTEXT, STATUS, GREP,
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn catalogue_has_eight_tools_with_unique_names_and_commands() {
+    fn catalogue_has_nine_tools_with_unique_names_and_commands() {
         let mut names: Vec<_> = TOOLS.iter().map(|tool| tool.name).collect();
         let mut commands: Vec<_> = TOOLS.iter().map(|tool| tool.cli_command).collect();
         names.sort_unstable();
@@ -162,7 +171,7 @@ mod tests {
         };
         assert_eq!(
             (TOOLS.len(), unique_names, unique_commands),
-            (8, 8, 8),
+            (9, 9, 9),
             "every tool needs a distinct name and a distinct backing command"
         );
     }
@@ -192,6 +201,7 @@ mod tests {
                 ("check", "kmp-lsp", false),
                 ("context", "kmp-lsp and a settled index", true),
                 ("status", "nothing", false),
+                ("grep", "nothing", false),
             ],
             "symbols waits for no index and is still shaped by one; check needs the engine and is not"
         );

@@ -1,6 +1,6 @@
 # MCP tools
 
-`ktsense mcp` serves eight tools over stdio. This page is the contract between the catalogue in
+`ktsense mcp` serves nine tools over stdio. This page is the contract between the catalogue in
 `crates/ktsense-mcp/src/lib.rs`, the descriptions an agent reads, and the structured half of every
 result. The pinned wire form of the catalogue is
 `crates/ktsense-mcp/tests/snapshots/tools_list__tools_list.snap`, which is the exact
@@ -50,12 +50,13 @@ and settled, in three states; `cost:` carries a measured number or admits there 
 | `check_kotlin_syntax` | `check` | kmp-lsp | ~145 ms, 54 KB file | KT-32 |
 | `explain_kotlin_symbol` | `context` | kmp-lsp and a settled index | ~1.1 s, 1861 files | KT-34 |
 | `ktsense_status` | `status` | nothing | ~100 ms, 1990 files | KT-32 |
+| `search_kotlin_text` | `grep` | nothing | ~720 ms, 1861 files | KT-102 |
 
 Every KT-38 figure is a median of nine timed repetitions on ktor 3.0.1 from
-`.agents/scratchpad/ktsense/KT-38.md`, in-process rather than through a daemon. The KT-32 and KT-34
-figures were taken the same way, from a release binary, with the exit status checked so a failing
-command cannot be reported as a latency. No figure appears in a description that is not in one of
-those evidence files.
+`.agents/scratchpad/ktsense/KT-38.md`, in-process rather than through a daemon. The KT-32, KT-34 and
+KT-102 figures were taken the same way, from a release binary, with the exit status checked so a
+failing command cannot be reported as a latency. No figure appears in a description that is not in one
+of those evidence files.
 
 The corpus is the same repository in both cases, counted two ways. KT-38 counted 1861 `.kt` files.
 `ktsense_status` reports 1990, because its traversal accepts `.kts` too and ktor holds 129 Gradle
@@ -159,7 +160,7 @@ launch would be a straight regression on the loop it exists for.
 ## `structuredContent`
 
 Every result carries the command's Markdown as its text content and an `Answer` object as its
-`structuredContent`, declared by an output schema identical across all eight tools:
+`structuredContent`, declared by an output schema identical across all nine tools:
 
 | Field | Meaning |
 |---|---|
@@ -237,7 +238,7 @@ Ticked against the catalogue and the pinned snapshot at the commit that added th
 - [x] Version-check scope is stated where it is true, and not generalised. The instructions string
       names both guarded tools, `trace_kotlin_symbol` and `explain_kotlin_symbol`.
 - [x] Every tool is annotated `readOnlyHint: true` and `openWorldHint: false`; none of them writes.
-- [x] Every tool declares an output schema, and all eight are identical.
+- [x] Every tool declares an output schema, and all nine are identical.
 - [x] No em dashes.
 - [x] `tools/list` is pinned as a golden snapshot, so a description change is a reviewable diff.
 - [x] Every tool is called over a real stdio session and its result pinned, including the ambiguity
@@ -276,7 +277,7 @@ warm client's, and the three `check` outcomes each need their own scripted engin
 
 | Snapshot | Covers |
 |---|---|
-| `no_index_tools` | `get_kotlin_outline` (three ways, including a missing file), `analyze_kotlin_dependencies` at both levels, `get_kotlin_repo_map`, `ktsense_status`, all while a warm engine is held |
+| `no_index_tools` | `get_kotlin_outline` (three ways, including a missing file), `analyze_kotlin_dependencies` at both levels, `get_kotlin_repo_map`, `search_kotlin_text`, `ktsense_status`, all while a warm engine is held |
 | `symbol_lookup` | `find_kotlin_symbol` unique, limited, picked and unmatched |
 | `trace_and_context` | `trace_kotlin_symbol`, and `explain_kotlin_symbol` at the default budget and at one small enough to drop items |
 | `ambiguous_name` | the shared ambiguity contract across `trace_kotlin_symbol`, `explain_kotlin_symbol` and `find_kotlin_symbol` |

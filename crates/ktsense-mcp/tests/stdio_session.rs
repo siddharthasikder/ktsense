@@ -223,6 +223,7 @@ fn a_session_answers_every_tool_that_needs_no_index_while_holding_a_warm_engine(
             ("analyze_kotlin_dependencies", json!({})),
             ("analyze_kotlin_dependencies", json!({ "level": "file" })),
             ("get_kotlin_repo_map", json!({ "budget": 400 })),
+            ("search_kotlin_text", json!({ "pattern": "save|OrderId" })),
             ("ktsense_status", json!({})),
         ],
     );
@@ -354,6 +355,7 @@ fn every_listed_tool_is_covered_by_one_of_the_sessions() {
         "find_kotlin_symbol",
         "trace_kotlin_symbol",
         "check_kotlin_syntax",
+        "search_kotlin_text",
     ];
     let mut server = Session::rooted(Path::new(WORKSPACE_ROOT), FIXTURE);
     server.initialize();

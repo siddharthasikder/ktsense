@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::references::{
-    declaration_starting_at, enclosing_declaration, group_references, is_test_source,
+    declaration_starting_at, fully_qualified_enclosing, group_references, is_test_source,
     GroupingOptions, Location, ReferenceGroup, SiteKind,
 };
 use crate::skeleton::{DeclKind, FileSkeleton};
@@ -251,15 +251,8 @@ impl<'a> SkeletonIndex<'a> {
     /// skeleton is known and a declaration spans the line.
     fn resolve(&self, site: &Location) -> Option<(String, DeclKind, u32)> {
         let skeleton = self.by_path.get(site.path.as_str())?;
-        let enclosing = enclosing_declaration(skeleton, site.line)?;
-        let qualified = match &skeleton.package {
-            Some(package) if !enclosing.qualified_name.is_empty() => {
-                format!("{package}.{}", enclosing.qualified_name)
-            }
-            Some(package) => package.clone(),
-            None => enclosing.qualified_name,
-        };
-        Some((qualified, enclosing.kind, enclosing.line))
+        let enclosing = fully_qualified_enclosing(skeleton, site.line)?;
+        Some((enclosing.fqn, enclosing.kind, enclosing.line))
     }
 }
 
