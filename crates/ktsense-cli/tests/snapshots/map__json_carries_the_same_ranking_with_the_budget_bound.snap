@@ -65,5 +65,6 @@ stderr empty
   ],
   "budget": 4000,
   "token_upper_bound": 302,
-  "files_omitted": 0
+  "files_omitted": 0,
+  "files_without_public_declarations": 5
 }

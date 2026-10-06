@@ -74,6 +74,15 @@ pub struct MappedFile {
     pub declarations: Vec<String>,
 }
 
+/// A directory whose files were dropped for budget, and how many of them, so a reader learns where
+/// the omitted code lives rather than only how much of it there was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OmittedDirectory {
+    /// Root-relative parent directory of the omitted files, or `.` for a file at the root.
+    pub path: String,
+    pub files: usize,
+}
+
 /// A budgeted map of a repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RepoMap {
@@ -81,12 +90,29 @@ pub struct RepoMap {
     pub files: Vec<MappedFile>,
     /// The budget requested by the caller.
     pub budget: usize,
-    /// Conservative upper bound on the tokens the emitted content occupies. Per-item ceilings are
-    /// superadditive, so this over-counts relative to the concatenated text; over-reporting is the
-    /// safe direction for a limit and is the figure the packing gate itself enforced.
+    /// Conservative upper bound on the tokens the emitted content occupies, now including the
+    /// reserved omission summary. Per-item ceilings are superadditive, so this over-counts relative
+    /// to the concatenated text; over-reporting is the safe direction for a limit and is the figure
+    /// the packing gate itself enforced.
     pub token_upper_bound: usize,
     /// Files that had declarations to show but did not fit.
     pub files_omitted: usize,
+    /// The directories those omitted files live in, most files first then path order. The full
+    /// grouping regardless of how many the Markdown summary had room to name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_directories: Vec<OmittedDirectory>,
+    /// How many leading entries of [`Self::omitted_directories`] the Markdown "Omitted:" line names
+    /// in full before summarizing the rest as `and N more directories`. A rendering detail sized to
+    /// the reserved budget, not data, so it stays out of the JSON.
+    #[serde(skip)]
+    pub omitted_directories_shown: usize,
+    /// Source files the scan read but did not map because they declare nothing public.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub files_without_public_declarations: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// Everything the map is built from. A parameter object rather than four arguments, and it keeps the
@@ -123,28 +149,168 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
     });
 
     let mut units = Vec::new();
-    let mut candidate_files = 0usize;
+    let mut candidate_paths: Vec<String> = Vec::new();
+    let mut files_without_public_declarations = 0usize;
     for file in ordered {
         let signatures = signatures_in_reference_order(file, &ranking);
         if signatures.is_empty() {
+            files_without_public_declarations += 1;
             continue;
         }
-        candidate_files += 1;
+        let index = candidate_paths.len();
+        candidate_paths.push(file.path.clone());
         units.push(Unit::header(&file.path));
         for signature in signatures {
-            units.push(Unit::declaration(candidate_files - 1, signature));
+            units.push(Unit::declaration(index, signature));
         }
     }
 
-    let emission = emit_within_budget(units, input.budget, estimator);
+    // Emitting once at the full budget shows which files would be dropped when nothing is reserved.
+    // Only then, and only when files were actually dropped, is room held back for the summary, so a
+    // map whose files all fit reserves nothing and is chosen exactly as before.
+    let full = emit_within_budget(units.clone(), input.budget, estimator);
+    let dropped_without_reserve = omitted_from(&candidate_paths, &full.items);
+    let reserve = summary_reserve(&dropped_without_reserve, input.budget, estimator);
+
+    let emission = if reserve == 0 {
+        full
+    } else {
+        emit_within_budget(units, input.budget - reserve, estimator)
+    };
     let files_shown = regroup(&emission.items);
+    let omitted = omitted_from(&candidate_paths, &emission.items);
+    let omitted_directories = group_omitted(&omitted);
+
+    // The summary is rendered to fit the room the files left, so the reported bound, which now
+    // covers it, still never exceeds the budget. A reservation larger than the summary needs only
+    // leaves the summary fully named; a smaller one truncates it to the largest groups.
+    let room_for_summary = input.budget - emission.token_upper_bound;
+    let omitted_directories_shown =
+        fit_directories(&omitted_directories, room_for_summary, estimator);
+    let summary_cost = omitted_directories_line(&omitted_directories, omitted_directories_shown)
+        .map(|line| estimator.estimate(&line))
+        .unwrap_or(0);
+
     RepoMap {
-        files_omitted: candidate_files.saturating_sub(files_shown.len()),
+        files_omitted: omitted.len(),
         files: files_shown,
         budget: input.budget,
-        token_upper_bound: emission.token_upper_bound,
+        token_upper_bound: emission.token_upper_bound + summary_cost,
+        omitted_directories,
+        omitted_directories_shown,
+        files_without_public_declarations,
     }
 }
+
+/// How much of the budget to hold back for the omission summary before files are chosen: nothing
+/// when no file was dropped, otherwise the cost of naming every dropped directory, capped at a
+/// quarter of the budget so the map's own content stays the primary payload. The cap is why a huge
+/// omitted list truncates to `and N more directories` rather than crowding out every signature.
+fn summary_reserve<E: TokenEstimator>(dropped: &[String], budget: usize, estimator: &E) -> usize {
+    if dropped.is_empty() {
+        return 0;
+    }
+    let directories = group_omitted(dropped);
+    let full_line = omitted_directories_line(&directories, directories.len()).unwrap_or_default();
+    estimator
+        .estimate(&full_line)
+        .min(budget / OMISSION_SUMMARY_BUDGET_FRACTION)
+}
+
+/// The largest prefix of `directories` whose rendered "Omitted:" line, including its `and N more
+/// directories` tail, fits `room`. Zero when not even the first directory fits, which drops the
+/// line entirely rather than overrunning.
+fn fit_directories<E: TokenEstimator>(
+    directories: &[OmittedDirectory],
+    room: usize,
+    estimator: &E,
+) -> usize {
+    (1..=directories.len())
+        .rev()
+        .find(|&shown| {
+            omitted_directories_line(directories, shown)
+                .is_some_and(|line| estimator.estimate(&line) <= room)
+        })
+        .unwrap_or(0)
+}
+
+/// Candidate paths that no shown file covers: a file whose header emitted but whose every signature
+/// fell outside the budget is dropped by [`regroup`], so it counts as omitted here too.
+fn omitted_from(candidate_paths: &[String], emitted: &[Unit]) -> Vec<String> {
+    let shown: std::collections::BTreeSet<String> =
+        regroup(emitted).into_iter().map(|file| file.path).collect();
+    candidate_paths
+        .iter()
+        .filter(|path| !shown.contains(*path))
+        .cloned()
+        .collect()
+}
+
+/// Groups omitted file paths by their root-relative parent directory, most files first then path
+/// order, so the busiest omitted directory is named first and ties are stable.
+fn group_omitted(paths: &[String]) -> Vec<OmittedDirectory> {
+    let mut by_directory: BTreeMap<String, usize> = BTreeMap::new();
+    for path in paths {
+        *by_directory.entry(parent_directory(path)).or_insert(0) += 1;
+    }
+    let mut directories: Vec<OmittedDirectory> = by_directory
+        .into_iter()
+        .map(|(path, files)| OmittedDirectory { path, files })
+        .collect();
+    directories.sort_by(|left, right| {
+        right
+            .files
+            .cmp(&left.files)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    directories
+}
+
+fn parent_directory(path: &str) -> String {
+    match path.rfind('/') {
+        Some(slash) => path[..slash].to_string(),
+        None => ".".to_string(),
+    }
+}
+
+/// The Markdown "Omitted:" line naming where the budget-dropped files live, or `None` when none were
+/// dropped or the reserved room fit not even the first directory. The first `shown` directories are
+/// named in full; a positive remainder is summarized so the line stays within its reserved budget.
+pub(crate) fn omitted_directories_line(
+    directories: &[OmittedDirectory],
+    shown: usize,
+) -> Option<String> {
+    if directories.is_empty() || shown == 0 {
+        return None;
+    }
+    let named = directories[..shown]
+        .iter()
+        .map(|directory| format!("{} ({})", directory.path, directory.files))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut line = format!("Omitted: {named}");
+    let remaining = directories.len() - shown;
+    if remaining > 0 {
+        line.push_str(&format!(", and {remaining} more directories"));
+    }
+    Some(line)
+}
+
+/// The Markdown line stating how many read files declared nothing public, or `None` when every file
+/// contributed a signature. Kept grammatical for the single-file case.
+pub(crate) fn files_without_public_declarations_line(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 file declares nothing public and is not mapped.".to_string()),
+        many => Some(format!(
+            "{many} files declare nothing public and are not mapped."
+        )),
+    }
+}
+
+/// At most a quarter of the budget is held back for the omission summary; the map's signatures keep
+/// the rest.
+const OMISSION_SUMMARY_BUDGET_FRACTION: usize = 4;
 
 /// The two cross-file signals a declaration is ranked by, so every comparison reads them the same
 /// way and no call site can pass them in the wrong order.
@@ -269,6 +435,7 @@ fn signature_of(file: &FileSkeleton, declaration: &Declaration) -> Option<String
 
 /// An emission unit: either a file's heading or one signature under it. Budgeting at unit level
 /// rather than file level is what lets the last file be partially included instead of dropped.
+#[derive(Clone)]
 struct Unit {
     file_index: Option<usize>,
     text: String,
@@ -503,23 +670,146 @@ mod tests {
     }
 
     #[test]
-    fn a_budget_that_fits_one_file_partially_reports_the_files_it_dropped() {
+    fn a_reserved_summary_shrinks_the_file_room_and_names_the_dropped_directories() {
         let generous = map_without_references(&corpus(), 10_000);
-        let first_file_cost = ByteRatioEstimator.estimate("## core/Core.kt")
-            + ByteRatioEstimator.estimate("class Engine");
-
-        let tight = map_without_references(&corpus(), first_file_cost);
+        let tight = map_without_references(&corpus(), 15);
 
         assert_eq!(
             (
                 tight.files.len(),
-                tight.files.first().map(|f| f.declarations.len()),
+                tight.files.first().map(|file| file.declarations.clone()),
                 tight.files_omitted,
-                tight.token_upper_bound <= first_file_cost,
+                tight.omitted_directories.clone(),
+                tight.token_upper_bound <= 15,
                 generous.files.len(),
+                generous.files_omitted,
             ),
-            (1, Some(1), 2, true, 3)
+            (
+                1,
+                Some(vec!["class Engine".to_string()]),
+                2,
+                vec![
+                    OmittedDirectory {
+                        path: "cli".to_string(),
+                        files: 1,
+                    },
+                    OmittedDirectory {
+                        path: "web".to_string(),
+                        files: 1,
+                    },
+                ],
+                true,
+                3,
+                0,
+            )
         );
+    }
+
+    #[test]
+    fn omitted_directories_group_by_parent_most_files_first_then_path_and_truncate() {
+        let paths: Vec<String> = [
+            "app/checkout/A.kt",
+            "app/checkout/B.kt",
+            "app/checkout/C.kt",
+            "db/X.kt",
+            "db/Y.kt",
+            "app/reporting/R.kt",
+            "app/reporting/S.kt",
+            "Root.kt",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let groups = group_omitted(&paths);
+        let full_line = omitted_directories_line(&groups, groups.len());
+        let truncated = omitted_directories_line(&groups, 2);
+
+        assert_eq!(
+            (groups, full_line, truncated),
+            (
+                vec![
+                    OmittedDirectory {
+                        path: "app/checkout".to_string(),
+                        files: 3,
+                    },
+                    OmittedDirectory {
+                        path: "app/reporting".to_string(),
+                        files: 2,
+                    },
+                    OmittedDirectory {
+                        path: "db".to_string(),
+                        files: 2,
+                    },
+                    OmittedDirectory {
+                        path: ".".to_string(),
+                        files: 1,
+                    },
+                ],
+                Some("Omitted: app/checkout (3), app/reporting (2), db (2), . (1)".to_string()),
+                Some(
+                    "Omitted: app/checkout (3), app/reporting (2), and 2 more directories"
+                        .to_string()
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn the_public_declaration_footer_is_grammatical_and_absent_at_zero() {
+        assert_eq!(
+            (
+                files_without_public_declarations_line(0),
+                files_without_public_declarations_line(1),
+                files_without_public_declarations_line(39),
+            ),
+            (
+                None,
+                Some("1 file declares nothing public and is not mapped.".to_string()),
+                Some("39 files declare nothing public and are not mapped.".to_string()),
+            )
+        );
+    }
+
+    #[test]
+    fn files_declaring_nothing_public_are_counted_and_left_out_of_the_map() {
+        let files = vec![
+            file("core/Core.kt", "app.core", &[], &[("Engine", 1)]),
+            file("core/Empty.kt", "app.core", &[], &[]),
+            file("core/Config.kt", "app.core", &[], &[]),
+        ];
+
+        let map = map_without_references(&files, 10_000);
+
+        assert_eq!(
+            (
+                map.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+                map.files_without_public_declarations,
+                map.files_omitted,
+                map.omitted_directories,
+            ),
+            (vec!["core/Core.kt".to_string()], 2, 0, Vec::new(),)
+        );
+    }
+
+    #[test]
+    fn the_reported_bound_including_the_summary_never_exceeds_any_budget() {
+        let files = corpus();
+        let references = counts(&[("Engine", 7), ("Helper", 2), ("Server", 1), ("Main", 0)]);
+
+        let overrun = (0..=400usize).find(|&budget| {
+            let map = build_repo_map(
+                RepoMapInput {
+                    files: &files,
+                    references: &references,
+                    budget,
+                },
+                &ByteRatioEstimator,
+            );
+            map.token_upper_bound > budget
+        });
+
+        assert_eq!(overrun, None);
     }
 
     #[test]

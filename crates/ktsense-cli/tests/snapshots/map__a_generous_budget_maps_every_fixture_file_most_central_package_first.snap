@@ -65,3 +65,5 @@ class JdbcOrderRepository(private val url: String = "jdbc:h2:mem:orders") : Orde
 ```
 
 Ranking is syntactic: files are ordered by import centrality, then by how often their declarations are referenced by name across the corpus, with import counts breaking ties. A reference is an identifier occurrence outside an import, counted by name and not type-checked, so declarations sharing a simple name across packages share a count.
+
+5 files declare nothing public and are not mapped.

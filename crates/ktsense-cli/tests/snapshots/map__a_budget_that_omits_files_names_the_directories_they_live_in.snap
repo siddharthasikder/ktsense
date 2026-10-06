@@ -7,7 +7,7 @@ stderr empty
 ---
 # Repository map
 
-Budget 60 tokens, content bound 45. 1 file shown, 8 omitted.
+Budget 160 tokens, content bound 142. 3 files shown, 6 omitted.
 
 ## core/src/main/kotlin/shop/order/Order.kt
 
@@ -16,6 +16,20 @@ data class Order(val id: OrderId, val customerEmail: String, val totalCents: Lon
 data class OrderId(val value: Long)
 ```
 
+## core/src/main/kotlin/shop/order/OrderRepository.kt
+
+```kotlin
+interface OrderRepository
+```
+
+## app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt
+
+```kotlin
+object CheckoutConfig
+```
+
 Ranking is syntactic: files are ordered by import centrality, then by how often their declarations are referenced by name across the corpus, with import counts breaking ties. A reference is an identifier occurrence outside an import, counted by name and not type-checked, so declarations sharing a simple name across packages share a count.
 
 5 files declare nothing public and are not mapped.
+
+Omitted: app/src/main/kotlin/shop/app/checkout (2), app/src/main/kotlin/shop/app/reporting (2), db/src/main/kotlin/shop/db (2)

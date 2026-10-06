@@ -1,0 +1,48 @@
+---
+source: crates/ktsense-cli/tests/map.rs
+expression: record(&run)
+---
+exit 0
+stderr empty
+---
+{
+  "files": [
+    {
+      "path": "core/src/main/kotlin/shop/order/Order.kt",
+      "declarations": [
+        "data class Order(val id: OrderId, val customerEmail: String, val totalCents: Long)",
+        "data class OrderId(val value: Long)"
+      ]
+    },
+    {
+      "path": "core/src/main/kotlin/shop/order/OrderRepository.kt",
+      "declarations": [
+        "interface OrderRepository"
+      ]
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout/CheckoutConfig.kt",
+      "declarations": [
+        "object CheckoutConfig"
+      ]
+    }
+  ],
+  "budget": 160,
+  "token_upper_bound": 142,
+  "files_omitted": 6,
+  "omitted_directories": [
+    {
+      "path": "app/src/main/kotlin/shop/app/checkout",
+      "files": 2
+    },
+    {
+      "path": "app/src/main/kotlin/shop/app/reporting",
+      "files": 2
+    },
+    {
+      "path": "db/src/main/kotlin/shop/db",
+      "files": 2
+    }
+  ],
+  "files_without_public_declarations": 5
+}

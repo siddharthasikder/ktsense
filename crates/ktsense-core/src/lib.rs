@@ -31,7 +31,9 @@ pub use render::{
     render_context_markdown, render_deps_dot, render_deps_markdown, render_map_markdown,
     render_markdown, render_skeleton, render_trace_markdown, RenderOptions,
 };
-pub use repo_map::{build_repo_map, MappedFile, ReferenceCounts, RepoMap, RepoMapInput};
+pub use repo_map::{
+    build_repo_map, MappedFile, OmittedDirectory, ReferenceCounts, RepoMap, RepoMapInput,
+};
 pub use scc::{cycles, strongly_connected_components};
 pub use skeleton::{
     DeclKind, Declaration, FileSkeleton, Modifier, Parameter, ParameterProperty, Visibility,

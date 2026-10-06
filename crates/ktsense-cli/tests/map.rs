@@ -75,6 +75,35 @@ fn json_carries_the_same_ranking_with_the_budget_bound() {
 }
 
 #[test]
+fn a_budget_that_omits_files_names_the_directories_they_live_in() {
+    let run = map(&["map", "--budget", "160", "--root", "fixtures/multi-module"]);
+
+    insta::assert_snapshot!(record(&run));
+}
+
+#[test]
+fn a_tighter_budget_truncates_the_omitted_directory_line() {
+    let run = map(&["map", "--budget", "120", "--root", "fixtures/multi-module"]);
+
+    insta::assert_snapshot!(record(&run));
+}
+
+#[test]
+fn json_lists_the_omitted_directories_and_the_unmapped_file_count() {
+    let run = map(&[
+        "map",
+        "--budget",
+        "160",
+        "--root",
+        "fixtures/multi-module",
+        "--format",
+        "json",
+    ]);
+
+    insta::assert_snapshot!(record(&run));
+}
+
+#[test]
 fn dot_is_refused_because_only_deps_produces_a_graph() {
     let run = map(&[
         "map",

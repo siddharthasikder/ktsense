@@ -23,6 +23,8 @@ First stable release. It follows the `v0.0.1-rc.2` prerelease.
 
 ### Added
 
+- `ktsense map` now says where its omitted files live. When files are dropped for budget, the Markdown map ends with an `Omitted: <dir> (<count>), ...` line grouping them by directory, most files first, truncated to `and N more directories` when the reserved room runs out; the summary's cost is reserved before files are chosen so the total stays within the budget. The map also states how many read files declare nothing public and were not mapped, and the JSON gains `omitted_directories` and `files_without_public_declarations` (KT-93).
+
 - `trace` lists production callers under `## Callers` and test callers under a following `## Test callers`, at every `--depth` level, and `context` orders production callers ahead of test ones and labels the test ones, so who calls a symbol in production reads before who exercises it in tests. A caller counts as a test by its source path (a `test`, `androidTest`, `testFixtures`, `commonTest`, `jvmTest` or `<flavour>Test` source set, or a `Test.kt` / `Tests.kt` / `Spec.kt` file); JSON gains a `test` flag per caller (KT-91).
 - `outline --annotations` shows each declaration's annotations, one per line above it; the default outline drops them and says how many it hid, and the `get_kotlin_outline` MCP tool gains an `annotations` argument (KT-90).
 - `context` includes a `## Source` section with the declaration's own body, right after its signature. A body too long for the budget is cut on a line boundary with the omitted range to read (KT-86).

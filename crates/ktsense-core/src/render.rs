@@ -292,6 +292,7 @@ pub fn render_map_markdown(map: &RepoMap) -> String {
 
     if map.files.is_empty() {
         out.push_str("\nThe budget was too small for any file.\n");
+        append_map_summary(&mut out, map);
         return out;
     }
 
@@ -308,7 +309,25 @@ pub fn render_map_markdown(map: &RepoMap) -> String {
          reference is an identifier occurrence outside an import, counted by name and not \
          type-checked, so declarations sharing a simple name across packages share a count.\n",
     );
+    append_map_summary(&mut out, map);
     out
+}
+
+/// Appends the omission summary: where the budget-dropped files live, and how many read files
+/// declared nothing public. Both lines describe what the map left out, so a reader knows the map is
+/// a budgeted view rather than the whole repository.
+fn append_map_summary(out: &mut String, map: &RepoMap) {
+    if let Some(line) = crate::repo_map::files_without_public_declarations_line(
+        map.files_without_public_declarations,
+    ) {
+        out.push_str(&format!("\n{line}\n"));
+    }
+    if let Some(line) = crate::repo_map::omitted_directories_line(
+        &map.omitted_directories,
+        map.omitted_directories_shown,
+    ) {
+        out.push_str(&format!("\n{line}\n"));
+    }
 }
 
 /// Renders a `trace` answer: the definition, then who implements it, who refers to it, and every
