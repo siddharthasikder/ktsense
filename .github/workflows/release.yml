@@ -172,9 +172,8 @@ jobs:
 
   # Installs the Homebrew formula against the artifact this run just built, through a temporary tap
   # whose URL points at that tarball. It deliberately does not run `brew install ktsense` from the
-  # checked-in URLs: no GitHub Release exists yet and Formula/ktsense.rb carries OWNER plus deadbeef
-  # placeholders on purpose, so the real URLs, and any `--online` audit of them, only become
-  # meaningful once the repository is pushed and a release is cut.
+  # checked-in URLs: those name the release Formula/ktsense.rb was last bumped to, and this run's
+  # release is not published until its artifacts have passed here.
   formula-test:
     name: brew ${{ matrix.target }}
     needs: build
@@ -274,23 +273,30 @@ jobs:
           TARGET: ${{ matrix.target }}
           SHA256: ${{ steps.artifact.outputs.sha256 }}
           TARBALL: ${{ steps.artifact.outputs.tarball }}
+          POISON: "0000000000000000000000000000000000000000000000000000000000000000"
         run: |
           dir="$(brew --repository)/Library/Taps/${TAP%%/*}/homebrew-${TAP##*/}"
           mkdir -p "$dir/Formula"
           # Only this target's url and hash are repointed at the local tarball. The other three
-          # blocks keep their placeholder url and deadbeef hash, so a wrongly selected platform
-          # block fails the install loudly instead of quietly installing this tarball anyway.
-          awk -v triple="$TARGET" -v url="file://$TARBALL" -v sha="$SHA256" '
+          # blocks keep their published url but get an all-zero hash, so a wrongly selected platform
+          # block fails its checksum loudly instead of quietly installing another release. The
+          # formula carries real hashes since f6248e2, so a placeholder count can no longer prove it.
+          awk -v triple="$TARGET" -v url="file://$TARBALL" -v sha="$SHA256" -v poison="$POISON" '
               index($0, "ktsense-#{RELEASE}-" triple ".tar.gz") {
                   match($0, /^ */)
                   printf "%surl \"%s\"\n", substr($0, 1, RLENGTH), url
-                  pending = 1
+                  pending = "local"
                   next
               }
-              pending && $1 == "sha256" {
+              index($0, "ktsense-#{RELEASE}-") && $1 == "url" {
+                  print
+                  pending = "other"
+                  next
+              }
+              pending != "" && $1 == "sha256" {
                   match($0, /^ */)
-                  printf "%ssha256 \"%s\"\n", substr($0, 1, RLENGTH), sha
-                  pending = 0
+                  printf "%ssha256 \"%s\"\n", substr($0, 1, RLENGTH), (pending == "local" ? sha : poison)
+                  pending = ""
                   next
               }
               { print }
@@ -299,11 +305,10 @@ jobs:
           # count and let the comparison below do the failing.
           local_urls="$(grep -c 'url "file://' "$dir/Formula/ktsense.rb" || true)"
           local_shas="$(grep -c "sha256 \"$SHA256\"" "$dir/Formula/ktsense.rb" || true)"
-          placeholder_url='url "https://github.com/OWNER/'
-          placeholders="$(grep -cF "$placeholder_url" "$dir/Formula/ktsense.rb" || true)"
-          printf 'repointed %s url and %s sha256 line, left %s placeholder urls\n' \
-            "$local_urls" "$local_shas" "$placeholders"
-          if [ "$local_urls" != 1 ] || [ "$local_shas" != 1 ] || [ "$placeholders" != 3 ]; then
+          poisoned="$(grep -c "sha256 \"$POISON\"" "$dir/Formula/ktsense.rb" || true)"
+          printf 'repointed %s url and %s sha256 line, poisoned %s other hashes\n' \
+            "$local_urls" "$local_shas" "$poisoned"
+          if [ "$local_urls" != 1 ] || [ "$local_shas" != 1 ] || [ "$poisoned" != 3 ]; then
             echo "the rewrite did not repoint exactly the $TARGET url and hash" >&2
             exit 1
           fi
