@@ -43,7 +43,7 @@ file or a module arrives without the bodies. Specifically:
 | What does this file or module declare, without bodies | `outline` | measured 85% to 89% fewer bytes than the source |
 | Orient me in an unfamiliar repository | `map` | one answer inside a token budget you set |
 | What imports what, and are there cycles | `deps` | an import graph, not a pile of matches |
-| Who implements or calls this, across files | `trace` | reference index, rather than a text match per call site |
+| Who implements this interface, or calls this, across files | `trace` | reference index, rather than a text match per call site |
 | This name is ambiguous | `symbols`, `trace` | every candidate is listed rather than one guessed |
 | Did my edit parse | `check` | the engine's own checker, before the next build |
 

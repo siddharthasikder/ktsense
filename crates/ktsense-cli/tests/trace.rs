@@ -495,4 +495,47 @@ mod real {
             "stdout was: {stdout}"
         );
     }
+
+    fn implementors_heading(symbol: &str) -> String {
+        let output = Command::cargo_bin("ktsense")
+            .expect("binary builds")
+            .current_dir(WORKSPACE_ROOT)
+            .args(["--root", FIXTURE, "trace", symbol])
+            .output()
+            .expect("binary runs");
+        let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+        stdout
+            .lines()
+            .find(|line| line.starts_with("## Implementors"))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("no Implementors heading; exit {:?}", output.status.code()))
+    }
+
+    /// kmp-lsp 0.26.0 answers `textDocument/implementation` on a plain class with the class's own
+    /// declaration. A class is never its own implementor, so the interface and the object are the
+    /// controls: their answers were already right and must not move.
+    #[test]
+    fn a_plain_class_is_never_reported_as_its_own_implementor() {
+        let observed: Vec<(&str, String)> = [
+            "OrderRepository",
+            "AuditTrail",
+            "CheckoutService",
+            "OrderImporter",
+            "CheckoutConfig",
+        ]
+        .into_iter()
+        .map(|symbol| (symbol, implementors_heading(symbol)))
+        .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                ("OrderRepository", "## Implementors (2)".to_string()),
+                ("AuditTrail", "## Implementors (0)".to_string()),
+                ("CheckoutService", "## Implementors (0)".to_string()),
+                ("OrderImporter", "## Implementors (0)".to_string()),
+                ("CheckoutConfig", "## Implementors (0)".to_string()),
+            ]
+        );
+    }
 }

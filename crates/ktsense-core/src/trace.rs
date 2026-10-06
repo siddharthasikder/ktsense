@@ -114,10 +114,12 @@ impl TraceReport {
 /// and every reference site grouped by file.
 pub fn build_trace(input: TraceInput<'_>) -> TraceReport {
     let skeletons = SkeletonIndex::new(input.skeletons);
-    let implementors = related_declarations(&input.implementation_sites, &skeletons);
+    let implementation_sites =
+        implementations_other_than(&input.implementation_sites, &input.definition_site);
+    let implementors = related_declarations(&implementation_sites, &skeletons);
 
     let mut set_aside = vec![input.definition_site.clone()];
-    set_aside.extend(input.implementation_sites.iter().cloned());
+    set_aside.extend(implementation_sites.iter().cloned());
     let direct = callers_of(&input.reference_sites, &set_aside, input.skeletons);
 
     let usages = group_references(&input.reference_sites, input.skeletons, input.options);
@@ -154,6 +156,16 @@ pub fn callers_of(
 
 fn same_site(a: &Location, b: &Location) -> bool {
     a.path == b.path && a.line == b.line
+}
+
+/// kmp-lsp 0.26.0 answers `textDocument/implementation` on a class with no subtypes by returning
+/// the class's own declaration. A declaration never implements itself, so that site is dropped.
+fn implementations_other_than(sites: &[Location], definition: &Location) -> Vec<Location> {
+    sites
+        .iter()
+        .filter(|site| !same_site(site, definition))
+        .cloned()
+        .collect()
 }
 
 struct SkeletonIndex<'a> {
@@ -330,6 +342,51 @@ mod tests {
         assert_eq!(
             (observed.0, observed.1, observed.2, observed.3, observed.4),
             expected
+        );
+    }
+
+    #[test]
+    fn a_definition_echoed_back_as_its_own_implementation_is_not_an_implementor() {
+        let skeletons = vec![
+            FileSkeleton::new("app/AuditTrail.kt")
+                .in_package("shop.app.reporting")
+                .with_declarations(vec![Declaration::class("AuditTrail", 3)]),
+            FileSkeleton::new("app/CheckoutService.kt")
+                .in_package("shop.app.checkout")
+                .with_declarations(vec![Declaration::class("CheckoutService", 8)]),
+        ];
+        let echoed = TraceInput {
+            definition: Definition {
+                qualified_name: "shop.app.reporting.AuditTrail".to_string(),
+                path: "app/AuditTrail.kt".to_string(),
+                line: 3,
+                signature: "class AuditTrail".to_string(),
+            },
+            index: IndexCompleteness::Complete,
+            definition_site: Location::new("app/AuditTrail.kt", 3),
+            implementation_sites: vec![Location::new("app/AuditTrail.kt", 3).at_column(7)],
+            reference_sites: vec![
+                Location::new("app/AuditTrail.kt", 3),
+                Location::new("app/CheckoutService.kt", 10),
+            ],
+            skeletons: &skeletons,
+            options: GroupingOptions::default(),
+        };
+
+        let report = build_trace(echoed);
+
+        assert_eq!(
+            (report.implementors, report.callers[0].callers.clone()),
+            (
+                vec![],
+                vec![related(
+                    "app/CheckoutService.kt",
+                    8,
+                    Some("shop.app.checkout.CheckoutService"),
+                    Some(DeclKind::Class),
+                    1,
+                )]
+            )
         );
     }
 
