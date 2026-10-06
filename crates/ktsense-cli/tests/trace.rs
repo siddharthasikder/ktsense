@@ -670,6 +670,7 @@ mod real {
         let output = Command::cargo_bin("ktsense")
             .expect("binary builds")
             .current_dir(WORKSPACE_ROOT)
+            .env("KTSENSE_NO_AUTOSTART", "1")
             .args(["--root", FIXTURE, "trace", symbol])
             .output()
             .expect("binary runs");
