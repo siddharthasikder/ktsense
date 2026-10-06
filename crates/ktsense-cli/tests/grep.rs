@@ -7,6 +7,7 @@ use std::process::Command;
 use assert_cmd::cargo::CommandCargoExt;
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/multi-module");
+const MIXED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/mixed-java");
 
 struct Run {
     code: Option<i32>,
@@ -15,7 +16,15 @@ struct Run {
 }
 
 fn grep(extra: &[&str]) -> Run {
-    let mut args = vec!["--root", FIXTURE];
+    grep_in(FIXTURE, extra)
+}
+
+fn mixed(extra: &[&str]) -> Run {
+    grep_in(MIXED, extra)
+}
+
+fn grep_in(root: &str, extra: &[&str]) -> Run {
+    let mut args = vec!["--root", root];
     args.extend_from_slice(extra);
     let output = Command::cargo_bin("ktsense")
         .expect("binary builds")
@@ -146,4 +155,78 @@ fn a_pattern_that_begins_with_a_hyphen_is_searched_rather_than_parsed_as_a_flag(
     );
 
     assert_eq!(observed, (Some(0), Some(0), false));
+}
+
+/// On the mixed-java fixture, `grep` covers `.java` as well as `.kt`: the hit total equals `rg -c`
+/// over the three languages (5 lines across 4 files, the comment mention counted apart from code),
+/// each Java file's header carries the `(production, java)` label, a Java hit is attributed to its
+/// enclosing method by the KT-114 scan, and a Kotlin hit is still attributed from the skeleton.
+/// Asserted as one table.
+#[test]
+fn grep_covers_java_attributing_each_hit_and_labelling_the_file_java() {
+    let run = mixed(&["--format", "md", "grep", "executeUpdate"]);
+
+    let observed = (
+        run.code,
+        run.stdout
+            .contains("5 hits in 4 files. 4 in code, 1 in comments or strings."),
+        run.stdout.contains(
+            "### src/main/java/app/UpdateById.java (production, java)\n\
+             UpdateById.run\n  5: return executeUpdate(id);",
+        ),
+        run.stdout
+            .contains("UpdateBase\n  9: // executeUpdate is called by subclasses"),
+        run.stdout.contains(
+            "### src/main/kotlin/app/UpdateByDomain.kt (production)\napp.UpdateByDomain.run",
+        ),
+        run.stderr.is_empty(),
+    );
+
+    assert_eq!(observed, (Some(0), true, true, true, true, true));
+}
+
+/// `--kotlin-only` restores the Kotlin-only scope (one hit in the one Kotlin file, flagged
+/// `java: false`), and the three rg flags behave through the CLI: `-i` matches case-insensitively,
+/// `-F` treats the pattern as a literal so a regex metacharacter matches nothing, and a pattern
+/// beginning with `-` is still searched beside the new short flags, whether guarded by `--`
+/// (`grep -w -- '->'`) or standing alone (`grep '-x'`), neither a clap error. One composed table.
+#[test]
+fn kotlin_only_scopes_to_kotlin_and_the_rg_flags_compose_with_hyphen_patterns() {
+    use serde_json::Value;
+
+    let kotlin_only = mixed(&["--format", "json", "grep", "executeUpdate", "--kotlin-only"]);
+    let ko: Value = serde_json::from_str(&kotlin_only.stdout).expect("valid JSON");
+    let ignore = mixed(&["--format", "json", "grep", "EXECUTEUPDATE", "-i"]);
+    let ic: Value = serde_json::from_str(&ignore.stdout).expect("valid JSON");
+    let fixed = mixed(&["--format", "json", "grep", "a.b", "-F"]);
+    let fx: Value = serde_json::from_str(&fixed.stdout).expect("valid JSON");
+    let arrow = mixed(&["grep", "-w", "--", "->"]);
+    let dashx = mixed(&["grep", "-x"]);
+
+    let observed = (
+        ko["total_hits"].as_u64(),
+        ko["file_count"].as_u64(),
+        ko["files"][0]["java"].as_bool(),
+        ic["total_hits"].as_u64(),
+        fx["total_hits"].as_u64(),
+        arrow.code,
+        arrow.stderr.contains("unexpected argument"),
+        dashx.code,
+        dashx.stderr.contains("unexpected argument"),
+    );
+
+    assert_eq!(
+        observed,
+        (
+            Some(1),
+            Some(1),
+            Some(false),
+            Some(5),
+            Some(0),
+            Some(0),
+            false,
+            Some(0),
+            false,
+        )
+    );
 }

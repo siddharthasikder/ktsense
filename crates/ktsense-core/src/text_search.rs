@@ -27,6 +27,12 @@ pub struct TextSearchHit {
     pub line: u32,
     pub source_line: String,
     pub kind: SiteKind,
+    /// The declaration enclosing this hit when the adapter already resolved it, which it does for a
+    /// `.java` hit (KT-122) where tree-sitter cannot parse the file. `None` leaves the attribution
+    /// to the file skeleton, the Kotlin path, so a Kotlin hit is unaffected.
+    pub enclosing: Option<String>,
+    /// Whether this hit's file is a `.java` source, so its file header reads `(..., java)` (KT-122).
+    pub java: bool,
 }
 
 /// One matched line kept in the answer: its 1-based line, the node kind, and the source text the
@@ -55,6 +61,9 @@ pub struct TextSearchDeclaration {
 pub struct TextSearchFile {
     pub path: String,
     pub test: bool,
+    /// Whether this file is a `.java` source, so its header reads `(..., java)` and a reader knows
+    /// the enclosing names come from the Java scan rather than the Kotlin engine (KT-122).
+    pub java: bool,
     pub declarations: Vec<TextSearchDeclaration>,
     /// How many hits the per-file cap dropped from this file, the `N` behind `... N more`.
     pub omitted: usize,
@@ -117,6 +126,7 @@ pub fn build_text_search(
             TextSearchFile {
                 path: path.to_string(),
                 test: is_test_source(path),
+                java: file_hits.first().is_some_and(|hit| hit.java),
                 declarations: group_by_declaration(&file_hits, skeleton_by_path.get(path).copied()),
                 omitted,
             }
@@ -143,9 +153,11 @@ fn group_by_declaration(
 ) -> Vec<TextSearchDeclaration> {
     let mut groups: Vec<TextSearchDeclaration> = Vec::new();
     for hit in hits {
-        let fqn = skeleton
-            .and_then(|skeleton| fully_qualified_enclosing(skeleton, hit.line))
-            .map(|enclosing| enclosing.fqn);
+        let fqn = hit.enclosing.clone().or_else(|| {
+            skeleton
+                .and_then(|skeleton| fully_qualified_enclosing(skeleton, hit.line))
+                .map(|enclosing| enclosing.fqn)
+        });
         let line = TextSearchLine {
             line: hit.line,
             kind: hit.kind,
@@ -173,6 +185,8 @@ mod tests {
             line,
             source_line: source.to_string(),
             kind,
+            enclosing: None,
+            java: false,
         }
     }
 
@@ -232,6 +246,7 @@ mod tests {
                     TextSearchFile {
                         path: "app/src/test/kotlin/shop/app/RepoTest.kt".to_string(),
                         test: true,
+                        java: false,
                         declarations: vec![TextSearchDeclaration {
                             fqn: None,
                             hits: vec![TextSearchLine {
@@ -245,6 +260,7 @@ mod tests {
                     TextSearchFile {
                         path: "core/src/main/kotlin/shop/order/Repo.kt".to_string(),
                         test: false,
+                        java: false,
                         declarations: vec![TextSearchDeclaration {
                             fqn: Some("shop.order.OrderRepository.save".to_string()),
                             hits: vec![
@@ -264,6 +280,47 @@ mod tests {
                     },
                 ],
             }
+        );
+    }
+
+    /// A `.java` hit carries its enclosing declaration already resolved (tree-sitter cannot parse
+    /// Java), so the grouping uses that FQN directly, with no skeleton for the file, and marks the
+    /// file `java` so its header reads `(..., java)`. Consecutive hits sharing an enclosing stay in
+    /// one group and a hit outside every declaration keeps `None`. Composed and asserted once.
+    #[test]
+    fn a_java_hit_keeps_its_precomputed_enclosing_and_marks_the_file_java() {
+        let java_hit = |line: u32, enclosing: Option<&str>| TextSearchHit {
+            path: "src/main/java/app/UpdateById.java".to_string(),
+            line,
+            source_line: "executeUpdate(id)".to_string(),
+            kind: SiteKind::Code,
+            enclosing: enclosing.map(str::to_string),
+            java: true,
+        };
+        let hits = vec![
+            java_hit(2, None),
+            java_hit(5, Some("UpdateById.run")),
+            java_hit(6, Some("UpdateById.run")),
+        ];
+
+        let search = build_text_search("executeUpdate", &hits, &[], None);
+        let file = &search.files[0];
+        let observed = (
+            file.java,
+            file.test,
+            file.declarations
+                .iter()
+                .map(|declaration| (declaration.fqn.clone(), declaration.hits.len()))
+                .collect::<Vec<_>>(),
+        );
+
+        assert_eq!(
+            observed,
+            (
+                true,
+                false,
+                vec![(None, 1), (Some("UpdateById.run".to_string()), 2),],
+            )
         );
     }
 

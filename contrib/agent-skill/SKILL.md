@@ -27,7 +27,7 @@ the reference index carry a marker saying how complete that index was. Take both
 | I have never seen this repository | `get_kotlin_repo_map` | fast |
 | Did my edit parse? | `check_kotlin_syntax` | fast |
 | Give me everything about `Foo` in one bundle | `explain_kotlin_symbol` | needs index |
-| Where does a regex or several terms appear as text? | `search_kotlin_text` | fast |
+| Where does a regex or several terms appear as text (Kotlin and Java)? | `search_kotlin_text` | fast |
 | Is the index complete yet? | `ktsense_status` | fast |
 
 The markers say whether a tool waits for the reference index, not whether it needs the engine binary.

@@ -179,9 +179,10 @@ enum Command {
         #[arg(long)]
         contains: bool,
     },
-    /// Search Kotlin source text with a regex, each hit attributed to its declaration
+    /// Search Kotlin and Java source text with a regex, each hit attributed to its declaration
     Grep {
         /// Regular expression to search for. Several concepts are an alternation: `save|OrderId`.
+        /// A pattern beginning with `-` is still a pattern; precede it with `--` after any flags.
         #[arg(allow_hyphen_values = true)]
         pattern: String,
         /// Restrict to files whose workspace-relative path starts with this prefix.
@@ -193,6 +194,18 @@ enum Command {
         /// Search only production sources.
         #[arg(long)]
         no_tests: bool,
+        /// Search only Kotlin sources, leaving `.java` files out as earlier builds did.
+        #[arg(long)]
+        kotlin_only: bool,
+        /// Match only whole words, bounding the pattern with word boundaries, as `rg -w` does.
+        #[arg(short = 'w', long)]
+        word: bool,
+        /// Match case-insensitively, as `rg -i` does.
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+        /// Treat the pattern as a literal string, not a regex, as `rg -F` does.
+        #[arg(short = 'F', long)]
+        fixed_strings: bool,
         /// Show at most this many hits per file; the rest are counted.
         #[arg(long)]
         limit: Option<usize>,
@@ -623,13 +636,25 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             path,
             tests,
             no_tests,
+            kotlin_only,
+            word,
+            ignore_case,
+            fixed_strings,
             limit,
         } => grep::run(
             &base,
-            &pattern,
-            path.as_deref(),
-            grep::TestFilter::from_flags(tests, no_tests),
-            limit,
+            grep::GrepRequest {
+                pattern: &pattern,
+                path_prefix: path.as_deref(),
+                tests: grep::TestFilter::from_flags(tests, no_tests),
+                limit,
+                kotlin_only,
+                matching: grep::MatchOptions {
+                    word,
+                    ignore_case,
+                    fixed_strings,
+                },
+            },
             format,
         ),
         Command::Map {

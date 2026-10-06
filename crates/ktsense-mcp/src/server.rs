@@ -310,13 +310,21 @@ pub struct StatusParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepParams {
-    /// Regular expression to search for in Kotlin sources. Several concepts are an alternation,
-    /// such as `save|OrderId`.
+    /// Regular expression to search for in Kotlin and Java sources. Several concepts are an
+    /// alternation, such as `save|OrderId`.
     pub pattern: String,
     /// Restrict to files whose workspace-relative path starts with this prefix.
     pub path: Option<String>,
     /// Limit to test sources (true) or production sources (false); both when unset.
     pub tests: Option<bool>,
+    /// Search only Kotlin sources, leaving `.java` files out.
+    pub kotlin_only: Option<bool>,
+    /// Match only whole words, bounding the pattern with word boundaries, as `rg -w` does.
+    pub word: Option<bool>,
+    /// Match case-insensitively, as `rg -i` does.
+    pub ignore_case: Option<bool>,
+    /// Treat the pattern as a literal string, not a regex, as `rg -F` does.
+    pub fixed_strings: Option<bool>,
     /// Show at most this many hits per file; the rest are counted.
     pub limit: Option<usize>,
     /// Workspace root to answer about; defaults to the server's configured root.
@@ -803,7 +811,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "search_kotlin_text",
-        description = "Answers where a regex appears in the Kotlin sources, grouping each hit under its file and the declaration it falls inside, labelled production or test and code, comment or string. Prefer it over raw grep or trace when the subject is not one declaration: several terms at once (save|OrderId), a call-site pattern, or text in a file that nothing declares. It resolves nothing, so the answer states precision: text match and the hit count equals rg -c for the same pattern. requires: nothing. cost: about 720 ms on 1861 files (ktor 3.0.1, median of 9, KT-102).",
+        description = "Answers where a regex appears in the Kotlin and Java sources, grouping each hit under its file and the declaration it falls inside, labelled production or test, java when the file is Java, and code, comment or string. Named search_kotlin_text for compatibility, it covers .java as well as .kt/.kts; pass kotlin_only to search Kotlin alone. Prefer it over raw grep or trace when the subject is not one declaration: several terms at once (save|OrderId), a call-site pattern, or text in a file that nothing declares. The word, ignore_case and fixed_strings flags behave like rg's -w, -i and -F. It resolves nothing, so the answer states precision: text match and the hit count equals rg -c for the same pattern and flags over .kt, .kts and .java. requires: nothing. cost: about 720 ms on 1861 files (ktor 3.0.1, median of 9, KT-102).",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -817,6 +825,10 @@ impl KtsenseServer {
             .option("path", params.path)
             .flag("tests", params.tests == Some(true))
             .flag("no-tests", params.tests == Some(false))
+            .flag("kotlin-only", params.kotlin_only == Some(true))
+            .flag("word", params.word == Some(true))
+            .flag("ignore-case", params.ignore_case == Some(true))
+            .flag("fixed-strings", params.fixed_strings == Some(true))
             .option("limit", params.limit);
         self.invoke(&crate::GREP, args.0).await
     }

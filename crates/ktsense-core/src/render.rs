@@ -649,7 +649,12 @@ pub fn render_text_search_markdown(search: &TextSearch) -> String {
         ));
     }
     for file in &search.files {
-        let label = if file.test { "test" } else { "production" };
+        let source_set = if file.test { "test" } else { "production" };
+        let label = if file.java {
+            format!("{source_set}, java")
+        } else {
+            source_set.to_string()
+        };
         out.push_str(&format!("\n### {} ({label})\n", neutralize(&file.path)));
         for declaration in &file.declarations {
             let header = declaration.fqn.as_deref().unwrap_or("(file header)");
@@ -1794,6 +1799,7 @@ mod tests {
             files: vec![TextSearchFile {
                 path: "core/src/main/kotlin/shop/order/Repo.kt".to_string(),
                 test: false,
+                java: false,
                 declarations: vec![
                     TextSearchDeclaration {
                         fqn: None,
@@ -1844,6 +1850,50 @@ mod tests {
                 "  ... 1 more\n",
             )
         );
+    }
+
+    /// A `.java` file's header carries `, java` beside its production-or-test label, so a reader
+    /// knows its enclosing names come from the Java scan rather than the Kotlin engine (KT-122); a
+    /// test Java file reads `(test, java)`. Both are asserted against the exact rendered headers.
+    #[test]
+    fn text_search_labels_a_java_file_header_with_its_source_set_and_java() {
+        use crate::text_search::{
+            TextSearch, TextSearchDeclaration, TextSearchFile, TextSearchLine,
+        };
+
+        let java_file = |path: &str, test: bool| TextSearchFile {
+            path: path.to_string(),
+            test,
+            java: true,
+            declarations: vec![TextSearchDeclaration {
+                fqn: Some("UpdateById.run".to_string()),
+                hits: vec![TextSearchLine {
+                    line: 5,
+                    kind: SiteKind::Code,
+                    source_line: "return executeUpdate(id);".to_string(),
+                }],
+            }],
+            omitted: 0,
+        };
+        let search = TextSearch {
+            pattern: "executeUpdate".to_string(),
+            precision: "text match",
+            total_hits: 2,
+            file_count: 2,
+            text_mention_hits: 0,
+            files: vec![
+                java_file("src/main/java/app/UpdateById.java", false),
+                java_file("src/test/java/app/UpdateByIdTest.java", true),
+            ],
+        };
+
+        let rendered = render_text_search_markdown(&search);
+        let observed = (
+            rendered.contains("### src/main/java/app/UpdateById.java (production, java)\n"),
+            rendered.contains("### src/test/java/app/UpdateByIdTest.java (test, java)\n"),
+        );
+
+        assert_eq!(observed, (true, true));
     }
 
     /// The hit-line trim at its three boundaries: a short line is left whole, a line of exactly the

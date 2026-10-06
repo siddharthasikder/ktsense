@@ -230,7 +230,7 @@ Sixty-six lines of source, twelve lines of signatures. That is the whole idea.
 | `check <paths>` | Syntax check; exits non-zero when a file has errors |
 | `diagnose <file>` | Semantic diagnostics on one file |
 | `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it; `--match <regex>` to filter the shown source lines) |
-| `grep <regex>` | Text search over Kotlin sources, each hit attributed to its declaration (`--path`, `--tests`/`--no-tests`, `--limit`) |
+| `grep <regex>` | Text search over Kotlin and Java sources, each hit attributed to its declaration (`--path`, `--tests`/`--no-tests`, `--limit`, `--kotlin-only` for Kotlin alone, and `-w`/`-i`/`-F` like ripgrep) |
 | `status` | Index phase, file and symbol counts, engine version |
 | `mcp` | Run the MCP stdio server |
 | `daemon start\|status\|stop` | Manage the warm-session daemon |
