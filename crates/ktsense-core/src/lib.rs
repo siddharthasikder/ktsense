@@ -36,7 +36,9 @@ pub use context::{
     MatchedLine, MatchedSource, SourceMatch, SourceSection, SymbolContext,
 };
 pub use imports::{build_import_graph, DepEdge, DepLevel, ExternalImport, ImportGraph};
-pub use java_enclosing::java_enclosing_declarations;
+pub use java_enclosing::{
+    java_declarations, java_enclosing_declarations, java_package, JavaDeclKind, JavaDeclaration,
+};
 pub use java_text::classify_java_sites;
 pub use pick::{last_segment, match_pick, shortest_unique_suffix, PickMatch};
 pub use rank::{page_rank, Graph, PageRankOptions, RankedNode};

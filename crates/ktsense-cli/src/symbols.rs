@@ -18,9 +18,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use ktsense_core::{
-    contained_declarations, match_pick, render_member_summary, render_skeleton,
-    shortest_unique_suffix, DeclKind, Declaration, FileSkeleton, NamedProperty, PickMatch,
-    RenderOptions, SymbolMatch,
+    contained_declarations, java_declarations, java_package, match_pick, render_member_summary,
+    render_skeleton, shortest_unique_suffix, DeclKind, Declaration, FileSkeleton, NamedProperty,
+    PickMatch, RenderOptions, SymbolMatch,
 };
 use ktsense_lsp::SymbolCandidate;
 use serde::Serialize;
@@ -586,6 +586,7 @@ fn enrich_sorted(
             (candidate, resolved)
         })
         .collect();
+    fold_java_constructors(&mut enriched);
     enriched.sort_by(|(left_candidate, left), (right_candidate, right)| {
         (&left.fqn, &left.file, left.line, left_candidate.col).cmp(&(
             &right.fqn,
@@ -595,6 +596,37 @@ fn enrich_sorted(
         ))
     });
     enriched
+}
+
+/// Drops a Java constructor candidate when a Java type candidate of the same simple name sits in the
+/// same file, so a Java type is never ambiguous with its own constructor (KT-117). A constructor
+/// shares its class's simple name, so the engine returns both the type and the constructor for a
+/// type query; folding the constructor into the type leaves one row. Kotlin constructors are
+/// untouched, so a Kotlin query stays byte-identical.
+fn fold_java_constructors(enriched: &mut Vec<(SymbolCandidate, ResolvedSymbol)>) {
+    let java_types: HashSet<(String, String)> = enriched
+        .iter()
+        .filter(|(_, resolved)| {
+            resolved.file.ends_with(".java") && is_java_type_kind(&resolved.kind)
+        })
+        .map(|(_, resolved)| (resolved.file.clone(), simple_name_of(&resolved.fqn)))
+        .collect();
+    enriched.retain(|(_, resolved)| {
+        !(resolved.file.ends_with(".java")
+            && resolved.kind == "constructor"
+            && java_types.contains(&(resolved.file.clone(), simple_name_of(&resolved.fqn))))
+    });
+}
+
+fn is_java_type_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class" | "interface" | "enum" | "record" | "@interface"
+    )
+}
+
+fn simple_name_of(fqn: &str) -> String {
+    fqn.rsplit('.').next().unwrap_or(fqn).to_string()
 }
 
 /// Enriches one engine location from the declaration at that point in its file. A file that cannot
@@ -616,6 +648,9 @@ fn enrich(root: &Path, candidate: &SymbolCandidate) -> ResolvedSymbol {
     let Ok(source) = std::fs::read_to_string(&candidate.file) else {
         return bare();
     };
+    if candidate.file.ends_with(".java") {
+        return enrich_java(&display, &source, candidate).unwrap_or_else(bare);
+    }
     let Ok(skeleton) = ktsense_syntax::extract(display.clone(), &source) else {
         return bare();
     };
@@ -660,6 +695,40 @@ fn local_declaration(
         file: display.to_string(),
         line: candidate.line,
         local: true,
+        entries: Vec::new(),
+        properties: Vec::new(),
+        generated: false,
+    })
+}
+
+/// Enriches a `.java` engine location from the pure Java declaration scan (KT-117), which the Kotlin
+/// parser cannot read. The declaration at the engine's name and line gives the real kind, the
+/// package-qualified name through its enclosing types, and the folded signature line, so a Java row
+/// is no longer a bare `symbol` with no package. A location no declaration matches returns `None` so
+/// the caller stays bare, exactly as a Kotlin miss does.
+fn enrich_java(display: &str, source: &str, candidate: &SymbolCandidate) -> Option<ResolvedSymbol> {
+    let declarations = java_declarations(source);
+    let found = declarations
+        .iter()
+        .find(|declaration| {
+            declaration.name == candidate.name && declaration.line == candidate.line
+        })
+        .or_else(|| {
+            declarations
+                .iter()
+                .find(|declaration| declaration.name == candidate.name)
+        })?;
+    Some(ResolvedSymbol {
+        fqn: fqn(
+            java_package(source).as_deref(),
+            &found.enclosing,
+            &found.name,
+        ),
+        kind: found.kind.label().to_string(),
+        signature: found.signature.clone(),
+        file: display.to_string(),
+        line: candidate.line,
+        local: false,
         entries: Vec::new(),
         properties: Vec::new(),
         generated: false,
@@ -1245,6 +1314,51 @@ mod tests {
     fn a_name_matching_nothing_exits_one() {
         let (code, text) = present(Vec::new(), None, None, None);
         insta::assert_snapshot!("no_match", format!("exit {code}\n{text}"));
+    }
+
+    #[test]
+    fn a_java_class_candidate_gets_its_kind_qualified_name_signature_and_folds_its_constructor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("UpdateDocumentBase.java");
+        std::fs::write(
+            &file,
+            "package com.example.billing;\n\npublic abstract class UpdateDocumentBase extends Activity {\n    protected UpdateDocumentBase() {\n    }\n}\n",
+        )
+        .expect("write fixture");
+        let at = |line: u32| SymbolCandidate {
+            name: "UpdateDocumentBase".to_string(),
+            file: file.to_string_lossy().into_owned(),
+            line,
+            col: 1,
+        };
+
+        let outcome = present_symbols(
+            dir.path(),
+            "UpdateDocumentBase",
+            vec![at(3), at(4)],
+            None,
+            None,
+            PickFilter::for_query("UpdateDocumentBase", None),
+            Format::Md,
+        )
+        .expect("single folded match");
+
+        let rows: Vec<&str> = outcome
+            .text
+            .lines()
+            .filter(|line| line.contains(".java:"))
+            .collect();
+        let observed = (outcome.exit.code(), rows.len(), rows.first().copied());
+        assert_eq!(
+            observed,
+            (
+                0,
+                1,
+                Some(
+                    "com.example.billing.UpdateDocumentBase  class  UpdateDocumentBase.java:3  public abstract class UpdateDocumentBase extends Activity"
+                )
+            )
+        );
     }
 
     #[test]
