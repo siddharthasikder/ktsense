@@ -11,6 +11,7 @@ expression: "neutralize(&json.stdout, temp.path(), &engine)"
     "version": "0.26.0",
     "compatibility": "supported"
   },
+  "ripgrep": "<rg>",
   "daemon": {
     "socket": "<runtime>/ktsense/<root-hash>.sock",
     "state": "absent"

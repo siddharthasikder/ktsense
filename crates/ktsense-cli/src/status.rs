@@ -61,6 +61,10 @@ pub(crate) struct StatusReport {
     pub(crate) root: PathBuf,
     pub(crate) kotlin_files: usize,
     pub(crate) engine: EngineStatus,
+    /// The `rg` binary this installation would exec, or `None` when it is not on `PATH`. The engine
+    /// execs ripgrep for `find` and `references` and answers nothing without it, so its absence is
+    /// state a caller runs `status` to learn about, reported and never a reason to fail.
+    pub(crate) ripgrep: Option<PathBuf>,
     pub(crate) daemon: DaemonStatus,
 }
 
@@ -139,6 +143,7 @@ pub(crate) fn collect(root: &Path) -> Result<StatusReport, CommandError> {
         root,
         kotlin_files,
         engine,
+        ripgrep: locate_ripgrep(std::env::var_os("PATH")),
         daemon,
     })
 }
@@ -183,6 +188,16 @@ fn resolve_on_path(binary: PathBuf, path: Option<std::ffi::OsString>) -> PathBuf
         .unwrap_or(binary)
 }
 
+/// A plain `PATH` scan for an executable named `rg`, resolved in the CLI rather than the engine so
+/// the report can name the file the engine would exec, or say it is missing.
+fn locate_ripgrep(path: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    path.map(|entries| std::env::split_paths(&entries).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|dir| dir.join("rg"))
+        .find(|candidate| candidate.is_file())
+}
+
 /// Probes the socket, then asks a live daemon for its snapshot. A daemon that accepts the
 /// connection but does not answer the status method is still reported as running, with no
 /// snapshot, rather than as absent: the connection is the fact, the snapshot is a courtesy.
@@ -216,6 +231,7 @@ pub(crate) fn render_markdown(report: &StatusReport) -> String {
     let mut out = format!("# Status: {}\n\n", report.root.display());
     out.push_str(&format!("kotlin files: {}\n", report.kotlin_files));
     out.push_str(&format!("engine: {}\n", engine_line(&report.engine)));
+    out.push_str(&format!("ripgrep: {}\n", ripgrep_line(&report.ripgrep)));
     out.push_str(&daemon_lines(&report.daemon));
     out
 }
@@ -233,6 +249,17 @@ fn engine_line(engine: &EngineStatus) -> String {
             engine.binary.display(),
             engine.pinned_version
         ),
+    }
+}
+
+/// The engine execs `rg` for `find` and `references`, so a reader who sees those answer nothing
+/// needs to know whether ripgrep is even reachable; the line names it or says it is missing.
+fn ripgrep_line(ripgrep: &Option<PathBuf>) -> String {
+    match ripgrep {
+        Some(path) => format!("rg at {}", path.display()),
+        None => {
+            "not found on PATH; engine find and references return nothing without it".to_string()
+        }
     }
 }
 
@@ -285,6 +312,7 @@ mod tests {
                 version: Some("0.26.0".to_string()),
                 compatibility: CompatibilityLabel::Supported,
             },
+            ripgrep: Some(PathBuf::from("/usr/bin/rg")),
             daemon,
         }
     }
@@ -304,11 +332,15 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&running).expect("serializes");
 
         assert_eq!(
-            (render_markdown(&running), json["daemon"].clone()),
+            (
+                render_markdown(&running),
+                json["daemon"].clone(),
+                json["ripgrep"].clone()
+            ),
             (
                 "# Status: /work/app\n\nkotlin files: 3\nengine: kmp-lsp 0.26.0 at /opt/kmp-lsp \
-                 (pinned 0.26.0, supported)\ndaemon: running\nsocket: /run/ktsense/abc.sock\n\
-                 uptime: 1h 2m\nindex: complete\nrequests served: 7\n"
+                 (pinned 0.26.0, supported)\nripgrep: rg at /usr/bin/rg\ndaemon: running\nsocket: \
+                 /run/ktsense/abc.sock\nuptime: 1h 2m\nindex: complete\nrequests served: 7\n"
                     .to_string(),
                 serde_json::json!({
                     "socket": "/run/ktsense/abc.sock",
@@ -316,7 +348,8 @@ mod tests {
                     "uptime_secs": 3725,
                     "index": "complete",
                     "requests_served": 7
-                })
+                }),
+                serde_json::json!("/usr/bin/rg")
             )
         );
     }
@@ -330,13 +363,20 @@ mod tests {
         });
         degraded.engine.version = None;
         degraded.engine.compatibility = CompatibilityLabel::Unavailable;
+        degraded.ripgrep = None;
+        let json: serde_json::Value = serde_json::to_value(&degraded).expect("serializes");
 
         assert_eq!(
-            render_markdown(&degraded),
-            "# Status: /work/app\n\nkotlin files: 3\nengine: kmp-lsp unavailable at /opt/kmp-lsp \
-             (pinned 0.26.0); install it or point KTSENSE_LSP_PATH at a build\ndaemon: not \
-             running\nsocket: /run/ktsense/abc.sock is a stale leftover and will be reclaimed by \
-             the next start\n"
+            (render_markdown(&degraded), json["ripgrep"].clone()),
+            (
+                "# Status: /work/app\n\nkotlin files: 3\nengine: kmp-lsp unavailable at \
+                 /opt/kmp-lsp (pinned 0.26.0); install it or point KTSENSE_LSP_PATH at a \
+                 build\nripgrep: not found on PATH; engine find and references return nothing \
+                 without it\ndaemon: not running\nsocket: /run/ktsense/abc.sock is a stale \
+                 leftover and will be reclaimed by the next start\n"
+                    .to_string(),
+                serde_json::Value::Null
+            )
         );
     }
 
@@ -345,6 +385,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let on_path = dir.path().join("kmp-lsp");
         std::fs::write(&on_path, b"").expect("writes");
+        let rg = dir.path().join("rg");
+        std::fs::write(&rg, b"").expect("writes");
         let path = std::env::join_paths([dir.path().to_path_buf(), PathBuf::from("/nowhere")])
             .expect("joins");
 
@@ -354,8 +396,10 @@ mod tests {
                 bare_version("0.27.1"),
                 bare_version("kmp-lsp"),
                 resolve_on_path(PathBuf::from("kmp-lsp"), Some(path.clone())),
-                resolve_on_path(PathBuf::from("/opt/kmp-lsp"), Some(path)),
+                resolve_on_path(PathBuf::from("/opt/kmp-lsp"), Some(path.clone())),
                 resolve_on_path(PathBuf::from("kmp-lsp"), None),
+                locate_ripgrep(Some(path)),
+                locate_ripgrep(None),
             ),
             (
                 "0.26.0".to_string(),
@@ -364,6 +408,8 @@ mod tests {
                 on_path,
                 PathBuf::from("/opt/kmp-lsp"),
                 PathBuf::from("kmp-lsp"),
+                Some(rg),
+                None,
             )
         );
     }

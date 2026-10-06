@@ -74,7 +74,7 @@ fn stable(body: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    socket
+    let replaced = socket
         .replace(&fixture_root().display().to_string(), "<FIXTURE>")
         .replace(
             &fake_lsp()
@@ -84,7 +84,23 @@ fn stable(body: &str) -> String {
                 .to_string(),
             "<TARGET>",
         )
-        .replace(&workspace().display().to_string(), "<WORKSPACE>")
+        .replace(&workspace().display().to_string(), "<WORKSPACE>");
+    match host_ripgrep() {
+        Some(rg) => replaced.replace(&rg, "<RG>"),
+        None => replaced,
+    }
+}
+
+/// The `rg` this host's `PATH` resolves, so the status line's ripgrep path is a placeholder rather
+/// than a property of the machine.
+fn host_ripgrep() -> Option<String> {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|dir| dir.join("rg"))
+        .find(|candidate| candidate.is_file())
+        .map(|rg| rg.display().to_string())
 }
 
 fn candidate(relative: &str, line: u32, col: u32, name: &str) -> Value {

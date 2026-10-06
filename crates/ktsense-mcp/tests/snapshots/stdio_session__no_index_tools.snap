@@ -258,6 +258,7 @@ structuredContent:
 
 kotlin files: 14
 engine: kmp-lsp 0.26.0 at <TARGET>/fake_lsp (pinned 0.26.0, supported)
+ripgrep: rg at <RG>
 daemon: not running
 socket: <SOCKET>
 

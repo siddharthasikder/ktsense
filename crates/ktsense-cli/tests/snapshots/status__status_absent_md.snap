@@ -6,5 +6,6 @@ expression: "neutralize(&md.stdout, temp.path(), &engine)"
 
 kotlin files: 17
 engine: kmp-lsp 0.26.0 at <engine> (pinned 0.26.0, supported)
+ripgrep: rg at <rg>
 daemon: not running
 socket: <runtime>/ktsense/<root-hash>.sock does not exist

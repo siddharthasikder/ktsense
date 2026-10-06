@@ -61,16 +61,29 @@ fn fake_lsp() -> PathBuf {
 }
 
 /// Replaces the host-specific values with stable placeholders: the engine path, the runtime
-/// directory, the workspace root, and the socket file's sixteen-hex-digit root hash.
+/// directory, the workspace root, the ripgrep binary, and the socket file's sixteen-hex-digit
+/// root hash.
 fn neutralize(text: &str, runtime_dir: &Path, engine: &Path) -> String {
     let root = Path::new(WORKSPACE_ROOT)
         .canonicalize()
         .expect("workspace exists");
-    let text = text
+    let mut text = text
         .replace(&engine.display().to_string(), "<engine>")
         .replace(&runtime_dir.display().to_string(), "<runtime>")
         .replace(&root.display().to_string(), "<workspace>");
+    if let Some(rg) = host_ripgrep() {
+        text = text.replace(&rg.display().to_string(), "<rg>");
+    }
     neutralize_root_hashes(&text)
+}
+
+/// The `rg` the CLI would find on this host's `PATH`, resolved the same way `status` resolves it,
+/// so the placeholder covers whatever absolute path the report printed.
+fn host_ripgrep() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("rg"))
+        .find(|candidate| candidate.is_file())
 }
 
 fn neutralize_root_hashes(text: &str) -> String {
