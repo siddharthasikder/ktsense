@@ -77,6 +77,7 @@ fn trace_with_find(args: &[&str], find_stdout: &str, script: &Value) -> Run {
         .expect("binary builds")
         .current_dir(WORKSPACE_ROOT)
         .env("KTSENSE_LSP_PATH", fake_lsp())
+        .env("KTSENSE_NO_AUTOSTART", "1")
         .env("FAKE_CMD_STDOUT", find_stdout)
         .env("FAKE_LSP_SCRIPT", script.to_string())
         .env("KTSENSE_INDEX_CAP_MS", SHORT_INDEX_CAP_MS)
@@ -590,6 +591,7 @@ mod real {
         let output = Command::cargo_bin("ktsense")
             .expect("binary builds")
             .current_dir(WORKSPACE_ROOT)
+            .env("KTSENSE_NO_AUTOSTART", "1")
             .args([
                 "--root",
                 FIXTURE,
@@ -622,6 +624,7 @@ mod real {
         let output = Command::cargo_bin("ktsense")
             .expect("binary builds")
             .current_dir(WORKSPACE_ROOT)
+            .env("KTSENSE_NO_AUTOSTART", "1")
             .args(["--root", FIXTURE, "trace", symbol])
             .output()
             .expect("binary runs");

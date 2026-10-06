@@ -44,6 +44,7 @@ use crate::{block_on, CommandError, CommandOutcome, Exit, Format};
 
 pub(crate) const NO_DAEMON_ENV: &str = "KTSENSE_NO_DAEMON";
 pub(crate) const REQUIRE_DAEMON_ENV: &str = "KTSENSE_REQUIRE_DAEMON";
+pub(crate) const NO_AUTOSTART_ENV: &str = "KTSENSE_NO_AUTOSTART";
 const COMMAND_METHOD: &str = "ktsense/command";
 
 /// A command a daemon can answer in place of the in-process path.
@@ -78,6 +79,18 @@ pub(crate) enum RoutedCommand {
         match_pattern: Option<String>,
         around: usize,
     },
+}
+
+impl RoutedCommand {
+    /// Whether answering this command needs the engine, so a first in-process answer is worth
+    /// leaving a warm daemon behind for the next question. `outline`, `deps` and `map` are pure
+    /// tree-sitter work a warm daemon answers no faster, so only `trace` and `context` autostart.
+    fn is_engine_backed(&self) -> bool {
+        matches!(
+            self,
+            RoutedCommand::Trace { .. } | RoutedCommand::Context { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,8 +304,27 @@ pub(crate) fn route(
         DaemonAnswer::Unreachable if flag_set(REQUIRE_DAEMON_ENV) => {
             Err(CommandError::no_daemon(root))
         }
-        DaemonAnswer::Unreachable => run_in_process(root, &command, format),
+        DaemonAnswer::Unreachable => answer_then_warm(root, &command, format),
     }
+}
+
+/// Answers in process because no daemon was live, then, for an engine-backed command, starts one in
+/// the background so the next question in the session is answered warm. The answer is computed and
+/// returned exactly as it was before autostart existed; the start is detached and best-effort, so a
+/// daemon that cannot come up never changes the bytes this command already produced. The two opt-outs
+/// are `KTSENSE_NO_AUTOSTART=1`, checked here, and `KTSENSE_NO_DAEMON=1`, which answered in process
+/// above and so never reaches this path. Concurrent first uses settle on exactly one daemon through
+/// the KT-71 flock claim `daemon start` holds, since this reuses that same start path.
+fn answer_then_warm(
+    root: &Path,
+    command: &RoutedCommand,
+    format: Format,
+) -> Result<CommandOutcome, CommandError> {
+    let answer = run_in_process(root, command, format);
+    if command.is_engine_backed() && !flag_set(NO_AUTOSTART_ENV) {
+        crate::daemon::spawn_background_start(root);
+    }
+    answer
 }
 
 fn flag_set(name: &str) -> bool {
@@ -533,6 +565,45 @@ impl Engine for CommandEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_trace_and_context_warm_a_daemon_after_answering_in_process() {
+        let engine_backed = |command: RoutedCommand| command.is_engine_backed();
+
+        assert_eq!(
+            (
+                engine_backed(RoutedCommand::Trace {
+                    symbol: "save".to_string(),
+                    pick: None,
+                    depth: 1,
+                    limit: None,
+                    wait_index: false,
+                }),
+                engine_backed(RoutedCommand::Context {
+                    symbol: "save".to_string(),
+                    pick: None,
+                    budget: 2000,
+                    sections: ktsense_core::ContextSections::all(),
+                    match_pattern: None,
+                    around: 1,
+                }),
+                engine_backed(RoutedCommand::Outline {
+                    file: PathBuf::from("src/A.kt"),
+                    private: false,
+                    kdoc: false,
+                    annotations: false,
+                }),
+                engine_backed(RoutedCommand::Deps {
+                    level: RoutedLevel::Package,
+                }),
+                engine_backed(RoutedCommand::Map {
+                    budget: 4000,
+                    compact: false,
+                }),
+            ),
+            (true, true, false, false, false)
+        );
+    }
 
     #[test]
     fn every_routed_wire_shape_is_pinned_to_the_protocol_version() {

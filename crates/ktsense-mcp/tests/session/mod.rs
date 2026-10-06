@@ -92,6 +92,7 @@ impl Launch {
         command
             .current_dir(directory)
             .args(["--root", &self.root, "mcp"])
+            .env("KTSENSE_NO_AUTOSTART", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

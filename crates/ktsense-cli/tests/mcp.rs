@@ -69,6 +69,7 @@ impl Session {
         let mut command = Command::cargo_bin("ktsense").expect("binary builds");
         command
             .current_dir(WORKSPACE_ROOT)
+            .env("KTSENSE_NO_AUTOSTART", "1")
             .args(["--root", FIXTURE, "mcp"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -105,6 +105,11 @@ errors are Gradle's job, and the README says so.
 - Golden snapshots (`insta`) for anything that renders text a human or an agent reads.
 - Adapter tests drive a fake `kmp-lsp` replay binary, so the default `cargo test` needs no upstream
   install. Tests against the real engine are behind the `real-lsp` feature.
+- **A `trace` or `context` invocation with no live daemon autostarts one in the background** (KT-105),
+  so every test that runs either command in process must set `KTSENSE_NO_AUTOSTART=1` (or
+  `KTSENSE_NO_DAEMON=1`) on the child, or it leaves a stray daemon behind. The routed-parity tests
+  already pass `KTSENSE_REQUIRE_DAEMON=1` or `KTSENSE_NO_DAEMON=1`, which both suppress the start.
+  After a full run, `pgrep -fa 'ktsense daemon'` must find nothing.
 - Use as few assertions as possible: compose observed state into one value and assert it once.
 - Never weaken an assertion to make a build pass.
 

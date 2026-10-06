@@ -385,6 +385,27 @@ fn idle_timeout() -> Duration {
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
 }
 
+/// Starts a daemon for `root` in the background by re-executing `daemon start`, so an engine-backed
+/// command that just answered in process leaves a warm session for the next question without the
+/// caller waiting for the engine to come up. Detached with its streams closed, and every error is
+/// dropped: a background start that fails must never change what the foreground command answered.
+/// Routing through `daemon start` rather than straight to `daemon serve` is deliberate: it inherits
+/// the KT-71 flock claim, so concurrent first uses settle on exactly one daemon rather than racing to
+/// bind.
+pub(crate) fn spawn_background_start(root: &Path) {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let _ = Command::new(executable)
+        .arg("--root")
+        .arg(root)
+        .args(["daemon", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
 /// Re-executes this binary as a detached `daemon serve` child with its streams closed, so the daemon
 /// neither holds the terminal nor writes into the caller's output.
 fn spawn_detached(root: &Path) -> Result<(), CommandError> {

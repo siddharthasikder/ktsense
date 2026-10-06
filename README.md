@@ -248,6 +248,13 @@ through it automatically when it is live and fall back to running in process whe
 routing problem degrades to a slower answer rather than no answer. It expires after an hour idle.
 Nothing requires it; see the latency table for what it is worth per command.
 
+You rarely need to start it by hand. The first `trace` or `context` in a root, finding no daemon,
+answers in process and then starts one in the background, so the next question is answered warm
+(about 50 ms against 0.7 to 2 s). The first answer is unchanged and the background start never blocks
+or fails it; concurrent first uses settle on a single daemon. Set `KTSENSE_NO_AUTOSTART=1` to answer
+in process without starting one, or `KTSENSE_NO_DAEMON=1` to also skip routing through an existing
+one.
+
 ### As an MCP server
 
 `ktsense mcp` speaks JSON-RPC over stdio and exposes eight tools: `get_kotlin_outline`,

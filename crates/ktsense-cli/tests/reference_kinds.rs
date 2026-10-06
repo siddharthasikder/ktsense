@@ -21,6 +21,7 @@ fn trace_keeps_text_and_same_named_declarations_out_of_the_callers() {
     let output = Command::cargo_bin("ktsense")
         .expect("binary builds")
         .current_dir(WORKSPACE_ROOT)
+        .env("KTSENSE_NO_AUTOSTART", "1")
         .args([
             "--root",
             FIXTURE,
