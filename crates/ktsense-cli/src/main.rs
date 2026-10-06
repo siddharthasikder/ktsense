@@ -188,6 +188,10 @@ enum Command {
     Map {
         #[arg(long, default_value_t = 4000)]
         budget: usize,
+        /// List each file's public declarations as kind and name only, no signatures, so the same
+        /// budget covers more of the module.
+        #[arg(long)]
+        compact: bool,
     },
     /// Syntax-check files; exits non-zero when a file has errors
     Check { path: PathBuf },
@@ -515,7 +519,11 @@ fn run(cli: Cli) -> Result<CommandOutcome, CommandError> {
             contains,
             format,
         ),
-        Command::Map { budget } => route(&base, routing::RoutedCommand::Map { budget }, format),
+        Command::Map { budget, compact } => route(
+            &base,
+            routing::RoutedCommand::Map { budget, compact },
+            format,
+        ),
         Command::Trace {
             symbol,
             pick,
@@ -814,7 +822,12 @@ fn deps(root: &Path, level: DepLevel, format: Format) -> Result<String, CommandE
 /// the ranking has one universe of discourse: a declaration's count means "referenced this often by
 /// the code this map describes". Counting test references too would reintroduce the bias that
 /// excluding test sources removed, by promoting whatever the test suite exercises hardest.
-fn repository_map(root: &Path, budget: usize, format: Format) -> Result<String, CommandError> {
+fn repository_map(
+    root: &Path,
+    budget: usize,
+    compact: bool,
+    format: Format,
+) -> Result<String, CommandError> {
     let files = collect_kotlin_files(root)?;
     let mapped: Vec<PathBuf> = files
         .into_iter()
@@ -830,6 +843,7 @@ fn repository_map(root: &Path, budget: usize, format: Format) -> Result<String, 
             files: &skeletons,
             references: &references,
             budget,
+            compact,
         },
         &ByteRatioEstimator,
     );

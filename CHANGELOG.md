@@ -4,6 +4,7 @@
 
 ### Added
 
+- `map --compact` (and the `compact` argument of the `get_kotlin_repo_map` MCP tool) lists each mapped file's public declarations as kind and name only, with no signatures, supertypes or KDoc, so the same token budget covers far more of a module. On `ktor-server/ktor-server-core` at `--budget 4000` it surfaces 130 of the module's 136 public top-level types, against 40 for the default map. The default map is byte-identical to before. The routed daemon request shape gained the flag, so the daemon protocol version is now 6 (KT-97).
 - `context --only <section>[,<section>...]` (and the `only` argument of the `explain_kotlin_symbol` MCP tool) renders the declaration line plus only the named sections, out of `source`, `callers`, `implementors` and `outline`, and spends the token budget on them alone. The full bundle is the default and is byte-identical to before, in Markdown and JSON; a filtered bundle carries a `sections` object in its JSON. The routed daemon request shape gained the filter, so the daemon protocol version is now 4 (KT-96).
 - `context --match <regex> [--around N]` (and the `match` and `around` arguments of the `explain_kotlin_symbol` MCP tool) keeps the declaration line and, in the Source section, only the lines matching the pattern plus `--around N` context lines (default 1), each with its line number and `...` where lines were skipped. It composes with `--only`. Without `--match` the output is unchanged. The routed daemon request gained the pattern, so the daemon protocol version is now 5 (KT-101).
 

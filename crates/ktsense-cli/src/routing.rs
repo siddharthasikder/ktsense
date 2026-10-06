@@ -68,6 +68,7 @@ pub(crate) enum RoutedCommand {
     },
     Map {
         budget: usize,
+        compact: bool,
     },
     Context {
         symbol: String,
@@ -180,8 +181,8 @@ pub(crate) fn run_in_process(
             *wait_index,
             format,
         )),
-        RoutedCommand::Map { budget } => {
-            crate::repository_map(root, *budget, format).map(CommandOutcome::success)
+        RoutedCommand::Map { budget, compact } => {
+            crate::repository_map(root, *budget, *compact, format).map(CommandOutcome::success)
         }
         RoutedCommand::Context {
             symbol,
@@ -478,8 +479,9 @@ impl CommandEngine {
                 )
                 .await
             }
-            RoutedCommand::Map { budget } => {
-                crate::repository_map(&self.root, *budget, format).map(CommandOutcome::success)
+            RoutedCommand::Map { budget, compact } => {
+                crate::repository_map(&self.root, *budget, *compact, format)
+                    .map(CommandOutcome::success)
             }
             RoutedCommand::Context {
                 symbol,
@@ -551,7 +553,10 @@ mod tests {
                 limit: Some(5),
                 wait_index: true,
             },
-            RoutedCommand::Map { budget: 4000 },
+            RoutedCommand::Map {
+                budget: 4000,
+                compact: false,
+            },
             RoutedCommand::Context {
                 symbol: "save".to_string(),
                 pick: None,
@@ -575,14 +580,14 @@ mod tests {
         assert_eq!(
             (ktsense_daemon::PROTOCOL_VERSION, Value::Array(shapes)),
             (
-                5,
+                6,
                 serde_json::json!([
                     { "command": "outline", "file": "src/A.kt", "private": true, "kdoc": true,
                       "annotations": true, "format": "md" },
                     { "command": "deps", "level": "file", "format": "md" },
                     { "command": "trace", "symbol": "save", "pick": "shop.order.OrderRepository.save",
                       "depth": 2, "limit": 5, "wait_index": true, "format": "md" },
-                    { "command": "map", "budget": 4000, "format": "md" },
+                    { "command": "map", "budget": 4000, "compact": false, "format": "md" },
                     { "command": "context", "symbol": "save", "pick": null, "budget": 2000,
                       "sections": { "source": true, "outline": true, "callers": true,
                       "implementors": true }, "match_pattern": null, "around": 1, "format": "md" }
@@ -637,7 +642,10 @@ mod tests {
             format: WireFormat::Md,
         };
         let map = RoutedParams {
-            command: RoutedCommand::Map { budget: 4000 },
+            command: RoutedCommand::Map {
+                budget: 4000,
+                compact: true,
+            },
             format: WireFormat::Json,
         };
 
@@ -650,7 +658,7 @@ mod tests {
             (trace_back.command, map_value),
             (
                 trace.command,
-                serde_json::json!({ "command": "map", "budget": 4000, "format": "json" })
+                serde_json::json!({ "command": "map", "budget": 4000, "compact": true, "format": "json" })
             )
         );
     }

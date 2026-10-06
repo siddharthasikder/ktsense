@@ -30,6 +30,7 @@ use crate::imports::{build_import_graph, DepLevel};
 use crate::rank::{page_rank, Graph, PageRankOptions};
 use crate::render::{render_skeleton, RenderOptions};
 use crate::skeleton::{Declaration, FileSkeleton};
+use crate::text::neutralize;
 use crate::TokenEstimator;
 
 /// How many times each declaration name is referenced across the corpus.
@@ -121,6 +122,10 @@ pub struct RepoMapInput<'a> {
     pub files: &'a [FileSkeleton],
     pub references: &'a ReferenceCounts,
     pub budget: usize,
+    /// Render each declaration as its kind and name alone rather than its full signature, so the
+    /// same budget covers more of the module. Ranking and the public-visibility filter are
+    /// unchanged; only the text each declaration occupies shrinks.
+    pub compact: bool,
 }
 
 /// Builds a budgeted map from parsed skeletons and the corpus reference counts.
@@ -152,7 +157,7 @@ pub fn build_repo_map<E: TokenEstimator>(input: RepoMapInput<'_>, estimator: &E)
     let mut candidate_paths: Vec<String> = Vec::new();
     let mut files_without_public_declarations = 0usize;
     for file in ordered {
-        let signatures = signatures_in_reference_order(file, &ranking);
+        let signatures = signatures_in_reference_order(file, &ranking, input.compact);
         if signatures.is_empty() {
             files_without_public_declarations += 1;
             continue;
@@ -394,8 +399,12 @@ fn score_of(scores: &BTreeMap<String, f64>, file: &FileSkeleton) -> f64 {
 }
 
 /// The file's top-level declarations rendered one signature per line, most referenced first, ties
-/// broken by source order so the result is stable.
-fn signatures_in_reference_order(file: &FileSkeleton, ranking: &Ranking<'_>) -> Vec<String> {
+/// broken by source order so the result is stable. In compact mode each is its kind and name alone.
+fn signatures_in_reference_order(
+    file: &FileSkeleton,
+    ranking: &Ranking<'_>,
+    compact: bool,
+) -> Vec<String> {
     let mut ranked: Vec<((usize, usize), u32, &Declaration)> = file
         .declarations
         .iter()
@@ -410,8 +419,34 @@ fn signatures_in_reference_order(file: &FileSkeleton, ranking: &Ranking<'_>) -> 
     ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
     ranked
         .into_iter()
-        .filter_map(|(_, _, declaration)| signature_of(file, declaration))
+        .filter_map(|(_, _, declaration)| rendered_signature(file, declaration, compact))
         .collect()
+}
+
+/// One declaration's line for the map: its full signature, or, in compact mode, its kind and name
+/// alone. The public-visibility filter is the full renderer's, reused here so compact mode hides
+/// exactly what the default map hides.
+fn rendered_signature(
+    file: &FileSkeleton,
+    declaration: &Declaration,
+    compact: bool,
+) -> Option<String> {
+    let full = signature_of(file, declaration)?;
+    if compact {
+        Some(compact_signature(declaration).unwrap_or(full))
+    } else {
+        Some(full)
+    }
+}
+
+/// A declaration's kind and name alone, neutralized, for the compact map. `None` for a kind that
+/// carries no keyword of its own, which a top-level declaration never is.
+fn compact_signature(declaration: &Declaration) -> Option<String> {
+    let keyword = declaration.kind.keyword();
+    if keyword.is_empty() {
+        return None;
+    }
+    Some(format!("{keyword} {}", neutralize(&declaration.name)))
 }
 
 /// One declaration's header, rendered by the same writer `outline` uses so a signature reads
@@ -521,6 +556,7 @@ mod tests {
                 files,
                 references: &ReferenceCounts::default(),
                 budget,
+                compact: false,
             },
             &ByteRatioEstimator,
         )
@@ -557,6 +593,7 @@ mod tests {
                 files: &corpus(),
                 references: &counts(&[("Engine", 7), ("Helper", 2), ("Server", 1), ("Main", 0)]),
                 budget: 10_000,
+                compact: false,
             },
             &ByteRatioEstimator,
         );
@@ -611,6 +648,7 @@ mod tests {
                 files: &single_package,
                 references: &counts(&[("launch", 900), ("async", 400), ("AbstractThing", 12)]),
                 budget: 10_000,
+                compact: false,
             },
             &ByteRatioEstimator,
         );
@@ -654,6 +692,7 @@ mod tests {
                 files: &files,
                 references: &counts(&[("Alpha", 5), ("Beta", 5), ("User", 1)]),
                 budget: 10_000,
+                compact: false,
             },
             &ByteRatioEstimator,
         );
@@ -803,6 +842,7 @@ mod tests {
                     files: &files,
                     references: &references,
                     budget,
+                    compact: false,
                 },
                 &ByteRatioEstimator,
             );
@@ -865,6 +905,59 @@ mod tests {
                 .map(|f| f.path.as_str())
                 .collect::<Vec<_>>(),
             vec!["core/Core.kt"]
+        );
+    }
+
+    /// `--compact` renders each declaration as its kind and name alone, so a signature with
+    /// parameters and a return type shrinks to `fun handle` while a bare interface is unchanged,
+    /// and the ranking (most referenced first) is the same as the full map's.
+    #[test]
+    fn compact_renders_kind_and_name_only() {
+        use crate::skeleton::Parameter;
+
+        let files = vec![FileSkeleton::new("core/Api.kt")
+            .in_package("app")
+            .with_declarations(vec![
+                Declaration::function("handle", 1)
+                    .with_parameters(vec![Parameter::new("req", "Request")])
+                    .returning("Response"),
+                Declaration::interface("Plugin", 2),
+            ])];
+        let references = counts(&[("handle", 2), ("Plugin", 1)]);
+        let full = build_repo_map(
+            RepoMapInput {
+                files: &files,
+                references: &references,
+                budget: 10_000,
+                compact: false,
+            },
+            &ByteRatioEstimator,
+        );
+        let compact = build_repo_map(
+            RepoMapInput {
+                files: &files,
+                references: &references,
+                budget: 10_000,
+                compact: true,
+            },
+            &ByteRatioEstimator,
+        );
+
+        assert_eq!(
+            (
+                full.files.first().map(|file| file.declarations.clone()),
+                compact.files.first().map(|file| file.declarations.clone()),
+            ),
+            (
+                Some(vec![
+                    "fun handle(req: Request): Response".to_string(),
+                    "interface Plugin".to_string(),
+                ]),
+                Some(vec![
+                    "fun handle".to_string(),
+                    "interface Plugin".to_string()
+                ]),
+            )
         );
     }
 }

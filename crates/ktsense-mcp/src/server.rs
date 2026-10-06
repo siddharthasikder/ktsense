@@ -246,6 +246,10 @@ pub struct DepsParams {
 pub struct MapParams {
     /// Token budget for the map; defaults to 4000.
     pub budget: Option<usize>,
+    /// List each file's public declarations as kind and name only, no signatures, so the same
+    /// budget covers more of the module.
+    #[serde(default)]
+    pub compact: bool,
     /// Workspace root to answer about; defaults to the server's configured root.
     pub root: Option<String>,
 }
@@ -671,7 +675,7 @@ impl KtsenseServer {
 
     #[tool(
         name = "get_kotlin_repo_map",
-        description = "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
+        description = "Answers what a repository is: its most central files first with their signatures, packed into a token budget. Start here on an unfamiliar repository, before reaching for any file-level tool. Pass compact to list each file's declarations as kind and name only, no signatures, so the same budget covers far more of the module. Test sources are excluded and ranking is by import centrality, which is syntactic. requires: nothing. cost: about 1.1 s on 1861 files (ktor 3.0.1, median of 9, KT-38), so call it once and keep the answer instead of re-asking.",
         annotations(read_only_hint = true, open_world_hint = false),
         output_schema = answer_schema()
     )]
@@ -680,7 +684,9 @@ impl KtsenseServer {
         Parameters(params): Parameters<MapParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let root = self.root_for(params.root, None).await;
-        let args = Args::for_tool(&crate::MAP, root).option("budget", params.budget);
+        let args = Args::for_tool(&crate::MAP, root)
+            .option("budget", params.budget)
+            .flag("compact", params.compact);
         self.invoke(&crate::MAP, args.0).await
     }
 

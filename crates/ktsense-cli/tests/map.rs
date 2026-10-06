@@ -118,6 +118,42 @@ fn dot_is_refused_because_only_deps_produces_a_graph() {
     insta::assert_snapshot!(record(&run));
 }
 
+/// `--compact` lists each declaration as its kind and name only, so a class whose default map line
+/// carries its constructor parameters renders as the bare `class CheckoutService`, and the default
+/// map keeps the full signature. The ranking and the files shown are the same.
+#[test]
+fn compact_lists_kind_and_name_without_signatures() {
+    let compact = map(&[
+        "map",
+        "--budget",
+        "4000",
+        "--root",
+        "fixtures/multi-module",
+        "--compact",
+    ]);
+    let default = map(&["map", "--budget", "4000", "--root", "fixtures/multi-module"]);
+
+    let observed = (
+        compact.code,
+        compact
+            .stdout
+            .lines()
+            .any(|line| line == "class CheckoutService"),
+        compact
+            .stdout
+            .contains("class CheckoutService(private val repository"),
+        default
+            .stdout
+            .contains("class CheckoutService(private val repository"),
+    );
+    assert_eq!(
+        observed,
+        (Some(0), true, false, true),
+        "compact stdout: {}",
+        compact.stdout
+    );
+}
+
 /// KT-22a end to end, on the shape the committed fixtures cannot express.
 ///
 /// Every file here sits in one package, so no file imports another and every importer count is

@@ -223,7 +223,7 @@ Sixty-six lines of source, twelve lines of signatures. That is the whole idea.
 | `symbols <name>` | Declarations matching a name across the workspace |
 | `trace <name>` | Definition, usages, implementors and callers of one symbol |
 | `deps` | Import graph of the workspace, including cycles (`--format dot` for Graphviz) |
-| `map` | Token-budgeted map of the most central files (`--budget`, default 4000) |
+| `map` | Token-budgeted map of the most central files (`--budget`, default 4000; `--compact` for names only) |
 | `check <paths>` | Syntax check; exits non-zero when a file has errors |
 | `diagnose <file>` | Semantic diagnostics on one file |
 | `context <name>` | Budgeted context bundle for one symbol (`--only source,callers,implementors,outline` to restrict it; `--match <regex>` to filter the shown source lines) |
